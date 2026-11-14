@@ -257,11 +257,30 @@ Every requirement below is in the **full release scope**. The phase column in
 | REQ-RT-002 | Do not modify `roostbot`, `LangAlpha`, or `market` repositories. | `[U-R]` |
 | REQ-RT-003 | Core Anchor works without Roost; integration is opt-in and feature-flagged. | `[I]` |
 
+### 4.13 Security enforcement, determinism and skills
+
+| ID | Requirement | Source |
+|---|---|---|
+| REQ-SEC-001 | All filesystem inputs are canonicalized and constrained to the workspace; traversal, symlinks/reparse points, absolute paths, drive/ADS and control characters are rejected. | `[A]` |
+| REQ-SEC-002 | Commands use argv arrays, absolute binaries, minimal env and bounded timeouts; no shell interpolation of untrusted data. | `[A]` |
+| REQ-SEC-003 | Secret scanning covers capture, generated artifacts, git bundles/patch history, untracked files, export and sync, not only commit/push. | `[A]` |
+| REQ-SEC-004 | Captured repo/transcript/MCP content is untrusted data; it never changes policy or executes as instructions. | `[A]` |
+| REQ-SEC-005 | Remote MCP and other network calls enforce HTTPS/host allowlists, timeouts, size limits, schema validation and no secret logging. | `[A]` |
+| REQ-SEC-006 | Git sync uses explicit remotes, no force-push, no credential logging, and validates remote events/paths/artifacts as untrusted input. | `[A]` |
+| REQ-SEC-007 | The local web UI binds loopback by default and enforces auth, CSRF, Origin/Host checks and secret-free rendering. | `[A]` |
+| REQ-CFG-008 | Skills are installed and activated per adapter with idempotent managed files; activation semantics are adapter-specific and never assumed. | `[A]` |
+| REQ-SY-012 | Artifact byte transport is explicit; a manifest without bytes (or with missing/unverified bytes) is reported as incomplete, never as a full handoff. | `[A]` |
+| REQ-RST-011 | Recovery never depends on the original machine's absolute paths; missing byte artifacts are reported as unrecovered. | `[A]` |
+| REQ-AD-013 | Capture failure is fail-open and logged; write-operation policy is fail-closed where the adapter can block, otherwise explicitly `advisory`/`unavailable`, never promised as enforced. | `[A]` |
+| REQ-CM-013 | Causal writes are idempotent across devices via a deterministic write key, not only per-process retry keys. | `[A]` |
+| REQ-CONC-005 | Concurrent offline events are replayed deterministically with conflict isolation and fencing; ULID/clock order is never authoritative. | `[A]` |
+| REQ-ST-013 | `user_confirmed` provenance requires local user attestation (TTY/UI/signed local action); an agent cannot self-report it. | `[A]` |
+
 ## 5. Non-functional and delivery requirements
 
 | ID | Requirement | Source |
 |---|---|---|
-| REQ-NFR-001 | macOS, Linux and Windows support; no platform-specific state in synced data. | `[A]` |
+| REQ-NFR-001 | macOS, Linux and Windows are all release-blocking full-acceptance targets (build, install, e2e, keychain where applicable); no platform-specific state in synced data. | `[A]` |
 | REQ-NFR-002 | Hook capture adds bounded latency (target p95 < 150 ms excluding MCP network; restore packet < 1 s locally; UI first paint < 2 s). Targets are proposals to validate. | `[I]` |
 | REQ-NFR-003 | Offline-first: core capture/tree/restore works with no network; remote features degrade visibly. | `[U-R]` |
 | REQ-NFR-004 | No telemetry by default; no analytics endpoint; logs are local and redacted. | `[U-R]` |
@@ -295,7 +314,7 @@ Every requirement below is in the **full release scope**. The phase column in
 | ID | Question | Why it matters | Default proposal |
 |---|---|---|---|
 | O-001 | Should `.anchor/` sync in the project Git repo, or in a dedicated state Git repo/orphan branch? | Affects privacy, merge conflicts, uncommitted-code artifacts and onboarding. | Separate state repo recommended; requires user confirmation. |
-| O-002 | Which platforms are release-blocking for v1 (macOS, Linux, Windows; architectures)? | Packaging and keychain test matrix. | macOS + Linux first; Windows supported with CI build, e2e gated. |
+| O-002 | Which architectures are release-blocking on macOS/Linux/Windows? | Packaging and keychain test matrix. | All three OSes are release-blocking full acceptance; architecture set still needs user confirmation. Windows e2e is required, not optional. |
 | O-003 | Which exact agent CLI versions are supported? | Hook/config formats change. | Runtime capability detection + latest stable at release; minimum versions from adapter spike. |
 | O-004 | Does the user want workspace state committed to the project repo at all? | Some users will not want agent state in code history. | Store in `.anchor/` ignored by project Git; dedicated sync repo. |
 | O-005 | What is the causal-memory MCP endpoint, tool contract version and test account? | Bridge integration and live e2e. | Mock in CI; live test opt-in with a dedicated test token. |
@@ -304,6 +323,7 @@ Every requirement below is in the **full release scope**. The phase column in
 | O-008 | How much of the full transcript should restore inject? | Token limits vs recovery completeness. | Pointers + structured summaries by default; full excerpts on explicit `--full`. |
 | O-009 | Is local web UI single-user only, or does it need LAN access? | Security model. | Loopback-only default; LAN requires explicit opt-in and auth. |
 | O-010 | What is the Roost integration contract in concrete terms? | Avoid speculative implementation. | Interface stub + docs only; no live calls. |
+| O-014 | How are uncommitted-code artifact bytes transported/synced (Git bundle in state repo, Git LFS, external store, or metadata-only)? | Restore cannot be complete without bytes; affects privacy and size. | Manifest always synced; bytes only via an explicit transport. Missing bytes are reported as incomplete. Decision required. |
 
 ## 8. Traceability to PRD pain points
 
@@ -313,7 +333,7 @@ Every requirement below is in the **full release scope**. The phase column in
 | Cross-device context loss | REQ-RST-001..010, REQ-SY-001..011 |
 | Goal drift | REQ-ST-001, REQ-ST-004, REQ-ST-010 |
 | No tree visualization | REQ-ST-001..012, REQ-UI-004 |
-| Secret leakage | REQ-VT-001..010, REQ-SEC controls |
+| Secret leakage | REQ-VT-001..010, REQ-SEC-001..007 |
 | Subscription/limit reuse | **Out of scope** (model routing; NG-001) |
 | Multi-agent config fragmentation | REQ-CFG-001..007, REQ-AD-002..004 |
 | Protocol incompatibility | MCP is the protocol boundary; Anchor does not rebuild it (D-006) |

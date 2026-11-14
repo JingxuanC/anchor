@@ -13,7 +13,7 @@ opened or copied, no token was printed, and no undocumented API was used.
 | `gh api user` | `login=JingxuanC`, `type=User` | Account identity confirmed. |
 | `gh repo view JingxuanC/anchor` | GraphQL: “Could not resolve to a Repository with the name 'JingxuanC/anchor'.” (exit 1) | No repository named `anchor` is accessible to this token under this account. A 404/GraphQL miss is **not** definitive proof that no repository exists; it may also mean the token cannot see it. |
 | `gh repo list JingxuanC --limit 1000` + case-insensitive `anchor` filter | No matching repository returned | Consistent with the lookup, but still limited to repositories visible to this token. |
-| Repo creation API | Not attempted | Creation, billing/plan eligibility, and actual write permission remain unverified by design. |
+| Repo creation API | Not attempted | Creation, billing/plan eligibility, and actual write permission remain unverified by design. Direct user approval has **not** been received in this conversation. |
 | Existing `roost-infra/anchor` check (earlier read-only) | Not resolvable | No visible org repo conflict; not relevant to the requested owner. |
 
 **Conclusion:** the account and scope look suitable for a private repository,
@@ -76,7 +76,8 @@ gh pr create --draft --base main --head design/baseline \
 ```
 
 If the repository is created with auto-init, the first PR contains only the
-design documents and no application code. Product implementation starts only
+design documents and no application code. The architect review is recorded in
+`docs/08-design-review-response.md`; it is not user approval. Product implementation starts only
 after the design review and open-decision approvals.
 
 ## 4. Current local state

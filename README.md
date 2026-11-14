@@ -58,6 +58,7 @@ configuration and secret *references* only.
 | `docs/05-acceptance-mapping.md` | Requirement → unit/integration/e2e/security test mapping |
 | `docs/06-decisions-and-open-questions.md` | Confirmed decisions vs proposals vs blockers |
 | `docs/07-repo-bootstrap.md` | GitHub verification result and required approvals |
+| `docs/08-design-review-response.md` | Architect P0/P1 review findings and point-by-point disposition |
 | `acceptance/matrix.yaml` | Machine-readable requirement/test coverage plan |
 
 ## Provenance

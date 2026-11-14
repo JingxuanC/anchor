@@ -97,6 +97,12 @@ correction is a new event.
   "correlation_id": "task_...",
   "causation_id": "evt_...",
   "expected_revision": 3,
+  "base_revision": 3,
+  "causal_parents": ["01J...previous-event"],
+  "device_seq": 42,
+  "event_hash": "sha256:...",
+  "lease_id": "lease_01J...",
+  "fencing_token": 4,
   "payload": {}
 }
 ```
@@ -169,7 +175,7 @@ Rules:
   "id": "node_01J...",
   "type": "decision",
   "goal_id": "goal_01J...",
-  "parent_id": null,
+  "parent_id": "goal_01J...",
   "title": "Use event sourcing",
   "body": "Append-only events + rebuilt projections.",
   "decision": {
@@ -206,18 +212,52 @@ Statuses: `todo`, `in_progress`, `done`, `blocked`, `abandoned`.
 1. Each non-goal node has exactly one parent.
 2. No cycles; parent depth is bounded by a configured maximum.
 3. A branch forks from a goal/decision and cannot silently become the main line.
-4. Status transitions are validated:
-   `todo → in_progress → done|blocked|abandoned`,
-   `blocked → in_progress|abandoned`,
-   `done → in_progress` only with an explicit reopen event.
-5. `done` requires at least one evidence reference or a recorded
-   `user_override`.
-6. `user_confirmed` provenance can only be set by an event with
-   `actor.kind == "user"` (CLI interactive or explicit `--confirm`).
+4. Status transitions are type-specific and validated:
+   - `goal`: `in_progress|blocked|abandoned`; done is not a goal status.
+   - `decision|task|question`: `todo → in_progress → done|blocked|abandoned`;
+     `blocked → in_progress|abandoned`; `done → in_progress` only with an
+     explicit reopen event.
+   - `branch`: `todo|in_progress|done|abandoned`; `done` means merged; abandoning
+     does not delete the fork.
+   A goal may start `in_progress` at creation; the transition table does not
+   force it through `todo`.
+5. `done` (decision/task) requires at least one evidence reference or a recorded
+   user override; branch done requires a merge/abandon event.
+6. `user_confirmed` requires a local user attestation event
+   (`actor.kind=user`, `attestation=tty_confirm|ui_session|signed_cli`). An
+   agent event cannot set it, even if it claims `actor.kind=user`; the replay
+   validates the attestation method and local session token/signature.
 7. Tombstones remain in history; a tombstoned node cannot be edited until
    restored by an explicit event.
 
-## 5. Ownership and concurrency
+## 5. Ownership, deterministic replay and mutable authority
+
+### 5.1 Event ordering is causal, not clock-based
+
+- `event_id` is a unique sortable ULID but is **not** authoritative order.
+- `device_id` + `device_seq` gives per-device sequence.
+- `causal_parents` lists the events this event causally follows; replay builds
+  a DAG and topologically sorts it, breaking ties by `event_id` only for
+  deterministic output.
+- `base_revision` is the revision the event observed; `expected_revision` is the
+  revision it requires. Wall-clock timestamps are descriptive.
+- `event_hash` covers the canonical event body; a mismatch quarantines the
+  event.
+
+### 5.2 Same-revision concurrency and conflicts
+
+If two causally concurrent events require the same `expected_revision`:
+
+1. Neither event is applied.
+2. A conflict record references both events, their devices/actors, and payloads.
+3. The projection marks the node `conflicted` at the base revision.
+4. Resolution is a new `conflict_resolved` event with `causal_parents` pointing
+   at both sides and a new revision; the chosen/merged payload is explicit.
+
+No “last writer wins”, no silent field merge for structural or deletion
+conflicts, and no clock-based ordering.
+
+### 5.3 Ownership and fencing
 
 ```json
 {
@@ -225,6 +265,7 @@ Statuses: `todo`, `in_progress`, `done`, `blocked`, `abandoned`.
   "node_id": "node_01J...",
   "owner": {"kind": "agent", "agent": "codex", "session_id": "..."},
   "fencing_token": 4,
+  "prior_lease_id": "lease_...",
   "acquired_at": "...",
   "expires_at": "...",
   "heartbeat_interval_seconds": 30,
@@ -232,15 +273,32 @@ Statuses: `todo`, `in_progress`, `done`, `blocked`, `abandoned`.
 }
 ```
 
-- Acquiring a lease is an event; a new token increments the fencing token.
-- Every mutation to an owned node includes the token and expected revision.
-- Stale/expired leases can be taken over with an audited event; old tokens are
-  rejected even if the old process wakes up later.
-- Ownership is per active task, not per workspace; multiple agents may work on
-  different branches concurrently.
-- The UI shows owner, heartbeat age and expiry.
-- Sync does not merge active ownership as a normal field; conflicts produce a
-  `sync_conflict` requiring a takeover decision.
+- A takeover references the prior lease and increments the token; the event is
+  audited.
+- Two concurrent takeovers of the same prior lease are a conflict requiring
+  resolution; a higher token alone does not win.
+- Every owned-node mutation carries `lease_id` + `fencing_token`; replay accepts
+  it only if that lease is the unique active lease at the event's causal point.
+- Stale writes are rejected; offline events from a stale lease are isolated as
+  conflicts, not applied.
+- Ownership is per-node; different branches may have different owners. Sync
+  never silently merges active leases.
+
+### 5.4 Mutable authority merge matrix
+
+Event union alone is insufficient for mutable files. Every authority has a
+declared canonical representation and merge policy:
+
+| File/authority | Canonical source | Merge rule | Conflict behavior |
+|---|---|---|---|
+| `manifest.json` | `workspace_created` / `manifest_updated` events | Scalar fields merge if independently changed; same-field concurrent edits conflict. | Conflict record; manifest projection stays at base until resolved. |
+| `config/anchor.toml` + rules | `config_updated` events; file edits are ingested with a base hash | Three-way, key-level merge; user content outside managed blocks is preserved. | Same-key concurrent edits or unparseable files conflict; no silent overwrite. |
+| `vault/refs.json` | `secret_ref_added/removed/rotated` events; projection only | Merge by ref name/provider/key ID; values never sync. | Same name mapped to different provider/key conflicts; user resolves. Keychain values are device-local. |
+| `sessions/<id>.json` | `session_started/ended` + capture events | Merge by session/event ID; append-only ranges. | Same session ID with different content is an integrity conflict. |
+| `handoff/<id>.json` | Immutable `handoff_prepared` event | No merge; content hash must match. | Hash mismatch quarantines; never auto-merge. |
+| `sync/state.json` | Local per-device state | Not synced/merged. | N/A |
+| `projections/*` | Derived from events | Regenerated. | Never line-merged; conflict state is rendered. |
+| `evidence/*.json` | Immutable event/evidence hash | No merge; corrections are new evidence. | Hash mismatch quarantines. |
 
 ## 6. Evidence
 
@@ -297,8 +355,10 @@ Rules:
   "next_steps": ["..."],
   "open_questions": [{"id": "q_...", "question": "...", "status": "open"}],
   "evidence": [{"id": "ev_...", "verified": true}],
+  "recovery_status": "complete|partial|missing_artifacts|stale_code",
+  "artifact_availability": "bytes_present|metadata_only|missing",
   "code_state": {
-    "repo_root": ".",
+    "repo_ref": "workspace://repo", 
     "branch": "feat/x",
     "head": "abc123...",
     "dirty": true,
@@ -306,8 +366,8 @@ Rules:
     "unstaged_diff_sha256": "...",
     "untracked_manifest_sha256": "...",
     "base_commit": "def456...",
-    "bundle": {"path": "artifacts/<sha256>.bundle", "sha256": "..."},
-    "patch": {"path": "artifacts/<sha256>.patch", "sha256": "..."},
+    "bundle": {"artifact_id": "sha256:...", "transport": "explicit", "sha256": "..."},
+    "patch": {"artifact_id": "sha256:...", "transport": "explicit", "sha256": "..."},
     "changed_files": ["..."],
     "submodules": [{"path": "...", "status": "..."}]
   },
@@ -345,10 +405,12 @@ Rules:
   "started_at": "...",
   "ended_at": null,
   "transcript": {
-    "kind": "external_path",
-    "path": "/home/user/.codex/sessions/...",
+    "kind": "opaque_ref",
+    "device_id": "dev_...",
+    "ref": "local-transcript:...",
     "sha256_at_capture": "...",
-    "copy": "none"
+    "copy": "none",
+    "resolution": "device-local mapping in .anchor/local/; missing on another device"
   },
   "message_range": {"first_id": "...", "last_id": "..."},
   "summary": {
@@ -389,7 +451,13 @@ Rules:
     "outcome": "...",
     "task_tag": "..."
   },
+  "causal_write_id": "sha256(workspace|decision|outcome|relation|sorted(evidence))",
   "idempotency_key": "causal:node:...",
+  "tool_contract": {
+    "discovered_from": "tools/list",
+    "search_role": "<validated tool name or null>",
+    "write_role": "<validated tool name or null>"
+  },
   "created_at": "..."
 }
 ```
@@ -463,6 +531,24 @@ backend = "auto"              # keychain | encrypted-file | auto
 - Secret access emits an audit event with the ref name and purpose, never the
   value.
 
+
+### 10.1 Skills install and activation
+
+- Skills are source artifacts in `config/skills/<name>/SKILL.md` (plus optional
+  scripts/references), with a manifest of supported adapters.
+- `anchor skills plan|apply|diff` renders each adapter's expected layout:
+  Claude Code skills/plugin layout, Codex `.agents/skills/<name>/`, Gemini
+  extension skills (or a documented fallback). Placement is adapter-specific;
+  no cross-agent assumption.
+- Activation is adapter-dependent: a skill may be model-discovered, explicitly
+  invoked, or unsupported. The capability descriptor records
+  `skills.mode=auto|command|unsupported`; the CLI must not claim activation
+  where the adapter only supports file placement.
+- Installation is idempotent, preserves user files, records hashes and supports
+  uninstall/rollback.
+- Secrets in skills are references; scanning applies to skill files and any
+  generated artifact.
+
 ## 11. Deletion, tombstones and conflicts
 
 - `node_tombstoned` is an event; projections mark the node deleted.
@@ -505,5 +591,5 @@ backend = "auto"              # keychain | encrypted-file | auto
 | O-011 | One active goal per workspace or multiple concurrent goals? | Multiple goals supported; one active for restore. |
 | O-012 | Are branch nodes first-class in the tree or a separate DAG? | First-class nodes with `forked_from`/`merge_target`. |
 | O-013 | Should `projections/` be committed or gitignored? | Commit `TREE.md` for review; gitignore `state.json`. |
-| O-014 | How large can synced artifacts be, and where do bytes go? | Manifest in Git; bytes in a configured artifact store, size-capped. |
+| O-014 | How are uncommitted-code artifact bytes transported/synced (Git bundle in state repo, Git LFS, external store, metadata-only)? | Manifest always syncs; bytes require an explicit transport. Missing bytes = `recovery_status=incomplete`, never complete. User decision required. |
 | O-015 | Should events be signed? | Optional per-device signing; verify if configured. |

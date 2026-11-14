@@ -1,9 +1,15 @@
 # Adapter Capability Matrix
 
-**Verified against official documentation on 2026-11-15.** Capabilities change
-quickly; Anchor detects the installed CLI version at runtime and records the
-detected capability descriptor. The matrix is a design input, not a promise that
-every version supports every row.
+**Documentation snapshot: 2026-11-15.** Capabilities change quickly; Anchor
+detects the installed CLI version at runtime and records the detected
+capability descriptor. The matrix is a design input, not a promise that every
+version supports every row.
+
+**Evidence grades:** `D` = documented in official docs but not executed here;
+`V` = runtime-verified in this environment with the recorded version; `S` =
+needs an adapter spike before it can be claimed. No row is `V` yet except the
+presence of Claude Code 2.1.325 itself. In particular, hook timeouts and context
+limits below are `D`, not established runtime facts.
 
 Sources:
 
@@ -37,13 +43,43 @@ Sources:
 | MCP transports | stdio, HTTP (streamable-http alias), SSE (fallback), WebSocket | stdio, HTTP | stdio, SSE, streamable HTTP | stdio/HTTP via SDK |
 | Tool naming | `mcp__<server>__<tool>`; plugin names include plugin | `mcp__<server>__<tool>`-style matchers in hooks; verify at runtime | `mcp_{server}_{tool}`; avoid underscores in server names | N/A |
 | Rules / instructions | `CLAUDE.md`, `.claude/rules/`, imports; managed blocks are Anchor's target | `AGENTS.md` (global/project/nested; no `@import`; nearest wins) | `GEMINI.md`, extension `contextFileName` | `.anchor/instructions.md` + user's own file |
+| Skills install/activation | File/plugin/skill layouts; activation model-specific | `.agents/skills/<name>/SKILL.md`; model-discovered | Extension `skills/<name>/SKILL.md`; adapter-specific | Manual files; activation not assumed |
 | Config precedence | Managed > CLI > project local > shared project > user; list keys merge | Global `~/.codex/config.toml`, project `.codex/config.toml`, profiles, trust per project | Project > user > system > extensions | Anchor config only |
 | Secrets in settings | Keychain/credential helpers used by Claude/MCP OAuth; env expansion can leak if misused | MCP OAuth credential store (`auto/file/keyring`), `env_vars` | Extension `settings` with `sensitive` stored in system keychain; host env filtered | Anchor vault; no secret in generated config |
 | Session resume/fork | Native resume/fork; hooks expose `SessionStart` sources `resume`/`fork` | Resumed/forked sessions documented (`[tui] resume_cwd`, history) | Session lifecycle hooks; verify resume semantics in spike | `anchor restore` recreates context manually |
 | Hook trust | Project settings/hooks load after workspace trust; `.mcp.json` approval prompts | Project `.codex/` hooks require project trust; `/hooks` review/trust | Project settings have their own trust model; MCP `trust` defaults false | Anchor installer must explain trust prompts |
 | Context/output limits | `additionalContext`/stdout capped at 10,000 chars; oversized saved to file + preview | `additionalContext` ~2,500 tokens default; `additionalContextLimit` override | Hook timeout default 60,000 ms; context schema to verify | Anchor packet size budget |
-| Hook timeout | 600 s default for command/http/mcp_tool; 30 s prompt; 60 s agent; SessionEnd 1.5 s shared | 600 s default; SessionEnd/Interrupt 1 s cap 3 s | 60,000 ms default, configurable | `anchor wrap` no fixed hook budget |
+| Hook timeout | D: 600 s default for command/http/mcp_tool; 30 s prompt; 60 s agent; SessionEnd 1.5 s shared. Runtime spike required. | D: 600 s default; SessionEnd/Interrupt 1 s cap 3 s. Runtime spike required. | D: 60,000 ms default, configurable. Runtime spike required. | `anchor wrap` no fixed hook budget |
 | Blocking semantics | exit 2 blocks where supported; exit 1 is not policy; malformed JSON is non-blocking | exit 2 blocks supported events; Stop/SubagentStop success requires JSON | exit 0 parses JSON; exit 2 blocks target; other codes warn | Anchor policy enforced by wrapper/CLI exit code |
+
+
+### 1.1 Evidence grades and current status
+
+| Area | Grade | Current evidence | Needed |
+|---|---|---|---|
+| Claude Code hook events/JSON | D | Official docs retrieved 2026-11-15 | Real hook round-trip in Claude Code 2.1.325 |
+| Claude Code timeouts/context cap | D | Official docs | Measure in a real hook spike |
+| Codex hook/config shapes | D | Official docs/recorded fixtures | Real Codex install + trust/hook spike |
+| Codex timeouts/context cap | D | Official docs | Runtime spike |
+| Gemini hook/config shapes | D | Official docs | Real Gemini install + hook spike |
+| Gemini timeouts/context parsing | D | Official docs | Runtime spike; exact context JSON fields need verification |
+| MCP registration formats | D | Official docs | Install/render + real agent MCP connection test |
+| Skills activation | S | Docs differ by adapter | Spike per adapter; never assume auto-activation |
+
+### 1.2 Enforcement capabilities (drives fail-open vs fail-closed)
+
+| Capability | Claude Code | Codex CLI | Gemini CLI | Generic wrapper |
+|---|---|---|---|---|
+| Block prompt before model | Yes (`UserPromptSubmit` exit 2 / decision block) | Yes (`UserPromptSubmit`) | Yes (`BeforeAgent`) | Wrapper can reject before launch |
+| Block/deny tool call | Yes (`PreToolUse`) | Yes (`PreToolUse`) | Yes (`BeforeTool`) | Only if wrapped/MCP-mediated |
+| Inject context | Yes | Yes | Yes | Rules file/printed packet |
+| Capture without blocking | Yes | Yes | Yes | Wrapper transcript/stdin capture |
+| Enforcement wording | `enforced` where hook can block; capture still `fail-open` | same | same | `enforced` only for wrapped/MCP writes |
+
+Anchor must record `policy_enforcement = enforced|advisory|unavailable` per
+workspace/adapter. A passive capture failure never blocks the agent; a required
+pre-write verification is only claimed as enforced when a blocking hook,
+wrapper, or Anchor MCP write path exists.
 
 ## 2. Chosen integration strategy per adapter
 

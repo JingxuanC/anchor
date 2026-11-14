@@ -29,7 +29,7 @@ See `docs/00-requirements-baseline.md` D-001..D-016. Summary:
 | P-002 | Event-sourced canonical state with rebuildable projections. | Git-friendly merges, audit, tombstones, concurrency. | `[I]` proposed |
 | P-003 | Local-first; causal-memory and Git sync optional/degradable. | Core work must not depend on network. | `[I]` proposed |
 | P-004 | Additive causal links (`proposed` → `confirmed`) instead of auto-conclusions. | Satisfies D-007. | `[I]` proposed |
-| P-005 | Dedicated state Git repo/remote recommended over committing `.anchor/` to the code repo. | Privacy, fewer code-repo conflicts. | `[?]` O-001 |
+| P-005 | Present dedicated state Git repo/remote as a **recommendation**, not a selected default. | Privacy, fewer code-repo conflicts. | `[?]` O-001; user decides |
 | P-006 | OS keychain first; encrypted-file fallback explicit. | Native security; headless environments need a fallback. | `[?]` O-006 |
 | P-007 | Loopback-only web UI with one-time token; LAN is opt-in. | Least privilege. | `[?]` O-009 |
 | P-008 | Git bundle + patch manifest for uncommitted-code handoff. | Binary-safe + reviewable. | `[?]` O-007 |
@@ -43,7 +43,7 @@ The authoritative table is in `docs/00-requirements-baseline.md` section 7
 | ID | Decision needed | Blocks |
 |---|---|---|
 | O-001 | Sync topology: project repo vs dedicated state repo/orphan branch. | Sync implementation, privacy model, artifact storage. |
-| O-002 | Release-blocking platforms/architectures. | Packaging matrix and keychain e2e. |
+| O-002 | Architectures within macOS/Linux/Windows; all three OSes are release-blocking full acceptance. | Packaging, install/uninstall, keychain and real e2e for each OS. Windows is not optional. |
 | O-003 | Supported agent CLI versions. | Adapter compatibility claims. |
 | O-004 | Whether `.anchor/` may be committed to the project repo. | Default workspace behavior. |
 | O-005 | causal-memory MCP endpoint/tool contract/test-account policy. | Bridge integration and live e2e. |
@@ -122,7 +122,11 @@ The user (not another agent's relay) must confirm each item before the action:
 | Cross-platform keychain gaps | Medium | Medium | Explicit fallback, platform matrix, label unsupported. |
 | False “working” demo with mocks | Medium | High | Mandatory real/recorded/fake labels; no mock claims. |
 
-## 8. Current status
+## 8. Design-review response
+
+Architect review findings and point-by-point dispositions are in `docs/08-design-review-response.md`. The review is not user approval for repository creation or scope changes.
+
+## 9. Current status
 
 - Design baseline authored locally at `/workspace/anchor` on branch
   `design/baseline`.

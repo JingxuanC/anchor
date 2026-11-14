@@ -131,8 +131,10 @@ type Adapter interface {
 
 - Adapters are thin: they translate the agent's documented hook/context/MCP
   formats into Anchor events and render Anchor config into the agent's files.
-- Capabilities are data (`hooks`, `context_injection`, `mcp_stdio`,
-  `mcp_http`, `rules_file`, `transcript_path`, `resume`, `fork`, limits).
+- Capabilities are data (`hooks`, `context_injection`, `can_block_prompt`,
+  `can_block_tool`, `mcp_stdio`, `mcp_http`, `rules_file`, `transcript_path`,
+  `resume`, `fork`, limits). Enforcement is derived from these capabilities and
+  reported as `enforced|advisory|unavailable`.
 - `GenericAdapter` covers manual `anchor capture`/`anchor restore` and
   `anchor wrap` for agents without reliable hooks.
 - Real adapters vs mocks are labeled in tests and `doctor` output.
@@ -160,12 +162,16 @@ type Adapter interface {
 
 - Streamable HTTP MCP client using the official SDK.
 - Token from vault or an explicit env var; never logged.
-- Tool discovery via `tools/list`; Anchor exposes a curated subset.
-- Reads: `search_memory` (and any discovered read-only tools explicitly
-  allowlisted).
-- Writes: `record_decision` (and discovery of equivalent write tools); payload
-  includes decision, outcome, relation, task tag, evidence IDs and idempotency
-  key.
+- Tool discovery via `tools/list`; **tool names are not hardcoded**. Anchor
+  ships a capability mapping (`search`/`write` roles) that is validated against
+  the live `tools/list`; a missing/renamed tool degrades explicitly. Names such
+  as `search_memory`/`record_decision` are candidates only, not the contract.
+- Reads: discovered read/allowlisted tools mapped to the search role.
+- Writes: discovered write/allowlisted tools mapped to the write role; payload
+  includes decision, outcome, relation, task tag, evidence IDs and a
+  deterministic cross-device idempotency key.
+- Anchor's MCP server exposes convenience memory tools, but agents may call the
+  causal-memory MCP server directly. Anchor is **not** a mandatory memory proxy.
 - Failure policy:
   - Timeouts + bounded retries with jitter; idempotency key stable.
   - Circuit breaker; `doctor`/UI show degraded state.
@@ -244,6 +250,19 @@ type RuntimeProvider interface {
 
 ## 5. Key flows
 
+### 5.0 SessionEnd budget and handoff preparation
+
+`SessionEnd` is lightweight and must fit the adapter budget (Claude Code shares
+1.5 s; Codex caps at 3 s; Gemini has its own timeout). It writes only a local
+marker/checkpoint event and schedules no network or large artifact work.
+
+Heavy handoff preparation (`git bundle`, patch, transcript hashing, artifact
+export, sync) runs as an explicit `anchor handoff prepare` or a post-session
+observable job with status `pending|running|complete|failed|timed_out`. A
+timeout or interrupted process is never reported as complete; restore lists the
+missing artifacts and marks `recovery_status=incomplete`.
+
+
 ### 5.1 Session start / restore
 
 ```text
@@ -292,32 +311,104 @@ task end   → propose_outcome(decision, outcome, evidence_ids, idempotency_key)
 user/evidence verification → status=confirmed (or rejected)
 ```
 
-## 6. Concurrency and consistency
+## 6. Concurrency, deterministic replay and consistency
 
-- **Local write lock**: one process mutates the event log at a time; hooks use
-  short critical sections.
-- **Ownership lease**: `owner_id`, `lease_id`, `fencing_token`, `expires_at`,
-  heartbeat. Mutations include the token; stale tokens are rejected.
-- **Per-node revision**: events carry `expected_revision`; mismatch returns a
-  conflict with the current state.
-- **Sync merge**: event union; projections regenerate; structural conflicts
-  become explicit records. Deletion is tombstone-based.
-- **Idempotency**: every mutating command accepts/generates an idempotency key;
-  duplicate keys return the original result.
-- **Clock skew**: ordering uses event ULIDs + device sequence; wall-clock is
-  descriptive, not authoritative.
+### 6.1 What is authoritative
 
-## 7. Error handling and degraded modes
+`event_id` is a unique sortable ULID, but **ULID/time order is not an
+authoritative replay order**. Authoritative order comes from causal metadata:
+
+- `event_id`: unique identity only.
+- `device_id` + `device_seq`: per-device monotonic sequence.
+- `causal_parents`: event IDs this event causally follows (at least the event
+  that established the base revision).
+- `base_revision` / `expected_revision`: the node revision the event expects.
+- `event_hash`: SHA-256 of the canonical event body.
+- `lease_id` + `fencing_token`: required for owned-node mutations.
+
+Replay builds a DAG, performs a deterministic topological sort (ties broken by
+`event_id`), and never uses wall-clock time to decide precedence. Clock values
+are descriptive only.
+
+### 6.2 Same-revision concurrent events
+
+Two events that target the same `expected_revision` without a causal relation
+are **concurrent siblings**, not sequential writes.
+
+- The node stays at its base revision.
+- A `conflict` record is created with both event IDs, devices, actors and
+  payloads.
+- Neither event is applied silently.
+- Resolution is a new event (`conflict_resolved`) that references the
+  conflicting events and the chosen/merged payload; it advances the revision.
+- Projections surface the node as `conflicted` until resolution.
+- The local write path prevents most of these with the workspace lock and
+  optimistic checks; the conflict path covers offline/sync concurrency.
+
+### 6.3 Fencing and ownership conflicts
+
+- A lease is acquired with a `lease_id` and a `fencing_token` that is monotonic
+  within that lease lineage.
+- A takeover references the prior `lease_id`, increments the fencing token, and
+  is recorded as an event.
+- Two concurrent takeover events for the same prior lease are a conflict, not a
+  “highest token wins” race. A user must choose or a later explicit event must
+  resolve the lineage.
+- A mutation is applied only if its lease is the unique active lease at its
+  causal point. Stale tokens are rejected; events from an unresolved concurrent
+  lease are isolated as conflicts.
+- Ownership is per-node; different branches may have different owners.
+
+### 6.4 Deterministic projection
+
+Given the same event set and conflict-resolution events, every device must
+produce byte-identical projections:
+
+1. Validate event hashes and schemas; quarantine invalid events.
+2. Build the causal DAG; reject cycles as integrity errors.
+3. Topologically sort with the documented tie-breaker.
+4. Apply non-conflicting events in order.
+5. Materialize conflict records for concurrent same-revision events.
+6. Serialize projections with stable key order and no machine-local data.
+
+### 6.5 Mutable authority files
+
+Manifest, config, vault refs, session metadata and handoff manifests are not
+allowed to be unmergeable mutable authority. Their canonical changes are events;
+the files are projections or event-tracked inputs with three-way merge rules
+(detailed in `docs/02-data-model.md` §5). A plain event union is not enough for
+these files; each has a declared merge/conflict policy.
+
+### 6.6 Sync merge
+
+- Event files are immutable; Git merge is a union of event files.
+- Projections are regenerated, never line-merged.
+- Structural conflicts (reparent, delete-vs-edit, ownership, same-revision
+  siblings) become conflict records.
+- Deletion is a tombstone event; no silent resurrection.
+- No force-push; remote history is validated as untrusted input.
+
+## 7. Error handling, degraded modes and enforcement boundaries
+
+Two paths must be separated:
+
+| Path | Default | Why |
+|---|---|---|
+| **Capture** | **Fail-open**: log a gap, keep the agent working, surface `capture_state=partial` in `doctor`/handoff. | Losing a capture event must not block the user's coding session. |
+| **Mutation policy** | **Fail-closed where the adapter can block**; otherwise `advisory` or `unavailable` and visibly labeled. | Anchor must not claim to enforce pre-write verification on an adapter that cannot intercept writes. `anchor wrap`/MCP-mediated writes can be enforced; passive hooks that cannot deny cannot. |
 
 | Failure | Behavior |
 |---|---|
-| causal-memory offline | Queue bounded writes; reads use stale cache; UI/doctor show degraded; core continues. |
+| causal-memory offline | Bounded write queue; stale/no lessons allowed; UI/doctor show degraded; core continues. |
 | Git remote unavailable | Local work continues; sync status shows pending/offline; no blocking capture. |
-| Hook timeout | Agent continues (fail-open) unless a policy hook is explicitly configured to block; error logged. |
+| Hook timeout | Capture gap logged; agent continues unless the hook is a policy hook with blocking capability. |
+| Adapter cannot block | `policy_enforcement=advisory|unavailable`; handoff/UI warns; `anchor wrap`/MCP tool path can enforce. |
 | Adapter missing | `anchor wrap`/manual capture/restore; `doctor` explains. |
 | Vault unavailable | Secret-dependent actions fail closed; tree/capture still work. |
-| Corrupt event | Quarantine file, continue replaying valid events, `doctor` reports; no silent deletion. |
+| Corrupt event | Quarantine, continue valid replay, `doctor` reports; no silent deletion. |
 | Schema mismatch | Refuse writes, offer `anchor migrate --dry-run`; back up first. |
+| Handoff artifact bytes missing | `recovery_status=incomplete`; restore lists missing artifacts and refuses to claim full recovery. |
+| SessionEnd timeout | Lightweight marker remains; handoff preparation stays `pending|incomplete`; never marked complete. |
 
 ## 8. Repository layout (proposed)
 

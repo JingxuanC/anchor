@@ -135,6 +135,32 @@ IDs are all covered, not a sample.
 | REQ-NFR-001..007 | `PKG-NFR-001`, `PERF-NFR-002`, `IT-NFR-003`, `SCAN-NFR-004..005`, `STATIC-NFR-006`, `A11Y-UI-001` | Platform builds; budgets reported; offline core; no telemetry; retention; static analysis; accessibility. | real/fake mix labeled |
 | REQ-OPS-001..008 | `PKG-OPS-001..003`, `CI-OPS-004`, `DOC-OPS-005`, `SBOM-OPS-006`, `SCAN-OPS-007`, `UT-RT-001` | Checksums/signatures; migrate/rollback/uninstall; CI gates; docs; SBOM; no payments/keys; Roost boundary. | real packaging where possible |
 
+
+## 4.1 Design-review addendum (P0/P1 mapping)
+
+These rows respond to the architect review. They are planned tests, not
+implemented tests.
+
+| Review item | Requirements | Planned tests | Acceptance criterion |
+|---|---|---|---|
+| Deterministic replay + same-revision conflicts | REQ-CONC-005, REQ-ST-007..009 | `UT-REPLAY-001`, `IT-CONC-005`, `SEC-REPLAY-001` | DAG/topological replay is deterministic; concurrent same-revision events produce a conflict, not a winner; ULID/clock is not authoritative. |
+| Fencing-token conflict | REQ-CONC-001..005 | `IT-CONC-002`, `SEC-CONC-002` | Concurrent takeovers conflict; stale tokens rejected; no highest-token auto-win. |
+| Mutable authority merge | REQ-WS-002..003, REQ-CFG-001..006, REQ-VT-002..006 | `IT-MERGE-001..003` | Manifest/config/vault refs/session/handoff have declared merge/conflict behavior; event union alone is insufficient. |
+| Artifact byte transport/missing bytes | REQ-SY-012, REQ-RST-007..009, O-014 | `IT-ART-001..002`, `E2E-HANDOFF-MISSING` | A manifest without verified bytes yields `recovery_status=incomplete` and is never called full recovery. |
+| Capture fail-open vs write-gate enforcement | REQ-AD-013, REQ-RST-003 | `IT-ENF-001..002`, `CT-ENF-001` | Capture failure does not block; write gate is `enforced` only with blocking capability, otherwise labeled advisory/unavailable. |
+| SessionEnd lightweight vs handoff prep | REQ-RST-001..007, REQ-AD-011 | `E2E-SESSIONEND-001`, `PERF-SESSIONEND-001` | SessionEnd only writes a marker within adapter budget; bundle/network work is observable and timeout never marks complete. |
+| Artifact secret scanning | REQ-SEC-003, REQ-VT-009 | `SEC-SCAN-ART-001..003`, `SEC-BUNDLE-001` | Fake secrets in worktree, untracked files, bundle reachable history or export are caught and never appear in artifacts/sync/logs. |
+| State transitions + parent example | REQ-ST-001..009 | `UT-ST-TRANS-001`, `UT-ST-PARENT-001` | Type-specific transition table matches examples; every non-goal has a parent; goal starts in_progress without violating rules. |
+| Causal tool discovery | REQ-CM-001..010 | `IT-CM-DISCOVERY-001`, `CT-CM-TOOLS-001` | Tool names come from live `tools/list`; missing/renamed tools degrade explicitly; no guessed `search_memory`/`record_decision` contract. |
+| Anchor MCP is not a mandatory memory proxy | REQ-CM-010, REQ-AD-010 | `IT-CM-DIRECT-001` | An agent can use causal-memory MCP directly; Anchor MCP memory tools are optional convenience. |
+| Adapter evidence grading | REQ-AD-001..012 | `CT-AD-EVIDENCE-001` | Every capability row has a grade (`D`/`V`/`S`); timeout/context claims are not `V` without a spike. |
+| User attestation | REQ-ST-013, REQ-EVID-002..004 | `SEC-ST-USER-001`, `IT-ST-ATTEST-001` | Agent cannot self-report `user_confirmed`; TTY/UI/signed local attestation required and audited. |
+| Cross-device causal idempotency | REQ-CM-006, REQ-CM-013 | `IT-CM-IDEMP-001` | Same decision/outcome/evidence set produces the same `causal_write_id` on two devices; duplicate remote write is deduped. |
+| No original absolute paths | REQ-RST-011, REQ-WS-005 | `IT-RST-PATH-001` | Restore works from another device without original absolute paths; missing transcript/artifact is reported, not guessed. |
+| Skills install/activation | REQ-CFG-008, REQ-CFG-001..002 | `IT-SKILLS-001..003`, `CT-SKILLS-001` | Per-adapter install is idempotent; activation mode is recorded; unsupported activation is not claimed. |
+| Invalid REQ-SEC reference | REQ-SEC-001..007 | `SEC-SEC-001..007`, coverage check | Every security requirement has tests; no dangling `REQ-SEC` reference remains. |
+| Windows full acceptance | REQ-NFR-001, O-002/O-018/O-020 | `PKG-WIN-001..003`, `E2E-WIN-001` | Windows build, install/uninstall, keychain and real e2e are release gates; missing runner blocks release, not scope. |
+
 ## 4. Test data policy
 
 - No real user, customer or production data.
@@ -172,6 +198,6 @@ installed in this environment).
 |---|---|---|
 | O-016 | Exact hook latency budget on each platform. | Measure first; target p95 < 150 ms local capture. |
 | O-017 | Minimum agent CLI versions. | Determined by adapter spike; recorded in capability descriptors. |
-| O-018 | Which OS keychain backends are release-blocking. | macOS + Linux Secret Service; Windows build/e2e if runner available. |
+| O-018 | Which OS keychain backends are release-blocking. | macOS, Linux Secret Service and Windows Credential Manager are all release-blocking full-acceptance targets; runner provisioning is a delivery task, not a scope option. |
 | O-019 | Whether live causal-memory tests run in CI. | No; opt-in with a dedicated test token. |
-| O-020 | How to verify Windows packaging/e2e (runner availability). | CI build always; e2e gated and reported. |
+| O-020 | How to provision the Windows runner for required e2e. | Windows build + install/uninstall + keychain e2e are required; a missing runner blocks release, it does not downgrade scope. |

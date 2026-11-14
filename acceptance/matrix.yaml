@@ -1,8 +1,8 @@
 version: 1
 generated_from: "docs/00-requirements-baseline.md"
 generated_at: "2026-11-15"
-status: "planned-design-baseline"
-note: "Test IDs are planned. No product implementation or test has been executed yet. A test ID must be created in the repository before it can satisfy coverage."
+status: "planned-design-baseline-rev2"
+note: "Planned test IDs only. No product implementation or test has been executed. P0/P1 review revisions are design changes, not implemented features."
 requirements:
   "REQ-WS-001":
     requirement: "`anchor init` creates/attaches a workspace in any project; identity and schema version are recorded."
@@ -781,11 +781,109 @@ requirements:
     acceptance: "Planned acceptance: Core Anchor works without Roost; integration is opt-in and feature-flagged. Mapped tests must pass, or an approved limitation must be recorded."
     status: "planned"
     label: "planned-real"
+  "REQ-SEC-001":
+    requirement: "All filesystem inputs are canonicalized and constrained to the workspace; traversal, symlinks/reparse points, absolute paths, drive/ADS and control characters are rejected."
+    source: "`[A]`"
+    tests: ["UT-SEC-001", "IT-SEC-001", "SEC-SCAN-ART-001", "SEC-BUNDLE-001"]
+    acceptance: "Planned acceptance: All filesystem inputs are canonicalized and constrained to the workspace; traversal, symlinks/reparse points, absolute paths, drive/ADS and control characters are rejected. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SEC-002":
+    requirement: "Commands use argv arrays, absolute binaries, minimal env and bounded timeouts; no shell interpolation of untrusted data."
+    source: "`[A]`"
+    tests: ["UT-SEC-002", "IT-SEC-002", "SEC-SCAN-ART-001", "SEC-BUNDLE-001"]
+    acceptance: "Planned acceptance: Commands use argv arrays, absolute binaries, minimal env and bounded timeouts; no shell interpolation of untrusted data. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SEC-003":
+    requirement: "Secret scanning covers capture, generated artifacts, git bundles/patch history, untracked files, export and sync, not only commit/push."
+    source: "`[A]`"
+    tests: ["UT-SEC-003", "IT-SEC-003", "SEC-SCAN-ART-001", "SEC-BUNDLE-001"]
+    acceptance: "Planned acceptance: Secret scanning covers capture, generated artifacts, git bundles/patch history, untracked files, export and sync, not only commit/push. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SEC-004":
+    requirement: "Captured repo/transcript/MCP content is untrusted data; it never changes policy or executes as instructions."
+    source: "`[A]`"
+    tests: ["UT-SEC-004", "IT-SEC-004", "SEC-SCAN-ART-001", "SEC-BUNDLE-001"]
+    acceptance: "Planned acceptance: Captured repo/transcript/MCP content is untrusted data; it never changes policy or executes as instructions. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SEC-005":
+    requirement: "Remote MCP and other network calls enforce HTTPS/host allowlists, timeouts, size limits, schema validation and no secret logging."
+    source: "`[A]`"
+    tests: ["UT-SEC-005", "IT-SEC-005", "SEC-SCAN-ART-001", "SEC-BUNDLE-001"]
+    acceptance: "Planned acceptance: Remote MCP and other network calls enforce HTTPS/host allowlists, timeouts, size limits, schema validation and no secret logging. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SEC-006":
+    requirement: "Git sync uses explicit remotes, no force-push, no credential logging, and validates remote events/paths/artifacts as untrusted input."
+    source: "`[A]`"
+    tests: ["UT-SEC-006", "IT-SEC-006", "SEC-SCAN-ART-001", "SEC-BUNDLE-001"]
+    acceptance: "Planned acceptance: Git sync uses explicit remotes, no force-push, no credential logging, and validates remote events/paths/artifacts as untrusted input. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SEC-007":
+    requirement: "The local web UI binds loopback by default and enforces auth, CSRF, Origin/Host checks and secret-free rendering."
+    source: "`[A]`"
+    tests: ["UT-SEC-007", "IT-SEC-007", "SEC-SCAN-ART-001", "SEC-BUNDLE-001"]
+    acceptance: "Planned acceptance: The local web UI binds loopback by default and enforces auth, CSRF, Origin/Host checks and secret-free rendering. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CFG-008":
+    requirement: "Skills are installed and activated per adapter with idempotent managed files; activation semantics are adapter-specific and never assumed."
+    source: "`[A]`"
+    tests: ["UT-CFG-008", "IT-CFG-008", "E2E-CFG-001"]
+    acceptance: "Planned acceptance: Skills are installed and activated per adapter with idempotent managed files; activation semantics are adapter-specific and never assumed. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-012":
+    requirement: "Artifact byte transport is explicit; a manifest without bytes (or with missing/unverified bytes) is reported as incomplete, never as a full handoff."
+    source: "`[A]`"
+    tests: ["UT-SY-012", "IT-SY-012", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Artifact byte transport is explicit; a manifest without bytes (or with missing/unverified bytes) is reported as incomplete, never as a full handoff. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-RST-011":
+    requirement: "Recovery never depends on the original machine's absolute paths; missing byte artifacts are reported as unrecovered."
+    source: "`[A]`"
+    tests: ["UT-RST-011", "IT-RST-011", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: Recovery never depends on the original machine's absolute paths; missing byte artifacts are reported as unrecovered. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-013":
+    requirement: "Capture failure is fail-open and logged; write-operation policy is fail-closed where the adapter can block, otherwise explicitly `advisory`/`unavailable`, never promised as enforced."
+    source: "`[A]`"
+    tests: ["UT-AD-013", "IT-AD-013", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Capture failure is fail-open and logged; write-operation policy is fail-closed where the adapter can block, otherwise explicitly `advisory`/`unavailable`, never promised as enforced. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-013":
+    requirement: "Causal writes are idempotent across devices via a deterministic write key, not only per-process retry keys."
+    source: "`[A]`"
+    tests: ["UT-CM-013", "IT-CM-013", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Causal writes are idempotent across devices via a deterministic write key, not only per-process retry keys. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CONC-005":
+    requirement: "Concurrent offline events are replayed deterministically with conflict isolation and fencing; ULID/clock order is never authoritative."
+    source: "`[A]`"
+    tests: ["UT-CONC-005", "IT-CONC-005", "SEC-CONC-001"]
+    acceptance: "Planned acceptance: Concurrent offline events are replayed deterministically with conflict isolation and fencing; ULID/clock order is never authoritative. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-013":
+    requirement: "`user_confirmed` provenance requires local user attestation (TTY/UI/signed local action); an agent cannot self-report it."
+    source: "`[A]`"
+    tests: ["UT-ST-013", "IT-ST-013", "E2E-ST-001"]
+    acceptance: "Planned acceptance: `user_confirmed` provenance requires local user attestation (TTY/UI/signed local action); an agent cannot self-report it. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
   "REQ-NFR-001":
-    requirement: "macOS, Linux and Windows support; no platform-specific state in synced data."
+    requirement: "macOS, Linux and Windows are all release-blocking full-acceptance targets (build, install, e2e, keychain where applicable); no platform-specific state in synced data."
     source: "`[A]`"
     tests: ["UT-NFR-001", "IT-NFR-001", "PERF-NFR-002", "SCAN-NFR-004"]
-    acceptance: "Planned acceptance: macOS, Linux and Windows support; no platform-specific state in synced data. Mapped tests must pass, or an approved limitation must be recorded."
+    acceptance: "Planned acceptance: macOS, Linux and Windows are all release-blocking full-acceptance targets (build, install, e2e, keychain where applicable); no platform-specific state in synced data. Mapped tests must pass, or an approved limitation must be recorded."
     status: "planned"
     label: "planned-real"
   "REQ-NFR-002":
@@ -890,41 +988,53 @@ requirements:
 unknowns_and_mock_policy:
   "U-001":
     item: "GitHub repository creation and default-branch write"
-    status: "not attempted; requires direct user approval"
+    status: "not attempted; direct user approval not received in this conversation"
     blocks: "docs/07-repo-bootstrap.md"
   "U-002":
     item: "Real Codex CLI adapter e2e"
-    status: "Codex CLI is not installed in the current environment; contract fixtures only"
+    status: "Codex CLI not installed; contract fixtures only; must be labeled recorded"
     blocks: "adapter e2e gate"
   "U-003":
     item: "Real Gemini CLI adapter e2e"
-    status: "Gemini CLI is not installed in the current environment; contract fixtures only"
+    status: "Gemini CLI not installed; contract fixtures only; must be labeled recorded"
     blocks: "adapter e2e gate"
   "U-004":
     item: "Live causal-memory remote MCP"
-    status: "no live test endpoint/token; CI uses a clearly labeled mock MCP server; live test is opt-in"
+    status: "no live endpoint/token; CI mock only; live test opt-in and clearly labeled"
     blocks: "O-005"
   "U-005":
     item: "Real OS keychain on Linux/Windows"
-    status: "depends on CI runner capabilities; fake backend is labeled, not presented as real"
-    blocks: "O-006"
+    status: "release-blocking full acceptance; current environment not verified; fake backend must be labeled"
+    blocks: "O-006/O-018"
   "U-006":
     item: "GitHub-remote sync e2e"
-    status: "only local bare-repo sync is planned for default CI; remote e2e is opt-in"
+    status: "local bare-repo tests planned; remote e2e opt-in; no remote granted"
     blocks: "O-001"
   "U-007":
-    item: "Windows/macOS packaging execution"
-    status: "build matrix planned; runtime e2e depends on runner availability"
-    blocks: "O-002"
+    item: "Windows acceptance"
+    status: "required full acceptance; runner provisioning is a delivery task, not a scope option"
+    blocks: "O-002/O-020"
   "U-008":
     item: "Go + TypeScript stack approval"
-    status: "proposal P-001, not user-confirmed"
+    status: "proposal P-001; not user-confirmed"
     blocks: "P-001"
   "U-009":
-    item: "Sync topology and whether .anchor/ is committed"
-    status: "open decision O-001/O-004"
+    item: "Sync topology / .anchor committed"
+    status: "open decision; no independent state repo selected"
     blocks: "O-001/O-004"
   "U-010":
     item: "Product implementation and test execution"
     status: "none performed; this is a design baseline only"
     blocks: "design review"
+  "U-011":
+    item: "Artifact byte transport"
+    status: "open O-014; metadata without verified bytes is incomplete, never full recovery"
+    blocks: "O-014"
+  "U-012":
+    item: "Architect review implementation"
+    status: "P0/P1 revisions are documentation only; no code/test claims"
+    blocks: "docs/08"
+  "U-013":
+    item: "Windows/macOS runtime e2e"
+    status: "release-blocking; not executed in this environment"
+    blocks: "O-002"

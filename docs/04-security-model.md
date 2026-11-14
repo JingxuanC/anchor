@@ -42,6 +42,11 @@ Trust rules:
   scripts. Project trust prompts are never bypassed.
 - **Remote MCP is an external service.** Its tool descriptions and outputs are
   untrusted; Anchor validates schemas and never follows embedded instructions.
+- **Capture is fail-open, mutation policy is not.** A capture failure logs a gap
+  and never blocks the agent. A pre-write verification is only `enforced` when
+  the adapter can block the write (hook/wrapper/Anchor MCP path); otherwise it
+  is `advisory` or `unavailable` and must be labeled. Do not promise enforcement
+  a passive hook cannot deliver.
 
 ## 3. Threat model and controls
 
@@ -79,17 +84,39 @@ Trust rules:
      stdin; it is not in the agent prompt, argv, or transcript.
 3. **Redact**: before any event/log/UI write, run exact-value redaction plus
    pattern/entropy scans on captured content and command output.
-4. **Rotate**: write a new value, update the ref metadata, emit an audit event;
+4. **Scan before persistence/transport**: run exact-value and pattern/entropy
+   scans on prompts, tool output, generated artifacts, git bundles (including
+   reachable history), patches, untracked-file manifests, exports and sync
+   payloads. A detected secret aborts the artifact/sync or redacts with an
+   explicit marker; it is never silently included.
+5. **Rotate**: write a new value, update the ref metadata, emit an audit event;
    old value is removed after a configured grace period.
-5. **Revoke**: remove the keychain item, mark the ref revoked, stop injection;
+6. **Revoke**: remove the keychain item, mark the ref revoked, stop injection;
    remote systems are revoked separately by the user.
-6. **Audit**: record ref name, purpose, actor, timestamp, result; never the
+7. **Audit**: record ref name, purpose, actor, timestamp, result; never the
    value or a crackable low-entropy hash.
 
 **No real secrets in tests.** Fixtures use obviously fake values
 (`ANCHOR_TEST_...`), and a CI check rejects strings matching known production
 key prefixes or real test-account tokens. Live causal-memory tests use a
 dedicated, revocable test token supplied by the environment, not committed.
+
+## 4.1 Artifact and sync scanning points
+
+| Point | Scope | Failure behavior |
+|---|---|---|
+| Capture | Prompt/tool payloads before event append | Redact or drop; log a gap. |
+| Handoff prepare | diffs, untracked manifest, bundle/patch bytes, bundle reachable history | Abort artifact; mark `recovery_status=incomplete`; do not sync. |
+| Export | `anchor export` output | Refuse or redact with explicit warning. |
+| Sync | event/artifact payloads before Git write | Abort push; surface finding. |
+| Commit/push | staged/untracked files and bundle objects | Abort; suggest rotation. |
+| Restore/import | downloaded artifacts/events | Quarantine and report; never auto-execute. |
+
+Git bundles contain reachable history, so scanning only the worktree is
+insufficient. The scanner must inspect bundle object contents (or use
+`git verify-pack`/`git cat-file` over the bundle) and untracked files listed in
+the manifest. Tests must use synthetic fake secrets and assert they never appear
+in generated artifacts, exports, sync payloads or logs.
 
 ## 5. Path safety specification
 
@@ -206,7 +233,9 @@ manifests, artifacts or MCP tools must pass through one validator:
 |---|---|
 | Path traversal corpus | All `..`, absolute, drive, ADS, symlink, archive-slip cases rejected. |
 | Command injection corpus | Shell metacharacters in args/secret names never reach a shell. |
-| Secret leak corpus | Fake secret in prompt/tool/file/MCP/UI/log never appears in persisted output or restore packets. |
+| Secret leak corpus | Fake secret in prompt/tool/file/MCP/UI/log never appears in persisted output, restore packets, generated bundle/patch, export, or sync payload. |
+| Artifact/bundle scan | Fake secret in git history reachable from a bundle or in an untracked file aborts the artifact and is reported. |
+| Enforcement boundary | Capture failure does not block the agent; a write gate is `enforced` only when the adapter can block, otherwise labeled `advisory`/`unavailable`. |
 | Prompt injection corpus | Instructions in repo/transcript/MCP memory do not change policy or auto-approve. |
 | MCP hostile server | Redirect, oversized response, bad schema, timeout, 5xx, duplicate write handled safely. |
 | Git hostile history | Malicious events/paths/symlinks/tombstones rejected or conflicted; no force-push. |
