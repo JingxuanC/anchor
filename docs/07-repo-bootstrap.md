@@ -1,103 +1,87 @@
 # Repository Bootstrap and Approval Blockers
 
-**Status:** blocked on explicit user approval. No remote write has been made.
+**Status:** repository verified read-only; local baseline branch prepared. No
+remote write has been made. Pushing the branch or opening a PR still requires
+direct user approval in this chat.
 
 ## 1. Read-only GitHub verification (2026-11-15, CST)
 
-Commands used were normal, authenticated `gh` reads only. No credential file was
+Normal authenticated `gh`/`git ls-remote` reads only. No credential file was
 opened or copied, no token was printed, and no undocumented API was used.
 
 | Check | Result | Interpretation |
 |---|---|---|
-| `gh auth status` | Logged in to `github.com` as `JingxuanC`; token scopes: `gist`, `read:org`, `repo` | The active account is the intended owner. `repo` is the scope normally required to create private repositories. This does **not** prove creation will succeed. |
-| `gh api user` | `login=JingxuanC`, `type=User` | Account identity confirmed. |
-| `gh repo view JingxuanC/anchor` | GraphQL: “Could not resolve to a Repository with the name 'JingxuanC/anchor'.” (exit 1) | No repository named `anchor` is accessible to this token under this account. A 404/GraphQL miss is **not** definitive proof that no repository exists; it may also mean the token cannot see it. |
-| `gh repo list JingxuanC --limit 1000` + case-insensitive `anchor` filter | No matching repository returned | Consistent with the lookup, but still limited to repositories visible to this token. |
-| Repo creation API | Not attempted | Creation, billing/plan eligibility, and actual write permission remain unverified by design. Direct user approval has **not** been received in this conversation. |
-| Existing `roost-infra/anchor` check (earlier read-only) | Not resolvable | No visible org repo conflict; not relevant to the requested owner. |
+| `gh auth status` | Logged in as `JingxuanC`; scopes `gist, read:org, repo` | Account identity confirmed; owner permissions on the repo are reported as `ADMIN`. |
+| `gh repo view JingxuanC/anchor` | `nameWithOwner=JingxuanC/anchor`, `visibility=PRIVATE`, `defaultBranchRef=main`, `isEmpty=false`, `viewerPermission=ADMIN` | Repository exists, is private, and uses `main` as default. |
+| `git ls-remote https://github.com/JingxuanC/anchor refs/heads/main` | `39b6fffdb35511859a82632d174b97ca304e26f5` | Remote `main` matches the reported initialization SHA. |
+| `gh api repos/JingxuanC/anchor/commits/main` | `sha=39b6fff…`, message `Initial commit`, parents `[]` | Confirmed root/initial commit; remote README is part of this commit. |
+| Remote initial README | `# anchor` / `Personal agent workspace for session continuity and causal memory` | Preserved as the first content in the local merged README; the init commit is untouched. |
+| Earlier pre-creation lookup | GraphQL “Could not resolve…” before the repo existed | Historical; superseded by the verified repository above. |
+| Remote write APIs | Not used | No push, PR, branch creation, default-branch write, or settings change was performed in this round. |
 
-**Conclusion:** the account and scope look suitable for a private repository,
-and no accessible `JingxuanC/anchor` was found. I cannot confirm that creation
-will be accepted or that the name is globally free, because creation was not
-attempted and the 404 is not proof of absence.
+**Conclusion:** the repository URL, private visibility, default branch and
+initial commit SHA are verified. The earlier 404 was accurate for that time and
+is no longer the current state.
 
-## 2. Blockers requiring user confirmation
+## 2. Blockers requiring direct user confirmation
 
-### A1. Create the private repository
+### A1. Push the prepared branch and open a draft PR
 
-- Proposed: `gh repo create JingxuanC/anchor --private`.
-- Why approval is needed: this creates a remote, outward-facing resource. A
-  relayed statement from another agent is not treated as direct user approval.
-- Exact question: **“May I create the private repository `JingxuanC/anchor`?”**
+The local branch `design/baseline-mainline` is ready, based on the verified
+initial `main` commit. **Do not treat any relayed approval as authorization.**
+Exact question: **“May I push `design/baseline-mainline` to
+`JingxuanC/anchor` and open a draft PR targeting `main`?”**
 
-### A2. Initialize the default branch
+### A2. Default-branch writes
 
-An empty repository needs an initial default branch before a draft PR can target
-it. Writing that first commit is a write to the default branch and is therefore
-blocked separately.
+- The initialization commit already exists; no new default-branch write is
+  planned.
+- No push to `main`, no force-push, no direct main modification, no merge.
+- If a future bootstrap step needs a default-branch write, it is blocked until
+  separately approved.
 
-Two safe options:
+### A3. Merge and release
 
-- **Option A (GitHub auto-init):** create the repository with an auto-generated
-  `main` README (GitHub writes the default branch), then push
-  `design/baseline` and open a draft PR to `main`.
-- **Option B (local bootstrap):** create an empty repository, push one
-  bootstrap `main` commit containing `README.md` and `.gitignore`, then push
-  `design/baseline` and open a draft PR.
-
-Both require explicit approval. Option A is simpler and makes the initial commit
-visibly GitHub-generated. Exact question: **“May I initialize `main` using
-Option A, or do you prefer Option B?”**
-
-### A3. No direct writes, merges, or force-pushes
-
-- Feature work goes on independent branches and draft PRs.
-- No merge, no force-push, no direct write to `main` after bootstrap.
+- Draft PR only; no merge, no release, no force-push.
 - The architect performs independent acceptance; Anchor does not self-approve.
 
 ### A4. Product/design decisions
 
 Approval of the design baseline does not imply approval of the open decisions in
-`docs/06-decisions-and-open-questions.md` (sync topology O-001, supported
-platforms O-002, agent versions O-003, vault fallback O-006, etc.). Those need
-explicit decisions before implementation.
+`docs/06-decisions-and-open-questions.md` (sync topology O-001, artifact byte
+transport O-014, supported platform architecture O-002, agent versions O-003,
+vault fallback O-006, etc.). Those need explicit decisions before implementation.
 
-## 3. Proposed bootstrap after approval
+## 3. Local mainline preparation (this round)
 
-Only after A1/A2 are approved and the design baseline is reviewed:
-
-```bash
-# Option A, illustrative only; not executed
-gh repo create JingxuanC/anchor --private --description "Anchor agent workspace" --add-readme
-git remote add origin https://github.com/JingxuanC/anchor
-git push -u origin design/baseline
-gh pr create --draft --base main --head design/baseline \
-  --title "docs: Anchor design baseline" --body-file <review-body>
-```
-
-If the repository is created with auto-init, the first PR contains only the
-design documents and no application code. The architect review is recorded in
-`docs/08-design-review-response.md`; it is not user approval. Product implementation starts only
-after the design review and open-decision approvals.
+- Fetched `refs/heads/main` read-only from
+  `https://github.com/JingxuanC/anchor`; `FETCH_HEAD` matched
+  `39b6fffdb35511859a82632d174b97ca304e26f5`.
+- Created a separate local worktree at `/workspace/anchor-mainline` from that
+  commit, branch `design/baseline-mainline`.
+- Cherry-picked design commits `21dc2d2` and `a901541` onto it, preserving the
+  initial commit as an ancestor.
+- README add/add conflict was resolved by keeping the remote initialization text
+  followed by the Anchor design README; the init commit was not overwritten.
+- No conflict remained after resolution.
 
 ## 4. Current local state
 
 | Item | Value |
 |---|---|
-| Local path | `/workspace/anchor` |
-| Branch | `design/baseline` |
-| Remote | none |
-| Commits | local design-baseline commit (see final report) |
+| Design branch (preserved) | `/workspace/anchor`, `design/baseline`, `a901541` |
+| Mainline branch (prepared) | `/workspace/anchor-mainline`, `design/baseline-mainline`, `fdbbaa5` |
+| Common ancestor | `39b6fffdb35511859a82632d174b97ca304e26f5` (verified init commit) |
+| Remote configured | none (fetched by URL; no `origin` added) |
+| Working trees | clean at the time of report |
 | Remote writes | none |
 | Product code | none; design baseline only |
 | Tests | none claimed; acceptance matrix is planned, not executed |
 
-## 5. What will be reported after approval
+## 5. What will be reported after push approval
 
-1. Repository URL and visibility.
-2. The bootstrap commit hash and the design-baseline commit hash.
-3. The draft PR URL (base `main`, head `design/baseline`).
-4. Exact files in the PR.
-5. The CI result for the design-only PR (documentation checks; no product tests
-   claimed).
-6. Any deviation from this plan before it is executed.
+1. Exact pushed branch and remote head SHA.
+2. Draft PR URL (base `main`, head `design/baseline-mainline`).
+3. Exact files in the PR.
+4. CI result for the documentation-only PR (no product tests claimed).
+5. Any conflict or deviation observed during push.

@@ -128,9 +128,13 @@ Architect review findings and point-by-point dispositions are in `docs/08-design
 
 ## 9. Current status
 
-- Design baseline authored locally at `/workspace/anchor` on branch
-  `design/baseline`.
-- No remote repository, push, PR, default-branch write, product implementation,
-  or live integration has been performed.
-- Next action is architect/user review; repository/bootstrap actions are blocked
-  on approval (see `docs/07-repo-bootstrap.md`).
+- Original design branch preserved at `/workspace/anchor` (`design/baseline`,
+  `a901541`).
+- Mainline branch prepared locally at `/workspace/anchor-mainline`
+  (`design/baseline-mainline`) with the verified repository init commit
+  `39b6fffdb35511859a82632d174b97ca304e26f5` as its ancestor.
+- Repository existence/visibility/default branch/init SHA were verified
+  read-only; no push, PR, default-branch write, branch creation on the remote,
+  product implementation, or live integration has been performed.
+- Next action is architect/user review plus direct approval for pushing the
+  branch and opening a draft PR (see `docs/07-repo-bootstrap.md`).
