@@ -169,8 +169,27 @@ implemented tests.
 - A fixture with `source=recorded` must include the official doc URL and date.
 - Live service tests are opt-in, use dedicated test accounts/tokens, and are
   never required for the default CI result.
+- **CI mocks do not replace real adapter validation.** The release gate requires
+  at least real Claude Code adapter e2e plus the documented Codex/Gemini
+  contract-vs-real status; a mock-only result cannot be presented as a product
+  validation.
 - Performance numbers are reported with environment details; no fabricated
   “fast” claims.
+
+
+## 4.2 Second design-review addendum (a901541)
+
+| Review item | Requirements | Planned tests | Acceptance criterion |
+|---|---|---|---|
+| Mutation vs unordered ownership change | REQ-CONC-001..005 | `IT-CONC-006`, `SEC-CONC-003` | A mutation concurrent with any ownership event on the same node is isolated as a whole; no double-apply. Missing `causal_parents` means quarantined/conflicted, not replayed by guess. |
+| Unified recovery enum | REQ-RST-001..011, REQ-SY-012 | `IT-RST-ENUM-001`, `E2E-HANDOFF-NOTPREPARED` | Enum is exactly `complete|partial|incomplete|stale_code`; no prepare before next start → `incomplete`; missing bytes → `incomplete`, never complete. |
+| Enforcement guarantee boundary | REQ-AD-013, REQ-RST-003 | `IT-ENF-003..004`, `CT-ENF-002` | Hook timeout/malformed output never reported as guaranteed block; `enforced_within_wrapper` only for wrapped/Anchor-mediated writes; `anchor wrap` fallback documented/tested; no MCP proxy claim. |
+| Legal/unsupported state transitions | REQ-ST-001..013 | `UT-ST-TRANS-002..003` | Legal edge table matches examples; unsupported edges return conflict/usage; `goal→done`/`goal→todo` rejected. |
+| causal_write_id node scoping | REQ-CM-013 | `IT-CM-IDEMP-002` | ID includes `decision_node_id` (and outcome), so identical payloads on different decisions do not collide. |
+| Projection sync default / O-013 | REQ-WS-002, REQ-SY-001 | `IT-PROJ-001` | `TREE.md`/`state.json` are local-only by default, not synced/committed; events/config/manifests are the synced set. O-013 no longer contradictory. |
+| Traceability covers new IDs | All new REQ-SEC/CONC/CFG/SY/RST/AD/CM/ST IDs | `CI-TRACE-001` | Traceability table + matrix cover every new ID; no dangling reference. |
+| CI mock vs real product validation | REQ-AD-001..013, REQ-OPS-004 | `CI-REAL-GATE-001`, `E2E-AD-REAL` | CI mocks never substitute for real adapter validation; release gate requires real adapter/final e2e or an explicit approved limitation. |
+| 07 repository status current | DEL-008 / repo bootstrap | `DOC-07-001` | 07 says repository/README init succeeded and verified; no stale “repo not created” instruction; push/PR still blocked. |
 
 ## 5. Coverage enforcement
 

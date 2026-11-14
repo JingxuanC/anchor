@@ -17,7 +17,7 @@ the invariants and provenance rules are part of the requirement baseline.
   events/                       # canonical append-only event log
     <ulid>-<device>.json
   projections/                  # derived, rebuildable
-    TREE.md                     # human-readable tree
+    TREE.md                     # local human-readable projection; not synced by default
     state.json                  # machine snapshot/cache
   evidence/
     <evidence-id>.json          # immutable evidence metadata
@@ -82,7 +82,6 @@ correction is a new event.
   "event_id": "01J9Z6Q8R7T0Y3M4N5P6Q7R8S9",
   "workspace_id": "01J...",
   "device_id": "dev_...",
-  "sequence": 42,
   "recorded_at": "2026-11-15T00:00:00Z",
   "occurred_at": "2026-11-15T00:00:00Z",
   "actor": {
@@ -109,7 +108,7 @@ correction is a new event.
 
 Rules:
 
-- `event_id` is time-sortable (ULID); `sequence` is per device and monotonic.
+- `event_id` is a unique sortable ULID. The authoritative per-device counter is `device_seq` (one name only); `sequence` is not a separate field. The counter is monotonic and used only as causal metadata, not as global order.
 - `idempotency_key` is unique for mutating commands/hooks; replay returns the
   same result.
 - `expected_revision` is required for updates to versioned entities; mismatch is
@@ -212,15 +211,19 @@ Statuses: `todo`, `in_progress`, `done`, `blocked`, `abandoned`.
 1. Each non-goal node has exactly one parent.
 2. No cycles; parent depth is bounded by a configured maximum.
 3. A branch forks from a goal/decision and cannot silently become the main line.
-4. Status transitions are type-specific and validated:
-   - `goal`: `in_progress|blocked|abandoned`; done is not a goal status.
-   - `decision|task|question`: `todo → in_progress → done|blocked|abandoned`;
-     `blocked → in_progress|abandoned`; `done → in_progress` only with an
-     explicit reopen event.
-   - `branch`: `todo|in_progress|done|abandoned`; `done` means merged; abandoning
-     does not delete the fork.
-   A goal may start `in_progress` at creation; the transition table does not
-   force it through `todo`.
+4. Status transitions are type-specific and validated. Legal edges:
+
+   | Type | Legal from → to | Explicitly unsupported |
+   |---|---|---|
+   | `goal` | `in_progress→blocked`, `in_progress→abandoned`, `blocked→in_progress`, `blocked→abandoned`; creation starts `in_progress` | `goal→done`, `goal→todo`, `abandoned→*` (requires a new goal or explicit restore event) |
+   | `decision` | `todo→in_progress`, `in_progress→done`, `in_progress→blocked`, `blocked→in_progress`, `todo/in_progress/blocked→abandoned`, `done→in_progress` (reopen) | `todo→done`, `abandoned→*`, `done→blocked` without reopen |
+   | `task` | same as decision | same as decision |
+   | `question` | `todo→in_progress`, `in_progress→done` (answered), `in_progress→blocked`, `blocked→in_progress`, any open→abandoned, `done→in_progress` (reopen) | `todo→done`, `abandoned→*` |
+   | `branch` | `todo→in_progress`, `in_progress→done` (merged), `in_progress→abandoned`, `todo→abandoned` | `branch→done` without merge evidence; `abandoned→*` |
+
+   Unsupported edges return a conflict/usage error; they are never silently
+   coerced. A goal may start `in_progress` at creation; examples must not imply
+   `goal→todo`.
 5. `done` (decision/task) requires at least one evidence reference or a recorded
    user override; branch done requires a merge/abandon event.
 6. `user_confirmed` requires a local user attestation event
@@ -257,6 +260,14 @@ If two causally concurrent events require the same `expected_revision`:
 No “last writer wins”, no silent field merge for structural or deletion
 conflicts, and no clock-based ordering.
 
+**Whole-mutation isolation:** a mutation is applied only if it is causally after
+the ownership version it used. If a mutation is concurrent with *any* ownership
+event on that node, the entire mutation is isolated — not just the ownership
+field. It cannot be replayed by evaluating each event at its own causal point.
+`causal_parents` must include the ownership event/version (or a later causal
+barrier); missing causal metadata means the event stays quarantined/conflicted,
+not applied by guess.
+
 ### 5.3 Ownership and fencing
 
 ```json
@@ -281,6 +292,9 @@ conflicts, and no clock-based ordering.
   it only if that lease is the unique active lease at the event's causal point.
 - Stale writes are rejected; offline events from a stale lease are isolated as
   conflicts, not applied.
+- A mutation concurrent with a takeover/claim/release is isolated as a whole,
+  even if its lease/token was valid when it was created. The conflict is
+  resolved only by a later event that causally follows both sides.
 - Ownership is per-node; different branches may have different owners. Sync
   never silently merges active leases.
 
@@ -355,7 +369,7 @@ Rules:
   "next_steps": ["..."],
   "open_questions": [{"id": "q_...", "question": "...", "status": "open"}],
   "evidence": [{"id": "ev_...", "verified": true}],
-  "recovery_status": "complete|partial|missing_artifacts|stale_code",
+  "recovery_status": "complete|partial|incomplete|stale_code",
   "artifact_availability": "bytes_present|metadata_only|missing",
   "code_state": {
     "repo_ref": "workspace://repo", 
@@ -384,6 +398,14 @@ Rules:
 
 - `handoff_prepared` freezes the packet; `handoff_acked` records successor
   acceptance; `handoff_verified` records code/evidence checks.
+- `recovery_status` enum is unified and exhaustive: `complete` (prepared,
+  required bytes/evidence verified), `partial` (prepared but some non-critical
+  evidence/transcript partial), `incomplete` (not prepared for this session,
+  missing required bytes/artifacts, or prep pending/failed/timed_out), and
+  `stale_code` (code state diverged from the packet).
+- If the next session starts without a prepared packet for the current state,
+  the session is explicitly `incomplete`; it is never labeled “fresh” or
+  “complete”.
 - Restore does not silently apply code changes. It prints a plan:
   - commit matches / diverges / missing;
   - dirty tree status;
@@ -451,7 +473,7 @@ Rules:
     "outcome": "...",
     "task_tag": "..."
   },
-  "causal_write_id": "sha256(workspace|decision|outcome|relation|sorted(evidence))",
+  "causal_write_id": "sha256(workspace|decision_node_id|outcome_node_id|relation|sorted(evidence))",
   "idempotency_key": "causal:node:...",
   "tool_contract": {
     "discovered_from": "tools/list",
@@ -590,6 +612,6 @@ backend = "auto"              # keychain | encrypted-file | auto
 |---|---|---|
 | O-011 | One active goal per workspace or multiple concurrent goals? | Multiple goals supported; one active for restore. |
 | O-012 | Are branch nodes first-class in the tree or a separate DAG? | First-class nodes with `forked_from`/`merge_target`. |
-| O-013 | Should `projections/` be committed or gitignored? | Commit `TREE.md` for review; gitignore `state.json`. |
+| O-013 | Resolved default: projections are local-only and not synced. | `TREE.md`/`state.json` are generated local views; neither is committed or synced by default. No contradiction with Git sync. |
 | O-014 | How are uncommitted-code artifact bytes transported/synced (Git bundle in state repo, Git LFS, external store, metadata-only)? | Manifest always syncs; bytes require an explicit transport. Missing bytes = `recovery_status=incomplete`, never complete. User decision required. |
 | O-015 | Should events be signed? | Optional per-device signing; verify if configured. |

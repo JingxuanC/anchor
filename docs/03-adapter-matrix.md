@@ -74,12 +74,20 @@ Sources:
 | Block/deny tool call | Yes (`PreToolUse`) | Yes (`PreToolUse`) | Yes (`BeforeTool`) | Only if wrapped/MCP-mediated |
 | Inject context | Yes | Yes | Yes | Rules file/printed packet |
 | Capture without blocking | Yes | Yes | Yes | Wrapper transcript/stdin capture |
-| Enforcement wording | `enforced` where hook can block; capture still `fail-open` | same | same | `enforced` only for wrapped/MCP writes |
+| Enforcement wording | `best_effort_hook` (may time out/malform); `enforced_within_wrapper` only for wrapped/Anchor-mediated writes; capture `fail-open` | same | same | `enforced_within_wrapper` only for wrapped/Anchor-mediated writes |
 
-Anchor must record `policy_enforcement = enforced|advisory|unavailable` per
-workspace/adapter. A passive capture failure never blocks the agent; a required
-pre-write verification is only claimed as enforced when a blocking hook,
-wrapper, or Anchor MCP write path exists.
+Anchor must record `policy_enforcement` per workspace/adapter as one of:
+`enforced_within_wrapper` (only writes routed through `anchor wrap` or an
+Anchor-mediated write path), `best_effort_hook` (a blocking-capable hook, but
+timeouts/malformed output can fail open), `advisory` (warning only), `observed`
+(capture only), or `unavailable`.
+
+A passive capture failure never blocks the agent. A hook timeout or malformed
+hook output must not be described as a guaranteed block. Anchor cannot
+intercept every native edit, and it must not add an MCP proxy to claim it does.
+The explicit enforceable fallback is `anchor wrap`; the UI/doctor must state the
+actual boundary and the last verified hook behavior. Evidence is `D` until a
+runtime spike verifies the behavior.
 
 ## 2. Chosen integration strategy per adapter
 

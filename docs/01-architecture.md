@@ -134,7 +134,10 @@ type Adapter interface {
 - Capabilities are data (`hooks`, `context_injection`, `can_block_prompt`,
   `can_block_tool`, `mcp_stdio`, `mcp_http`, `rules_file`, `transcript_path`,
   `resume`, `fork`, limits). Enforcement is derived from these capabilities and
-  reported as `enforced|advisory|unavailable`.
+  reported as `enforced_within_wrapper|best_effort_hook|advisory|observed|unavailable`.
+  Hooks can time out or return malformed output, so a hook can never be a total
+  guarantee; only commands/writes routed through `anchor wrap` or an
+  Anchor-mediated write path can be enforced within that boundary.
 - `GenericAdapter` covers manual `anchor capture`/`anchor restore` and
   `anchor wrap` for agents without reliable hooks.
 - Real adapters vs mocks are labeled in tests and `doctor` output.
@@ -260,7 +263,7 @@ Heavy handoff preparation (`git bundle`, patch, transcript hashing, artifact
 export, sync) runs as an explicit `anchor handoff prepare` or a post-session
 observable job with status `pending|running|complete|failed|timed_out`. A
 timeout or interrupted process is never reported as complete; restore lists the
-missing artifacts and marks `recovery_status=incomplete`.
+missing artifacts and marks `recovery_status=incomplete` (the unified enum is `complete|partial|incomplete|stale_code`). If no handoff was prepared before the next start, that start is explicitly `incomplete`, not “fresh/complete”.
 
 
 ### 5.1 Session start / restore
@@ -282,7 +285,7 @@ UserPromptSubmit / PreToolUse / PostToolUse / Stop / PreCompact / SessionEnd
   → anchor hook <event> (stdin JSON from agent)
   → validate schema + agent/session identity
   → redact secrets, cap sizes
-  → idempotent event append (event id + session + sequence)
+  → idempotent event append (event id + session + device_seq)
   → update ownership heartbeat if applicable
   → return allow/deny/context as the adapter permits
 ```
@@ -330,7 +333,7 @@ Replay builds a DAG, performs a deterministic topological sort (ties broken by
 `event_id`), and never uses wall-clock time to decide precedence. Clock values
 are descriptive only.
 
-### 6.2 Same-revision concurrent events
+### 6.2 Same-revision concurrent events and ownership races
 
 Two events that target the same `expected_revision` without a causal relation
 are **concurrent siblings**, not sequential writes.
@@ -345,6 +348,15 @@ are **concurrent siblings**, not sequential writes.
 - The local write path prevents most of these with the workspace lock and
   optimistic checks; the conflict path covers offline/sync concurrency.
 
+**Ownership is part of the isolation boundary.** If a node mutation is causally
+unordered with *any* ownership event for that node (claim, heartbeat,
+release, takeover), the whole mutation is isolated as a conflict — even if its
+own lease looked active at its own causal point. A mutation is replayable only
+when its `causal_parents` include the ownership event/version it relied on (or a
+later causal barrier). Missing `causal_parents` means the event cannot be
+safely replayed and stays quarantined/conflicted; it is not applied by guessing.
+This prevents “each event is locally legal, so both take effect.”
+
 ### 6.3 Fencing and ownership conflicts
 
 - A lease is acquired with a `lease_id` and a `fencing_token` that is monotonic
@@ -354,6 +366,10 @@ are **concurrent siblings**, not sequential writes.
 - Two concurrent takeover events for the same prior lease are a conflict, not a
   “highest token wins” race. A user must choose or a later explicit event must
   resolve the lineage.
+- A mutation causally unordered with a takeover/ownership change is isolated as
+  a whole, even if its `lease_id`/token looks valid at its own causal point.
+  Isolation waits for a later causal barrier/ownership event; it cannot be
+  replayed from partial causal metadata.
 - A mutation is applied only if its lease is the unique active lease at its
   causal point. Stale tokens are rejected; events from an unresolved concurrent
   lease are isolated as conflicts.
@@ -395,20 +411,20 @@ Two paths must be separated:
 | Path | Default | Why |
 |---|---|---|
 | **Capture** | **Fail-open**: log a gap, keep the agent working, surface `capture_state=partial` in `doctor`/handoff. | Losing a capture event must not block the user's coding session. |
-| **Mutation policy** | **Fail-closed where the adapter can block**; otherwise `advisory` or `unavailable` and visibly labeled. | Anchor must not claim to enforce pre-write verification on an adapter that cannot intercept writes. `anchor wrap`/MCP-mediated writes can be enforced; passive hooks that cannot deny cannot. |
+| **Mutation policy** | **Guaranteed only within a known boundary**: `enforced_within_wrapper` for writes routed through `anchor wrap`/Anchor-mediated calls; `best_effort_hook` where the adapter can deny but may time out/malform; otherwise `advisory`/`observed`/`unavailable`. | Hook timeout or malformed output may fail open. Anchor must not claim it intercepts every native edit, and must not add an MCP proxy to pretend it does. `anchor wrap` is the explicit fallback for a guarantee. |
 
 | Failure | Behavior |
 |---|---|
 | causal-memory offline | Bounded write queue; stale/no lessons allowed; UI/doctor show degraded; core continues. |
 | Git remote unavailable | Local work continues; sync status shows pending/offline; no blocking capture. |
 | Hook timeout | Capture gap logged; agent continues unless the hook is a policy hook with blocking capability. |
-| Adapter cannot block | `policy_enforcement=advisory|unavailable`; handoff/UI warns; `anchor wrap`/MCP tool path can enforce. |
+| Adapter cannot block | `policy_enforcement=advisory|observed|unavailable`; handoff/UI warns; `anchor wrap`/Anchor-mediated writes provide the enforceable path. |
 | Adapter missing | `anchor wrap`/manual capture/restore; `doctor` explains. |
 | Vault unavailable | Secret-dependent actions fail closed; tree/capture still work. |
 | Corrupt event | Quarantine, continue valid replay, `doctor` reports; no silent deletion. |
 | Schema mismatch | Refuse writes, offer `anchor migrate --dry-run`; back up first. |
 | Handoff artifact bytes missing | `recovery_status=incomplete`; restore lists missing artifacts and refuses to claim full recovery. |
-| SessionEnd timeout | Lightweight marker remains; handoff preparation stays `pending|incomplete`; never marked complete. |
+| SessionEnd timeout | Lightweight marker remains; handoff preparation stays `pending|timed_out`, and the next start is `incomplete`; never marked complete. |
 
 ## 8. Repository layout (proposed)
 

@@ -43,7 +43,27 @@ These are **options with recommendations**, not decisions made here:
 | D-CM | causal-memory test policy | Mock-only vs opt-in live test with dedicated token | Recommend mock in CI + opt-in live test with a revocable test token; no real user key. |
 | D-HANDOFF | Default transcript depth | Structured summary/pointers vs full excerpts | Recommend structured default + explicit `--full`; avoids token bloat but users may want more. |
 
-## 4. Verification performed this round
+
+## 4. Second review findings (a901541)
+
+These are design revisions only; no product code or product test was added.
+
+| # | Finding | Disposition | Files |
+|---|---|---|---|
+| 2-1 | A same-node mutation concurrent with a causally unordered ownership change could be legal at its own causal point and double-apply. | Added whole-mutation isolation: any concurrent ownership event isolates the mutation, not just the ownership field. `causal_parents` must include the ownership event/version or a later barrier; missing metadata = quarantine/conflict, no guessing. Unified the per-device counter to `device_seq` only. | `docs/01-architecture.md` §6.2–6.3; `docs/02-data-model.md` §3, §5.2–5.3 |
+| 2-2 | `recovery_status` enum was inconsistent; no-prepare next start was not explicit. | Unified enum to `complete|partial|incomplete|stale_code`; no prepared packet for the current state → `incomplete`; missing bytes/artifacts → `incomplete`; stale code separate. | `docs/02-data-model.md` §7; `docs/01-architecture.md` §5.0/§7 |
+| 2-3 | Hook timeout/malformed output means `enforced` was overstated; MCP proxy cannot intercept all edits. | Replaced the claim with `enforced_within_wrapper|best_effort_hook|advisory|observed|unavailable`; documented the verifiable boundary, timeout/malformed fail-open, and `anchor wrap` fallback. Explicitly rejected the “MCP proxy intercepts every edit” claim. | `docs/01-architecture.md` §4.3/§7; `docs/03-adapter-matrix.md` §1.2; `docs/04-security-model.md` |
+| 2-4 | State transition table lacked unsupported edges; causal_write_id could collide across decisions; TREE.md sync default contradicted O-013; traceability missed new IDs. | Added legal/unsupported edge table; included `decision_node_id` in `causal_write_id`; made `TREE.md`/`state.json` local-only projections not synced by default and resolved O-013; expanded traceability to new REQ IDs. | `docs/02-data-model.md` §4.3, §9, §14; `docs/00-requirements-baseline.md` §8; `docs/05-acceptance-mapping.md` §4.2 |
+| 2-5 | CI mocks could be mistaken for product validation; 07 was stale. | Added explicit real-adapter/final-e2e release gate distinct from CI mocks; updated 07 to verified repo/README success and blocked push/PR. | `docs/05-acceptance-mapping.md`; `docs/07-repo-bootstrap.md`; `docs/06` |
+
+### Technical directions accepted as reversible design defaults
+
+Per the architect, Go core + TS Web, loopback-only web UI, and structured handoff
++ evidence pointers are adopted as **reversible design defaults**, not user
+approval for remote operations. D-SYNC topology and D-BYTES (whether artifact
+bytes leave the machine) remain open/configurable pending the user's answer.
+
+## 5. Verification performed this round
 
 - Documentation edits only; no product code, no tests executed, no live
   integrations.

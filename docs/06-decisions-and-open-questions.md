@@ -25,15 +25,15 @@ See `docs/00-requirements-baseline.md` D-001..D-016. Summary:
 
 | ID | Proposal | Rationale | Status |
 |---|---|---|---|
-| P-001 | Go core + TypeScript/React web UI, single binary with embedded assets. | Fast hook startup, cross-compilation, official MCP Go SDK, maintainable UI. | `[I]` awaiting architect/user approval |
+| P-001 | Go core + TypeScript/React web UI, single binary with embedded assets. | Fast hook startup, cross-compilation, official MCP Go SDK, maintainable UI. | `[I]` reversible design default (architect direction); not a remote permission |
 | P-002 | Event-sourced canonical state with rebuildable projections. | Git-friendly merges, audit, tombstones, concurrency. | `[I]` proposed |
 | P-003 | Local-first; causal-memory and Git sync optional/degradable. | Core work must not depend on network. | `[I]` proposed |
 | P-004 | Additive causal links (`proposed` → `confirmed`) instead of auto-conclusions. | Satisfies D-007. | `[I]` proposed |
 | P-005 | Present dedicated state Git repo/remote as a **recommendation**, not a selected default. | Privacy, fewer code-repo conflicts. | `[?]` O-001; user decides |
 | P-006 | OS keychain first; encrypted-file fallback explicit. | Native security; headless environments need a fallback. | `[?]` O-006 |
-| P-007 | Loopback-only web UI with one-time token; LAN is opt-in. | Least privilege. | `[?]` O-009 |
+| P-007 | Loopback-only web UI with one-time token; LAN is opt-in. | Least privilege. | `[I]` reversible design default; not a remote permission |
 | P-008 | Git bundle + patch manifest for uncommitted-code handoff. | Binary-safe + reviewable. | `[?]` O-007 |
-| P-009 | Context restore is tiered: structured packet default, full excerpts on request. | Token budgets vs completeness. | `[?]` O-008 |
+| P-009 | Context restore is tiered: structured packet + evidence pointers default, full excerpts on request. | Token budgets vs completeness. | `[I]` reversible design default; not a remote permission |
 
 ## 3. Open questions
 
@@ -80,7 +80,7 @@ The user (not another agent's relay) must confirm each item before the action:
 
 1. **Design baseline approval** — requirements 00, architecture 01, data model
    02, adapter matrix 03, security 04, acceptance 05.
-2. **Stack approval** — Go core + TS web (P-001), or choose Rust/other.
+2. **Stack confirmation** — Go core + TS web is the reversible design default (P-001); confirm or override with Rust/other.
 3. **Sync topology** — O-001/O-004.
 4. **Repository creation** — create private `JingxuanC/anchor` under the
    authenticated account.
@@ -136,5 +136,8 @@ Architect review findings and point-by-point dispositions are in `docs/08-design
 - Repository existence/visibility/default branch/init SHA were verified
   read-only; no push, PR, default-branch write, branch creation on the remote,
   product implementation, or live integration has been performed.
+- D-SYNC (topology) and D-BYTES (artifact bytes leaving the machine) are being
+  asked to the user; until answered, both remain configurable boundaries and
+  are not fixed in code/docs defaults.
 - Next action is architect/user review plus direct approval for pushing the
   branch and opening a draft PR (see `docs/07-repo-bootstrap.md`).

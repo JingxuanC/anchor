@@ -329,14 +329,15 @@ Every requirement below is in the **full release scope**. The phase column in
 
 | PRD pain point | Requirements |
 |---|---|
-| Unified workspace / fragmented config | REQ-WS-001/002, REQ-CFG-001..007 |
-| Cross-device context loss | REQ-RST-001..010, REQ-SY-001..011 |
+| Unified workspace / fragmented config | REQ-WS-001/002, REQ-CFG-001..008 |
+| Cross-device context loss | REQ-RST-001..011, REQ-SY-001..012 |
 | Goal drift | REQ-ST-001, REQ-ST-004, REQ-ST-010 |
-| No tree visualization | REQ-ST-001..012, REQ-UI-004 |
+| No tree visualization | REQ-ST-001..013, REQ-UI-004 |
 | Secret leakage | REQ-VT-001..010, REQ-SEC-001..007 |
 | Subscription/limit reuse | **Out of scope** (model routing; NG-001) |
-| Multi-agent config fragmentation | REQ-CFG-001..007, REQ-AD-002..004 |
+| Multi-agent config fragmentation | REQ-CFG-001..008, REQ-AD-002..004, REQ-AD-013 |
 | Protocol incompatibility | MCP is the protocol boundary; Anchor does not rebuild it (D-006) |
-| Skills/rules duplication | REQ-CFG-001, REQ-CFG-002, REQ-CFG-007 |
-| Missing long-term causal memory | REQ-CM-001..012 |
+| Skills/rules duplication | REQ-CFG-001, REQ-CFG-002, REQ-CFG-007, REQ-CFG-008 |
+| Missing long-term causal memory | REQ-CM-001..013 |
 | Context visualization blank | REQ-UI-004, REQ-ST-007, REQ-EVID-001 |
+| Concurrency/determinism/security review | REQ-CONC-001..005, REQ-SEC-001..007, REQ-ST-013, REQ-AD-013, REQ-CM-013, REQ-RST-011, REQ-SY-012, REQ-CFG-008 |

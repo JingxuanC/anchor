@@ -42,11 +42,14 @@ Trust rules:
   scripts. Project trust prompts are never bypassed.
 - **Remote MCP is an external service.** Its tool descriptions and outputs are
   untrusted; Anchor validates schemas and never follows embedded instructions.
-- **Capture is fail-open, mutation policy is not.** A capture failure logs a gap
-  and never blocks the agent. A pre-write verification is only `enforced` when
-  the adapter can block the write (hook/wrapper/Anchor MCP path); otherwise it
-  is `advisory` or `unavailable` and must be labeled. Do not promise enforcement
-  a passive hook cannot deliver.
+- **Capture is fail-open, mutation policy is bounded.** A capture failure logs a
+  gap and never blocks the agent. A pre-write verification is only
+  `enforced_within_wrapper` when the write is routed through `anchor wrap` or an
+  Anchor-mediated path. A blocking-capable hook is `best_effort_hook` because it
+  can time out or return malformed output; passive hooks are `advisory` or
+  `observed`. Anchor must not claim it intercepts every native edit, and must
+  not add an MCP proxy to pretend it does. `anchor wrap` is the explicit
+  fallback for an enforceable boundary.
 
 ## 3. Threat model and controls
 
@@ -235,7 +238,8 @@ manifests, artifacts or MCP tools must pass through one validator:
 | Command injection corpus | Shell metacharacters in args/secret names never reach a shell. |
 | Secret leak corpus | Fake secret in prompt/tool/file/MCP/UI/log never appears in persisted output, restore packets, generated bundle/patch, export, or sync payload. |
 | Artifact/bundle scan | Fake secret in git history reachable from a bundle or in an untracked file aborts the artifact and is reported. |
-| Enforcement boundary | Capture failure does not block the agent; a write gate is `enforced` only when the adapter can block, otherwise labeled `advisory`/`unavailable`. |
+| Enforcement boundary | Capture failure does not block the agent; a write gate is `enforced_within_wrapper` only for wrapped/Anchor-mediated writes, `best_effort_hook` for blocking-capable hooks subject to timeout/malformed output, otherwise `advisory`/`observed`/`unavailable`. |
+| Hook fail-open | A timed-out or malformed hook never gets reported as a guaranteed block; doctor/UI show the boundary and wrap fallback. |
 | Prompt injection corpus | Instructions in repo/transcript/MCP memory do not change policy or auto-approve. |
 | MCP hostile server | Redirect, oversized response, bad schema, timeout, 5xx, duplicate write handled safely. |
 | Git hostile history | Malicious events/paths/symlinks/tombstones rejected or conflicted; no force-push. |

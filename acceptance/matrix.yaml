@@ -1038,3 +1038,24 @@ unknowns_and_mock_policy:
     item: "Windows/macOS runtime e2e"
     status: "release-blocking; not executed in this environment"
     blocks: "O-002"
+review_checks:
+  - id: "RV2-001"
+    item: "Mutation concurrent with unordered ownership change is isolated as a whole; missing causal_parents is quarantined, not guessed."
+    tests: ["IT-CONC-006", "SEC-CONC-003"]
+    status: "planned"
+  - id: "RV2-002"
+    item: "Unified recovery_status complete|partial|incomplete|stale_code; no prepare before next start is incomplete."
+    tests: ["IT-RST-ENUM-001", "E2E-HANDOFF-NOTPREPARED"]
+    status: "planned"
+  - id: "RV2-003"
+    item: "Hook timeout/malformed output is not a guaranteed block; enforced only within wrapper/Anchor write boundary; wrap fallback."
+    tests: ["IT-ENF-003", "IT-ENF-004", "CT-ENF-002"]
+    status: "planned"
+  - id: "RV2-004"
+    item: "Legal/unsupported state transitions; causal_write_id includes decision_node_id; projections not synced; traceability covers new IDs."
+    tests: ["UT-ST-TRANS-002", "IT-CM-IDEMP-002", "IT-PROJ-001", "CI-TRACE-001"]
+    status: "planned"
+  - id: "RV2-005"
+    item: "CI mocks do not replace real adapter validation/final e2e; repository status doc current."
+    tests: ["CI-REAL-GATE-001", "E2E-AD-REAL", "DOC-07-001"]
+    status: "planned"
