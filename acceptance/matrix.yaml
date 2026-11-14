@@ -1,0 +1,930 @@
+version: 1
+generated_from: "docs/00-requirements-baseline.md"
+generated_at: "2026-11-15"
+status: "planned-design-baseline"
+note: "Test IDs are planned. No product implementation or test has been executed yet. A test ID must be created in the repository before it can satisfy coverage."
+requirements:
+  "REQ-WS-001":
+    requirement: "`anchor init` creates/attaches a workspace in any project; identity and schema version are recorded."
+    source: "`[U-P]`"
+    tests: ["UT-WS-001", "IT-WS-001", "SEC-WS-001", "PKG-WS-001"]
+    acceptance: "Planned acceptance: `anchor init` creates/attaches a workspace in any project; identity and schema version are recorded. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-WS-002":
+    requirement: "Canonical state is human-readable, diffable, deterministic and Git-friendly."
+    source: "`[U-P]`"
+    tests: ["UT-WS-002", "IT-WS-002", "SEC-WS-001", "PKG-WS-001"]
+    acceptance: "Planned acceptance: Canonical state is human-readable, diffable, deterministic and Git-friendly. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-WS-003":
+    requirement: "Schema versions have explicit migration, backup, dry-run and rollback behavior."
+    source: "`[A]`"
+    tests: ["UT-WS-003", "IT-WS-003", "SEC-WS-001", "PKG-WS-001"]
+    acceptance: "Planned acceptance: Schema versions have explicit migration, backup, dry-run and rollback behavior. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-WS-004":
+    requirement: "Writes are atomic and crash-safe; local writers use a workspace lock."
+    source: "`[I]`"
+    tests: ["UT-WS-004", "IT-WS-004", "SEC-WS-001", "PKG-WS-001"]
+    acceptance: "Planned acceptance: Writes are atomic and crash-safe; local writers use a workspace lock. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-WS-005":
+    requirement: "Synced data contains no absolute machine paths; device-specific data is local-only."
+    source: "`[I]`"
+    tests: ["UT-WS-005", "IT-WS-005", "SEC-WS-001", "PKG-WS-001"]
+    acceptance: "Planned acceptance: Synced data contains no absolute machine paths; device-specific data is local-only. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-WS-006":
+    requirement: "Derived indexes/projections are rebuildable from canonical state; hidden state is not allowed."
+    source: "`[I]`"
+    tests: ["UT-WS-006", "IT-WS-006", "SEC-WS-001", "PKG-WS-001"]
+    acceptance: "Planned acceptance: Derived indexes/projections are rebuildable from canonical state; hidden state is not allowed. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-WS-007":
+    requirement: "Workspaces can be exported, inspected and imported without Anchor."
+    source: "`[A]`"
+    tests: ["UT-WS-007", "IT-WS-007", "SEC-WS-001", "PKG-WS-001"]
+    acceptance: "Planned acceptance: Workspaces can be exported, inspected and imported without Anchor. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-WS-008":
+    requirement: "Uninstall removes integration files but preserves workspace data unless `--purge` is explicit."
+    source: "`[A]`"
+    tests: ["UT-WS-008", "IT-WS-008", "SEC-WS-001", "PKG-WS-001"]
+    acceptance: "Planned acceptance: Uninstall removes integration files but preserves workspace data unless `--purge` is explicit. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-001":
+    requirement: "Each workspace has one or more goals; the active goal has a north star, must/must-not constraints and success criteria."
+    source: "`[U-P]` + `[U-R]`"
+    tests: ["UT-ST-001", "IT-ST-001", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Each workspace has one or more goals; the active goal has a north star, must/must-not constraints and success criteria. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-002":
+    requirement: "Decision nodes store decision, rationale, alternatives, consequences and provenance."
+    source: "`[U-P]`"
+    tests: ["UT-ST-002", "IT-ST-002", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Decision nodes store decision, rationale, alternatives, consequences and provenance. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-003":
+    requirement: "Task nodes use the statuses `todo`, `in_progress`, `done`, `blocked`, `abandoned`."
+    source: "`[U-P]`"
+    tests: ["UT-ST-003", "IT-ST-003", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Task nodes use the statuses `todo`, `in_progress`, `done`, `blocked`, `abandoned`. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-004":
+    requirement: "Branch nodes fork from a goal/decision, carry a hypothesis, and can be merged or abandoned."
+    source: "`[U-R]`"
+    tests: ["UT-ST-004", "IT-ST-004", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Branch nodes fork from a goal/decision, carry a hypothesis, and can be merged or abandoned. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-005":
+    requirement: "Every node records provenance: `user_confirmed`, `agent_inferred`, `imported`; inferences carry confidence."
+    source: "`[U-R]`"
+    tests: ["UT-ST-005", "IT-ST-005", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Every node records provenance: `user_confirmed`, `agent_inferred`, `imported`; inferences carry confidence. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-006":
+    requirement: "Nodes record actor, agent type/version, session and timestamps."
+    source: "`[U-P]`"
+    tests: ["UT-ST-006", "IT-ST-006", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Nodes record actor, agent type/version, session and timestamps. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-007":
+    requirement: "Changes are append-only events with stable IDs, revisions and idempotency keys."
+    source: "`[I]`"
+    tests: ["UT-ST-007", "IT-ST-007", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Changes are append-only events with stable IDs, revisions and idempotency keys. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-008":
+    requirement: "Deletion is a tombstone; a concurrent edit-vs-delete is a surfaced conflict, never silent resurrection."
+    source: "`[U-R]`"
+    tests: ["UT-ST-008", "IT-ST-008", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Deletion is a tombstone; a concurrent edit-vs-delete is a surfaced conflict, never silent resurrection. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-009":
+    requirement: "Tree invariants: one parent, no cycles, valid status transitions, branch lineage preserved."
+    source: "`[I]`"
+    tests: ["UT-ST-009", "IT-ST-009", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Tree invariants: one parent, no cycles, valid status transitions, branch lineage preserved. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-010":
+    requirement: "Drift checks warn when a proposed node/action is outside the goal or violates a constraint. The warning is advisory unless a policy hook explicitly blocks."
+    source: "`[U-R]`"
+    tests: ["UT-ST-010", "IT-ST-010", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Drift checks warn when a proposed node/action is outside the goal or violates a constraint. The warning is advisory unless a policy hook explicitly blocks. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-011":
+    requirement: "Users can correct, merge, reparent, abandon and annotate nodes; an agent cannot mark a node `user_confirmed` by itself."
+    source: "`[U-R]`"
+    tests: ["UT-ST-011", "IT-ST-011", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Users can correct, merge, reparent, abandon and annotate nodes; an agent cannot mark a node `user_confirmed` by itself. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-ST-012":
+    requirement: "Chat/message summaries are stored as summaries with source pointers and hashes, not as the canonical history."
+    source: "`[U-R]`"
+    tests: ["UT-ST-012", "IT-ST-012", "E2E-ST-001"]
+    acceptance: "Planned acceptance: Chat/message summaries are stored as summaries with source pointers and hashes, not as the canonical history. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CAP-001":
+    requirement: "Native hook capture for Claude Code, Codex and Gemini CLI: session start/end, prompt, tool before/after, stop, compaction."
+    source: "`[U-R]`"
+    tests: ["UT-CAP-001", "IT-CAP-001", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Native hook capture for Claude Code, Codex and Gemini CLI: session start/end, prompt, tool before/after, stop, compaction. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CAP-002":
+    requirement: "Capture is side-effect-minimal and fail-open for the agent unless a configured policy hook explicitly blocks."
+    source: "`[I]`"
+    tests: ["UT-CAP-002", "IT-CAP-002", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Capture is side-effect-minimal and fail-open for the agent unless a configured policy hook explicitly blocks. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CAP-003":
+    requirement: "Captured content is redacted for secrets and size-capped before persistence."
+    source: "`[U-R]`"
+    tests: ["UT-CAP-003", "IT-CAP-003", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Captured content is redacted for secrets and size-capped before persistence. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CAP-004":
+    requirement: "Store transcript/session pointers and hashes; full transcripts are not copied into the tree by default."
+    source: "`[U-R]`"
+    tests: ["UT-CAP-004", "IT-CAP-004", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Store transcript/session pointers and hashes; full transcripts are not copied into the tree by default. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CAP-005":
+    requirement: "Adapter events normalize into one versioned Anchor event schema."
+    source: "`[I]`"
+    tests: ["UT-CAP-005", "IT-CAP-005", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Adapter events normalize into one versioned Anchor event schema. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CAP-006":
+    requirement: "Ingestion is idempotent per session/event and safe to replay."
+    source: "`[I]`"
+    tests: ["UT-CAP-006", "IT-CAP-006", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Ingestion is idempotent per session/event and safe to replay. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CAP-007":
+    requirement: "Capture works offline and does not require causal-memory or a network."
+    source: "`[I]`"
+    tests: ["UT-CAP-007", "IT-CAP-007", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Capture works offline and does not require causal-memory or a network. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CAP-008":
+    requirement: "Tool inputs/outputs are captured only within configurable limits; secrets and denied paths are dropped."
+    source: "`[U-R]`"
+    tests: ["UT-CAP-008", "IT-CAP-008", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Tool inputs/outputs are captured only within configurable limits; secrets and denied paths are dropped. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CAP-009":
+    requirement: "Capture failures are visible in `anchor doctor` and logs, not silently lost."
+    source: "`[I]`"
+    tests: ["UT-CAP-009", "IT-CAP-009", "CT-AD-CLAUDE-CAP", "E2E-CAP-CLAUDE"]
+    acceptance: "Planned acceptance: Capture failures are visible in `anchor doctor` and logs, not silently lost. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-001":
+    requirement: "A handoff packet contains goal/constraints, active node, open branches, decisions, next steps, evidence, warnings, ownership and code state."
+    source: "`[U-R]`"
+    tests: ["UT-RST-001", "IT-RST-001", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: A handoff packet contains goal/constraints, active node, open branches, decisions, next steps, evidence, warnings, ownership and code state. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-002":
+    requirement: "Injection uses each adapter's supported context channel and respects its size limits."
+    source: "`[I]`"
+    tests: ["UT-RST-002", "IT-RST-002", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: Injection uses each adapter's supported context channel and respects its size limits. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-003":
+    requirement: "The successor agent must acknowledge the handoff and verify referenced code/evidence before editing."
+    source: "`[U-R]`"
+    tests: ["UT-RST-003", "IT-RST-003", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: The successor agent must acknowledge the handoff and verify referenced code/evidence before editing. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-004":
+    requirement: "A chat summary alone is never labeled or treated as full recovery."
+    source: "`[U-R]`"
+    tests: ["UT-RST-004", "IT-RST-004", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: A chat summary alone is never labeled or treated as full recovery. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-005":
+    requirement: "Handoff works across Claude Code, Codex and Gemini CLI in both directions."
+    source: "`[U-R]`"
+    tests: ["UT-RST-005", "IT-RST-005", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: Handoff works across Claude Code, Codex and Gemini CLI in both directions. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-006":
+    requirement: "Handoff works across devices after Git sync."
+    source: "`[U-P]`"
+    tests: ["UT-RST-006", "IT-RST-006", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: Handoff works across devices after Git sync. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-007":
+    requirement: "Uncommitted code handoff captures branch/HEAD, staged/unstaged/untracked changes, diff/bundle hashes and restore instructions."
+    source: "`[U-R]`"
+    tests: ["UT-RST-007", "IT-RST-007", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: Uncommitted code handoff captures branch/HEAD, staged/unstaged/untracked changes, diff/bundle hashes and restore instructions. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-008":
+    requirement: "Restore is plan/dry-run first; applying to a dirty tree requires explicit confirmation and never silently overwrites."
+    source: "`[U-R]`"
+    tests: ["UT-RST-008", "IT-RST-008", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: Restore is plan/dry-run first; applying to a dirty tree requires explicit confirmation and never silently overwrites. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-009":
+    requirement: "Restore reports missing artifacts, stale commits and unreachable evidence rather than guessing."
+    source: "`[I]`"
+    tests: ["UT-RST-009", "IT-RST-009", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: Restore reports missing artifacts, stale commits and unreachable evidence rather than guessing. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-RST-010":
+    requirement: "The packet labels user-confirmed facts, agent inferences, and unverified claims."
+    source: "`[U-R]`"
+    tests: ["UT-RST-010", "IT-RST-010", "E2E-RST-CLAUDE", "SEC-RST-001"]
+    acceptance: "Planned acceptance: The packet labels user-confirmed facts, agent inferences, and unverified claims. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-001":
+    requirement: "Detect installed agent CLI and version; record capabilities and degrade explicitly."
+    source: "`[I]`"
+    tests: ["UT-AD-001", "IT-AD-001", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Detect installed agent CLI and version; record capabilities and degrade explicitly. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-002":
+    requirement: "Claude Code adapter supports hooks, MCP registration, rules/instructions, config/install/uninstall."
+    source: "`[U-R]`"
+    tests: ["UT-AD-002", "IT-AD-002", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Claude Code adapter supports hooks, MCP registration, rules/instructions, config/install/uninstall. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-003":
+    requirement: "Codex adapter supports hooks, MCP registration, `AGENTS.md`, config/install/uninstall."
+    source: "`[U-R]`"
+    tests: ["UT-AD-003", "IT-AD-003", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Codex adapter supports hooks, MCP registration, `AGENTS.md`, config/install/uninstall. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-004":
+    requirement: "Gemini CLI adapter supports hooks, MCP registration, `GEMINI.md`/extensions, config/install/uninstall."
+    source: "`[U-R]`"
+    tests: ["UT-AD-004", "IT-AD-004", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Gemini CLI adapter supports hooks, MCP registration, `GEMINI.md`/extensions, config/install/uninstall. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-005":
+    requirement: "If hooks are unavailable, provide `anchor wrap` and/or manual capture/restore; never pretend hooks work."
+    source: "`[I]`"
+    tests: ["UT-AD-005", "IT-AD-005", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: If hooks are unavailable, provide `anchor wrap` and/or manual capture/restore; never pretend hooks work. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-006":
+    requirement: "Adapter install is idempotent, backs up existing files, preserves user content and supports dry-run."
+    source: "`[I]`"
+    tests: ["UT-AD-006", "IT-AD-006", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Adapter install is idempotent, backs up existing files, preserves user content and supports dry-run. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-007":
+    requirement: "Adapter capability descriptors are versioned; no cross-agent assumptions."
+    source: "`[I]`"
+    tests: ["UT-AD-007", "IT-AD-007", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Adapter capability descriptors are versioned; no cross-agent assumptions. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-008":
+    requirement: "Tests/UI label real adapters vs mocks/recorded fixtures."
+    source: "`[A]`"
+    tests: ["UT-AD-008", "IT-AD-008", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Tests/UI label real adapters vs mocks/recorded fixtures. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-009":
+    requirement: "Hook commands use argv arrays, absolute executable paths, minimal env and bounded timeouts."
+    source: "`[U-R]`"
+    tests: ["UT-AD-009", "IT-AD-009", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Hook commands use argv arrays, absolute executable paths, minimal env and bounded timeouts. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-010":
+    requirement: "Register Anchor MCP tools without forcing a proxy; agents may also call the CLI directly."
+    source: "`[U-R]`"
+    tests: ["UT-AD-010", "IT-AD-010", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Register Anchor MCP tools without forcing a proxy; agents may also call the CLI directly. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-011":
+    requirement: "Context injection respects documented per-event limits (Claude 10k chars, Codex token threshold, Gemini hook output)."
+    source: "`[I]`"
+    tests: ["UT-AD-011", "IT-AD-011", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Context injection respects documented per-event limits (Claude 10k chars, Codex token threshold, Gemini hook output). Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-AD-012":
+    requirement: "Config drift is detected and surfaced; re-apply is explicit."
+    source: "`[I]`"
+    tests: ["UT-AD-012", "IT-AD-012", "CT-AD-CLAUDE", "E2E-AD-CLAUDE"]
+    acceptance: "Planned acceptance: Config drift is detected and surfaced; re-apply is explicit. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-001":
+    requirement: "Use only the remote causal-memory MCP endpoint; no local engine or database."
+    source: "`[U-R]`"
+    tests: ["UT-CM-001", "IT-CM-001", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Use only the remote causal-memory MCP endpoint; no local engine or database. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-002":
+    requirement: "Authenticate over HTTPS with a token from the vault/env; never log or inject the token."
+    source: "`[U-R]`"
+    tests: ["UT-CM-002", "IT-CM-002", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Authenticate over HTTPS with a token from the vault/env; never log or inject the token. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-003":
+    requirement: "Before starting a node, search lessons and inject curated results with source/provenance labels."
+    source: "`[U-P]`"
+    tests: ["UT-CM-003", "IT-CM-003", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Before starting a node, search lessons and inject curated results with source/provenance labels. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-004":
+    requirement: "After a node, propose decision→outcome links; do not mark them confirmed from task status."
+    source: "`[U-R]`"
+    tests: ["UT-CM-004", "IT-CM-004", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: After a node, propose decision→outcome links; do not mark them confirmed from task status. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-005":
+    requirement: "A confirmed link requires evidence references or explicit user confirmation; store confidence and confirmer."
+    source: "`[U-R]`"
+    tests: ["UT-CM-005", "IT-CM-005", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: A confirmed link requires evidence references or explicit user confirmation; store confidence and confirmer. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-006":
+    requirement: "Writes use idempotency keys and dedupe; reads/writes retry with bounded exponential backoff and jitter."
+    source: "`[U-R]`"
+    tests: ["UT-CM-006", "IT-CM-006", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Writes use idempotency keys and dedupe; reads/writes retry with bounded exponential backoff and jitter. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-007":
+    requirement: "Offline/failed MCP degrades gracefully: bounded local queue, stale/no lessons allowed, UI shows degraded state; core work never blocks."
+    source: "`[U-R]`"
+    tests: ["UT-CM-007", "IT-CM-007", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Offline/failed MCP degrades gracefully: bounded local queue, stale/no lessons allowed, UI shows degraded state; core work never blocks. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-008":
+    requirement: "Enforce timeouts, response-size caps and a circuit breaker."
+    source: "`[I]`"
+    tests: ["UT-CM-008", "IT-CM-008", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Enforce timeouts, response-size caps and a circuit breaker. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-009":
+    requirement: "Treat MCP tool output as untrusted data; validate schema; never execute instructions found in memory."
+    source: "`[U-R]`"
+    tests: ["UT-CM-009", "IT-CM-009", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Treat MCP tool output as untrusted data; validate schema; never execute instructions found in memory. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-010":
+    requirement: "Discover tools with MCP `tools/list`; expose a curated Anchor interface; do not reimplement protocol semantics."
+    source: "`[U-R]`"
+    tests: ["UT-CM-010", "IT-CM-010", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Discover tools with MCP `tools/list`; expose a curated Anchor interface; do not reimplement protocol semantics. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-011":
+    requirement: "Store only remote IDs/references and provenance locally, never the memory database."
+    source: "`[U-R]`"
+    tests: ["UT-CM-011", "IT-CM-011", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Store only remote IDs/references and provenance locally, never the memory database. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-CM-012":
+    requirement: "Queued data has retention/deletion controls and is never synced if it contains sensitive content."
+    source: "`[I]`"
+    tests: ["UT-CM-012", "IT-CM-012", "IT-CM-MOCK-001", "LIVE-CM-OPTIONAL"]
+    acceptance: "Planned acceptance: Queued data has retention/deletion controls and is never synced if it contains sensitive content. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-SY-001":
+    requirement: "Git-based sync for events, config/rules, evidence metadata and artifact manifests."
+    source: "`[U-R]`"
+    tests: ["UT-SY-001", "IT-SY-001", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Git-based sync for events, config/rules, evidence metadata and artifact manifests. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-002":
+    requirement: "Detect divergent histories; require explicit merge/rebase policy; never force-push."
+    source: "`[U-R]`"
+    tests: ["UT-SY-002", "IT-SY-002", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Detect divergent histories; require explicit merge/rebase policy; never force-push. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-003":
+    requirement: "Concurrent event edits merge by event union; structural/deletion conflicts are surfaced to the user."
+    source: "`[U-R]`"
+    tests: ["UT-SY-003", "IT-SY-003", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Concurrent event edits merge by event union; structural/deletion conflicts are surfaced to the user. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-004":
+    requirement: "Deletion uses tombstones and survives sync; no silent resurrection."
+    source: "`[U-R]`"
+    tests: ["UT-SY-004", "IT-SY-004", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Deletion uses tombstones and survives sync; no silent resurrection. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-005":
+    requirement: "Uncommitted-code artifacts are integrity-hashed, size-limited and restorable."
+    source: "`[U-R]`"
+    tests: ["UT-SY-005", "IT-SY-005", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Uncommitted-code artifacts are integrity-hashed, size-limited and restorable. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-006":
+    requirement: "Sync is opt-in; credentials use Git credential helpers; secrets never enter remotes/logs."
+    source: "`[I]`"
+    tests: ["UT-SY-006", "IT-SY-006", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Sync is opt-in; credentials use Git credential helpers; secrets never enter remotes/logs. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-007":
+    requirement: "Offline changes queue and sync later with retry and visible status."
+    source: "`[I]`"
+    tests: ["UT-SY-007", "IT-SY-007", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Offline changes queue and sync later with retry and visible status. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-008":
+    requirement: "Device identity and last-sync state are tracked; clock skew is tolerated."
+    source: "`[I]`"
+    tests: ["UT-SY-008", "IT-SY-008", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Device identity and last-sync state are tracked; clock skew is tolerated. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-009":
+    requirement: "Sync topology (project repo vs dedicated state repo) is an open decision, not silently chosen."
+    source: "`[?]`"
+    tests: ["UT-SY-009", "IT-SY-009", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Sync topology (project repo vs dedicated state repo) is an open decision, not silently chosen. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-010":
+    requirement: "Active ownership leases are not merged; stale-owner takeover is fenced and audited."
+    source: "`[U-R]`"
+    tests: ["UT-SY-010", "IT-SY-010", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Active ownership leases are not merged; stale-owner takeover is fenced and audited. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-SY-011":
+    requirement: "Remote integrity is verifiable (checksums; signed commits optional)."
+    source: "`[I]`"
+    tests: ["UT-SY-011", "IT-SY-011", "SEC-SY-001"]
+    acceptance: "Planned acceptance: Remote integrity is verifiable (checksums; signed commits optional). Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CFG-001":
+    requirement: "One source of truth for agent config, rules/instructions, MCP servers and skills."
+    source: "`[U-P]`"
+    tests: ["UT-CFG-001", "IT-CFG-001", "E2E-CFG-001"]
+    acceptance: "Planned acceptance: One source of truth for agent config, rules/instructions, MCP servers and skills. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CFG-002":
+    requirement: "Render per-agent files with managed blocks; preserve user content; idempotent apply."
+    source: "`[I]`"
+    tests: ["UT-CFG-002", "IT-CFG-002", "E2E-CFG-001"]
+    acceptance: "Planned acceptance: Render per-agent files with managed blocks; preserve user content; idempotent apply. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CFG-003":
+    requirement: "`plan`/`diff` before apply; detect drift and show it."
+    source: "`[I]`"
+    tests: ["UT-CFG-003", "IT-CFG-003", "E2E-CFG-001"]
+    acceptance: "Planned acceptance: `plan`/`diff` before apply; detect drift and show it. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CFG-004":
+    requirement: "Secret values are references, never rendered into files."
+    source: "`[U-R]`"
+    tests: ["UT-CFG-004", "IT-CFG-004", "E2E-CFG-001"]
+    acceptance: "Planned acceptance: Secret values are references, never rendered into files. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CFG-005":
+    requirement: "Project/user scopes and precedence are documented and tested."
+    source: "`[I]`"
+    tests: ["UT-CFG-005", "IT-CFG-005", "E2E-CFG-001"]
+    acceptance: "Planned acceptance: Project/user scopes and precedence are documented and tested. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CFG-006":
+    requirement: "Config versions can be rolled back."
+    source: "`[I]`"
+    tests: ["UT-CFG-006", "IT-CFG-006", "E2E-CFG-001"]
+    acceptance: "Planned acceptance: Config versions can be rolled back. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CFG-007":
+    requirement: "The rendered rules instruct agents to use Anchor tools at start, completion and branch points."
+    source: "`[U-P]`"
+    tests: ["UT-CFG-007", "IT-CFG-007", "E2E-CFG-001"]
+    acceptance: "Planned acceptance: The rendered rules instruct agents to use Anchor tools at start, completion and branch points. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-VT-001":
+    requirement: "OS keychain backends (macOS Keychain, Windows Credential Manager/DPAPI, Linux Secret Service); encrypted-file fallback only if explicit."
+    source: "`[I]`"
+    tests: ["UT-VT-001", "IT-VT-001", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: OS keychain backends (macOS Keychain, Windows Credential Manager/DPAPI, Linux Secret Service); encrypted-file fallback only if explicit. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-002":
+    requirement: "Workspace stores secret references/metadata only."
+    source: "`[U-R]`"
+    tests: ["UT-VT-002", "IT-VT-002", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: Workspace stores secret references/metadata only. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-003":
+    requirement: "Runtime injection never puts the secret in model context, transcript, log or sync payload."
+    source: "`[U-R]`"
+    tests: ["UT-VT-003", "IT-VT-003", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: Runtime injection never puts the secret in model context, transcript, log or sync payload. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-004":
+    requirement: "Redaction runs on capture, logs, MCP output and UI."
+    source: "`[U-R]`"
+    tests: ["UT-VT-004", "IT-VT-004", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: Redaction runs on capture, logs, MCP output and UI. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-005":
+    requirement: "Rotation/revocation updates references and invalidates old material."
+    source: "`[U-P]`"
+    tests: ["UT-VT-005", "IT-VT-005", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: Rotation/revocation updates references and invalidates old material. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-006":
+    requirement: "Access is scoped by project/secret/agent; least privilege by default."
+    source: "`[U-R]`"
+    tests: ["UT-VT-006", "IT-VT-006", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: Access is scoped by project/secret/agent; least privilege by default. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-007":
+    requirement: "No secret in argv; pass via stdin/fd/0600 temp file and clean up."
+    source: "`[U-R]`"
+    tests: ["UT-VT-007", "IT-VT-007", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: No secret in argv; pass via stdin/fd/0600 temp file and clean up. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-008":
+    requirement: "Audit records access without the value."
+    source: "`[I]`"
+    tests: ["UT-VT-008", "IT-VT-008", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: Audit records access without the value. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-009":
+    requirement: "Secret scanning runs in `anchor doctor`, pre-commit guidance and CI."
+    source: "`[A]`"
+    tests: ["UT-VT-009", "IT-VT-009", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: Secret scanning runs in `anchor doctor`, pre-commit guidance and CI. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-VT-010":
+    requirement: "Tests use fake secrets only and label them; no real keys."
+    source: "`[A]`"
+    tests: ["UT-VT-010", "IT-VT-010", "IT-VT-KEYCHAIN", "SEC-VT-001"]
+    acceptance: "Planned acceptance: Tests use fake secrets only and label them; no real keys. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-mixed"
+  "REQ-UI-001":
+    requirement: "CLI covers init/status/tree/branch/claim/release/capture/restore/sync/config/vault/memory/doctor/web/install/uninstall/migrate."
+    source: "`[I]`"
+    tests: ["UT-UI-001", "IT-UI-001", "E2E-UI-001", "SEC-UI-001"]
+    acceptance: "Planned acceptance: CLI covers init/status/tree/branch/claim/release/capture/restore/sync/config/vault/memory/doctor/web/install/uninstall/migrate. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-UI-002":
+    requirement: "Stable machine-readable JSON and exit codes."
+    source: "`[U-P]`"
+    tests: ["UT-UI-002", "IT-UI-002", "E2E-UI-001", "SEC-UI-001"]
+    acceptance: "Planned acceptance: Stable machine-readable JSON and exit codes. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-UI-003":
+    requirement: "Human output is readable, color/TTY-aware and actionable."
+    source: "`[I]`"
+    tests: ["UT-UI-003", "IT-UI-003", "E2E-UI-001", "SEC-UI-001"]
+    acceptance: "Planned acceptance: Human output is readable, color/TTY-aware and actionable. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-UI-004":
+    requirement: "Web UI shows tree/branches, node details, evidence, causal references, ownership, sync/restore diff."
+    source: "`[U-R]`"
+    tests: ["UT-UI-004", "IT-UI-004", "E2E-UI-001", "SEC-UI-001"]
+    acceptance: "Planned acceptance: Web UI shows tree/branches, node details, evidence, causal references, ownership, sync/restore diff. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-UI-005":
+    requirement: "Web UI binds loopback by default with auth, CSRF and Origin/Host checks."
+    source: "`[I]`"
+    tests: ["UT-UI-005", "IT-UI-005", "E2E-UI-001", "SEC-UI-001"]
+    acceptance: "Planned acceptance: Web UI binds loopback by default with auth, CSRF and Origin/Host checks. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-UI-006":
+    requirement: "UI never renders secret values or raw transcript secrets."
+    source: "`[U-R]`"
+    tests: ["UT-UI-006", "IT-UI-006", "E2E-UI-001", "SEC-UI-001"]
+    acceptance: "Planned acceptance: UI never renders secret values or raw transcript secrets. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-UI-007":
+    requirement: "UI supports read-only mode and degrades if the local service is unavailable."
+    source: "`[I]`"
+    tests: ["UT-UI-007", "IT-UI-007", "E2E-UI-001", "SEC-UI-001"]
+    acceptance: "Planned acceptance: UI supports read-only mode and degrades if the local service is unavailable. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CONC-001":
+    requirement: "Exactly one active owner per task; ownership is a lease with heartbeat and fencing token."
+    source: "`[U-R]`"
+    tests: ["UT-CONC-001", "IT-CONC-001", "SEC-CONC-001"]
+    acceptance: "Planned acceptance: Exactly one active owner per task; ownership is a lease with heartbeat and fencing token. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CONC-002":
+    requirement: "Stale owners can be taken over after expiry with an audit event; old fencing writes are rejected."
+    source: "`[I]`"
+    tests: ["UT-CONC-002", "IT-CONC-002", "SEC-CONC-001"]
+    acceptance: "Planned acceptance: Stale owners can be taken over after expiry with an audit event; old fencing writes are rejected. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CONC-003":
+    requirement: "Per-node optimistic concurrency (`revision`/etag) detects lost updates."
+    source: "`[I]`"
+    tests: ["UT-CONC-003", "IT-CONC-003", "SEC-CONC-001"]
+    acceptance: "Planned acceptance: Per-node optimistic concurrency (`revision`/etag) detects lost updates. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-CONC-004":
+    requirement: "Ownership state is visible in CLI, UI and handoff packets."
+    source: "`[I]`"
+    tests: ["UT-CONC-004", "IT-CONC-004", "SEC-CONC-001"]
+    acceptance: "Planned acceptance: Ownership state is visible in CLI, UI and handoff packets. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-EVID-001":
+    requirement: "Evidence entries store type, source, hash, command/exit status, timestamp, actor and verification state."
+    source: "`[U-R]`"
+    tests: ["UT-EVID-001", "IT-EVID-001", "E2E-EVID-CLAUDE"]
+    acceptance: "Planned acceptance: Evidence entries store type, source, hash, command/exit status, timestamp, actor and verification state. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-EVID-002":
+    requirement: "A node can be marked done only with evidence or an explicit user override recorded as such."
+    source: "`[U-R]`"
+    tests: ["UT-EVID-002", "IT-EVID-002", "E2E-EVID-CLAUDE"]
+    acceptance: "Planned acceptance: A node can be marked done only with evidence or an explicit user override recorded as such. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-EVID-003":
+    requirement: "The successor verifies code/evidence and records a verification event before continuing."
+    source: "`[U-R]`"
+    tests: ["UT-EVID-003", "IT-EVID-003", "E2E-EVID-CLAUDE"]
+    acceptance: "Planned acceptance: The successor verifies code/evidence and records a verification event before continuing. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-EVID-004":
+    requirement: "Causal outcome links require evidence or user confirmation, never task status alone."
+    source: "`[U-R]`"
+    tests: ["UT-EVID-004", "IT-EVID-004", "E2E-EVID-CLAUDE"]
+    acceptance: "Planned acceptance: Causal outcome links require evidence or user confirmation, never task status alone. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-EVID-005":
+    requirement: "Evidence is immutable; corrections are new events referencing the old IDs."
+    source: "`[I]`"
+    tests: ["UT-EVID-005", "IT-EVID-005", "E2E-EVID-CLAUDE"]
+    acceptance: "Planned acceptance: Evidence is immutable; corrections are new events referencing the old IDs. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-EVID-006":
+    requirement: "Chat summaries are not evidence."
+    source: "`[U-R]`"
+    tests: ["UT-EVID-006", "IT-EVID-006", "E2E-EVID-CLAUDE"]
+    acceptance: "Planned acceptance: Chat summaries are not evidence. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-RT-001":
+    requirement: "Define a runtime-provider interface (environment metadata, optional launch context) with no hard dependency."
+    source: "`[U-R]`"
+    tests: ["UT-RT-001", "IT-RT-001", "CI-IMPORT-BOUNDARY"]
+    acceptance: "Planned acceptance: Define a runtime-provider interface (environment metadata, optional launch context) with no hard dependency. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-RT-002":
+    requirement: "Do not modify `roostbot`, `LangAlpha`, or `market` repositories."
+    source: "`[U-R]`"
+    tests: ["UT-RT-002", "IT-RT-002", "CI-IMPORT-BOUNDARY"]
+    acceptance: "Planned acceptance: Do not modify `roostbot`, `LangAlpha`, or `market` repositories. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-RT-003":
+    requirement: "Core Anchor works without Roost; integration is opt-in and feature-flagged."
+    source: "`[I]`"
+    tests: ["UT-RT-003", "IT-RT-003", "CI-IMPORT-BOUNDARY"]
+    acceptance: "Planned acceptance: Core Anchor works without Roost; integration is opt-in and feature-flagged. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-NFR-001":
+    requirement: "macOS, Linux and Windows support; no platform-specific state in synced data."
+    source: "`[A]`"
+    tests: ["UT-NFR-001", "IT-NFR-001", "PERF-NFR-002", "SCAN-NFR-004"]
+    acceptance: "Planned acceptance: macOS, Linux and Windows support; no platform-specific state in synced data. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-NFR-002":
+    requirement: "Hook capture adds bounded latency (target p95 < 150 ms excluding MCP network; restore packet < 1 s locally; UI first paint < 2 s). Targets are proposals to validate."
+    source: "`[I]`"
+    tests: ["UT-NFR-002", "IT-NFR-002", "PERF-NFR-002", "SCAN-NFR-004"]
+    acceptance: "Planned acceptance: Hook capture adds bounded latency (target p95 < 150 ms excluding MCP network; restore packet < 1 s locally; UI first paint < 2 s). Targets are proposals to validate. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-NFR-003":
+    requirement: "Offline-first: core capture/tree/restore works with no network; remote features degrade visibly."
+    source: "`[U-R]`"
+    tests: ["UT-NFR-003", "IT-NFR-003", "PERF-NFR-002", "SCAN-NFR-004"]
+    acceptance: "Planned acceptance: Offline-first: core capture/tree/restore works with no network; remote features degrade visibly. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-NFR-004":
+    requirement: "No telemetry by default; no analytics endpoint; logs are local and redacted."
+    source: "`[U-R]`"
+    tests: ["UT-NFR-004", "IT-NFR-004", "PERF-NFR-002", "SCAN-NFR-004"]
+    acceptance: "Planned acceptance: No telemetry by default; no analytics endpoint; logs are local and redacted. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-NFR-005":
+    requirement: "User-controlled retention/export/delete for transcripts, artifacts and queued data."
+    source: "`[I]`"
+    tests: ["UT-NFR-005", "IT-NFR-005", "PERF-NFR-002", "SCAN-NFR-004"]
+    acceptance: "Planned acceptance: User-controlled retention/export/delete for transcripts, artifacts and queued data. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-NFR-006":
+    requirement: "Deterministic, testable modules with clear boundaries; no `unsafe` in Go core."
+    source: "`[I]`"
+    tests: ["UT-NFR-006", "IT-NFR-006", "PERF-NFR-002", "SCAN-NFR-004"]
+    acceptance: "Planned acceptance: Deterministic, testable modules with clear boundaries; no `unsafe` in Go core. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-NFR-007":
+    requirement: "Accessibility: keyboard navigation and non-color-only status in the web UI."
+    source: "`[I]`"
+    tests: ["UT-NFR-007", "IT-NFR-007", "PERF-NFR-002", "SCAN-NFR-004"]
+    acceptance: "Planned acceptance: Accessibility: keyboard navigation and non-color-only status in the web UI. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-OPS-001":
+    requirement: "Install packages with checksums/signatures for supported platforms."
+    source: "`[A]`"
+    tests: ["UT-OPS-001", "IT-OPS-001", "CI-OPS-004", "DOC-OPS-005", "SBOM-OPS-006"]
+    acceptance: "Planned acceptance: Install packages with checksums/signatures for supported platforms. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-OPS-002":
+    requirement: "Upgrade/migrate with backup, dry-run and rollback; downgrade behavior documented."
+    source: "`[A]`"
+    tests: ["UT-OPS-002", "IT-OPS-002", "CI-OPS-004", "DOC-OPS-005", "SBOM-OPS-006"]
+    acceptance: "Planned acceptance: Upgrade/migrate with backup, dry-run and rollback; downgrade behavior documented. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-OPS-003":
+    requirement: "Uninstall by default removes integrations and preserves data; `--purge` destroys data after confirmation."
+    source: "`[A]`"
+    tests: ["UT-OPS-003", "IT-OPS-003", "CI-OPS-004", "DOC-OPS-005", "SBOM-OPS-006"]
+    acceptance: "Planned acceptance: Uninstall by default removes integrations and preserves data; `--purge` destroys data after confirmation. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-OPS-004":
+    requirement: "CI runs format/lint/unit/integration/contract/e2e/security/coverage gates."
+    source: "`[A]`"
+    tests: ["UT-OPS-004", "IT-OPS-004", "CI-OPS-004", "DOC-OPS-005", "SBOM-OPS-006"]
+    acceptance: "Planned acceptance: CI runs format/lint/unit/integration/contract/e2e/security/coverage gates. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-OPS-005":
+    requirement: "User, security, architecture, migration, uninstall, requirement-coverage and known-limitations docs ship with the release."
+    source: "`[A]`"
+    tests: ["UT-OPS-005", "IT-OPS-005", "CI-OPS-004", "DOC-OPS-005", "SBOM-OPS-006"]
+    acceptance: "Planned acceptance: User, security, architecture, migration, uninstall, requirement-coverage and known-limitations docs ship with the release. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-OPS-006":
+    requirement: "Reproducible builds where practical; SBOM and dependency pinning; no unvetted postinstall."
+    source: "`[I]`"
+    tests: ["UT-OPS-006", "IT-OPS-006", "CI-OPS-004", "DOC-OPS-005", "SBOM-OPS-006"]
+    acceptance: "Planned acceptance: Reproducible builds where practical; SBOM and dependency pinning; no unvetted postinstall. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-OPS-007":
+    requirement: "No real payment integration, no real production secrets in any artifact or test."
+    source: "`[A]`"
+    tests: ["UT-OPS-007", "IT-OPS-007", "CI-OPS-004", "DOC-OPS-005", "SBOM-OPS-006"]
+    acceptance: "Planned acceptance: No real payment integration, no real production secrets in any artifact or test. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+  "REQ-OPS-008":
+    requirement: "Roost boundary documented but not implemented against live Roost services."
+    source: "`[U-R]`"
+    tests: ["UT-OPS-008", "IT-OPS-008", "CI-OPS-004", "DOC-OPS-005", "SBOM-OPS-006"]
+    acceptance: "Planned acceptance: Roost boundary documented but not implemented against live Roost services. Mapped tests must pass, or an approved limitation must be recorded."
+    status: "planned"
+    label: "planned-real"
+
+unknowns_and_mock_policy:
+  "U-001":
+    item: "GitHub repository creation and default-branch write"
+    status: "not attempted; requires direct user approval"
+    blocks: "docs/07-repo-bootstrap.md"
+  "U-002":
+    item: "Real Codex CLI adapter e2e"
+    status: "Codex CLI is not installed in the current environment; contract fixtures only"
+    blocks: "adapter e2e gate"
+  "U-003":
+    item: "Real Gemini CLI adapter e2e"
+    status: "Gemini CLI is not installed in the current environment; contract fixtures only"
+    blocks: "adapter e2e gate"
+  "U-004":
+    item: "Live causal-memory remote MCP"
+    status: "no live test endpoint/token; CI uses a clearly labeled mock MCP server; live test is opt-in"
+    blocks: "O-005"
+  "U-005":
+    item: "Real OS keychain on Linux/Windows"
+    status: "depends on CI runner capabilities; fake backend is labeled, not presented as real"
+    blocks: "O-006"
+  "U-006":
+    item: "GitHub-remote sync e2e"
+    status: "only local bare-repo sync is planned for default CI; remote e2e is opt-in"
+    blocks: "O-001"
+  "U-007":
+    item: "Windows/macOS packaging execution"
+    status: "build matrix planned; runtime e2e depends on runner availability"
+    blocks: "O-002"
+  "U-008":
+    item: "Go + TypeScript stack approval"
+    status: "proposal P-001, not user-confirmed"
+    blocks: "P-001"
+  "U-009":
+    item: "Sync topology and whether .anchor/ is committed"
+    status: "open decision O-001/O-004"
+    blocks: "O-001/O-004"
+  "U-010":
+    item: "Product implementation and test execution"
+    status: "none performed; this is a design baseline only"
+    blocks: "design review"
