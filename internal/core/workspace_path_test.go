@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -123,5 +124,106 @@ func TestOpenAndInitRejectSharedAgentPathsWithoutSideEffects(t *testing.T) {
 	manifest, err := os.ReadFile(filepath.Join(created, "manifest.json"))
 	if err != nil || !strings.Contains(string(manifest), `"event_log_version": 2`) {
 		t.Fatalf("manifest missing version: %s %v", manifest, err)
+	}
+}
+
+func eventFileHashes(t *testing.T, ws string) map[string]string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(ws, "events", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(b)
+		out[filepath.Base(p)] = hex.EncodeToString(sum[:])
+	}
+	return out
+}
+
+func TestInitRefusesExistingAnchorDataWithoutTouchingLog(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	s, err := InitWorkspace(ws, "old-ws", "old-dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(Event{Type: EvOwnershipClaimed, CausalParents: []string{}, LeaseID: "l1", FencingToken: 1, Payload: json.RawMessage(`{"node_id":"n1","owner":"a","lease_id":"l1","fencing_token":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	before := eventFileHashes(t, ws)
+	manifestBefore, err := os.ReadFile(filepath.Join(ws, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := filepath.Join(root, "manifest.saved.json")
+	if err := os.Rename(filepath.Join(ws, "manifest.json"), saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitWorkspace(ws, "new-ws", "new-dev"); err == nil {
+		t.Fatal("init rebound identity over existing event log")
+	} else if !strings.Contains(err.Error(), "existing Anchor data") && !strings.Contains(err.Error(), "non-empty") {
+		t.Fatalf("unexpected init error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatal("failed init repaired or recreated manifest.json")
+	}
+	after := eventFileHashes(t, ws)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("event log changed during rejected init\nbefore=%v\nafter=%v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".anchor.init.lock")); !os.IsNotExist(err) {
+		t.Fatal("init lock was left behind")
+	}
+	// Restoring the original manifest is the explicit recovery path; the original
+	// identity and event log must then still open.
+	if err := os.WriteFile(filepath.Join(ws, "manifest.json"), manifestBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(ws); err != nil {
+		t.Fatalf("original workspace did not reopen after manifest restore: %v", err)
+	}
+}
+
+func TestInitRefusesResidualTracesAndOnlyInitializesEmptyDirs(t *testing.T) {
+	cases := map[string]func(string) error{
+		"events":   func(dir string) error { return os.Mkdir(filepath.Join(dir, "events"), 0o700) },
+		"evidence": func(dir string) error { return os.Mkdir(filepath.Join(dir, "evidence"), 0o700) },
+		"handoff":  func(dir string) error { return os.Mkdir(filepath.Join(dir, "handoff"), 0o700) },
+		"manifest": func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"schema_version":1}`), 0o600)
+		},
+		"lock": func(dir string) error { return os.WriteFile(filepath.Join(dir, ".anchor.lock"), []byte("x"), 0o600) },
+		"init-lock": func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, ".anchor.init.lock"), []byte("x"), 0o600)
+		},
+		"tmp":       func(dir string) error { return os.WriteFile(filepath.Join(dir, ".txn-stale.tmp"), []byte("x"), 0o600) },
+		"unrelated": func(dir string) error { return os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o600) },
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := setup(dir); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InitWorkspace(dir, "ws", "dev"); err == nil {
+				t.Fatalf("init accepted residual trace %s", name)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err == nil && name != "manifest" {
+				t.Fatal("failed init wrote manifest.json")
+			}
+		})
+	}
+	empty := t.TempDir()
+	if _, err := InitWorkspace(empty, "ws", "dev"); err != nil {
+		t.Fatalf("init on empty directory failed: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "new-workspace")
+	if _, err := InitWorkspace(missing, "ws", "dev"); err != nil {
+		t.Fatalf("init on missing path failed: %v", err)
 	}
 }

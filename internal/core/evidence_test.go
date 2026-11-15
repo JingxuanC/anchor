@@ -106,10 +106,10 @@ func TestEvidencePutRejectsSecretsSymlinksAndStoreEscape(t *testing.T) {
 	}
 	outside := t.TempDir()
 	ws2 := t.TempDir()
+	s2 := initAt(t, ws2)
 	if err := os.Symlink(outside, filepath.Join(ws2, "evidence")); err != nil {
 		t.Fatal(err)
 	}
-	s2 := initAt(t, ws2)
 	if _, err := s2.PutEvidenceFile(clean, "", nil); err == nil {
 		t.Fatal("symlinked evidence directory accepted")
 	}

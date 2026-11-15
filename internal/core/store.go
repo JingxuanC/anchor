@@ -83,13 +83,43 @@ func InitWorkspace(dir, workspaceID, deviceID string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(filepath.Join(canonical, "manifest.json")); err == nil {
-		return nil, fmt.Errorf("workspace already initialized at %s", canonical)
+	if info, err := os.Lstat(canonical); err == nil {
+		if !info.IsDir() {
+			return nil, fmt.Errorf("workspace path is not a directory")
+		}
+		entries, err := os.ReadDir(canonical)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) != 0 {
+			for _, e := range entries {
+				switch e.Name() {
+				case "manifest.json", "events", "evidence", "handoff", ".anchor", ".anchor.lock", ".anchor.init.lock":
+					return nil, fmt.Errorf("refusing to initialize over existing Anchor data/traces in %s; explicit recovery with identity verification is required", canonical)
+				}
+			}
+			return nil, fmt.Errorf("refusing to initialize a non-empty directory %s; init requires an empty directory", canonical)
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
 	if err := os.MkdirAll(canonical, 0o700); err != nil {
 		return nil, err
+	}
+	lockPath := filepath.Join(canonical, ".anchor.init.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("workspace initialization is already in progress or has a stale init trace; refusing to continue")
+	}
+	defer func() { _ = lock.Close(); _ = os.Remove(lockPath) }()
+	entries, err := os.ReadDir(canonical)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if e.Name() != ".anchor.init.lock" {
+			return nil, fmt.Errorf("workspace directory changed during initialization; refusing to continue")
+		}
 	}
 	eventsPath := filepath.Join(canonical, "events")
 	if err := os.Mkdir(eventsPath, 0o700); err != nil && !os.IsExist(err) {
@@ -112,6 +142,12 @@ func InitWorkspace(dir, workspaceID, deviceID string) (*Store, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(filepath.Join(canonical, "manifest.json"), b, 0o600); err != nil {
+		return nil, err
+	}
+	if err := lock.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Remove(lockPath); err != nil {
 		return nil, err
 	}
 	return Open(canonical)

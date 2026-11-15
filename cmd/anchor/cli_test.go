@@ -1450,3 +1450,117 @@ func TestCLIRejectsSharedAgentPathsWithoutSideEffects(t *testing.T) {
 		t.Fatal("failed Open/status created a missing workspace")
 	}
 }
+
+func eventHashesCLI(t *testing.T, ws string) map[string]string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(ws, "events", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(b)
+		out[filepath.Base(p)] = hex.EncodeToString(sum[:])
+	}
+	return out
+}
+
+func TestCLIInitRefusesManifestLossAndPreservesLog(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	if out, errText, code := runCLI(t, root, "init", "--dir", ws, "--workspace", "old-ws", "--device", "old-dev"); code != 0 {
+		t.Fatalf("init failed: %s%s", out, errText)
+	}
+	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G"); code != 0 {
+		t.Fatalf("create failed: %s%s", out, errText)
+	}
+	before := eventHashesCLI(t, ws)
+	if len(before) == 0 {
+		t.Fatal("no event batches written")
+	}
+	saved := filepath.Join(root, "manifest.saved.json")
+	if err := os.Rename(filepath.Join(ws, "manifest.json"), saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runCLI(t, root, "init", "--dir", ws, "--workspace", "new-ws", "--device", "new-dev"); code == 0 {
+		t.Fatalf("init rebound identity after manifest loss: %s", stderr)
+	} else if !strings.Contains(stderr, "existing Anchor data") && !strings.Contains(stderr, "non-empty") {
+		t.Fatalf("init refusal was not explicit: %s", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatal("rejected init recreated manifest.json")
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".anchor.init.lock")); !os.IsNotExist(err) {
+		t.Fatal("rejected init left init lock behind")
+	}
+	after := eventHashesCLI(t, ws)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("event log changed during rejected init\nbefore=%v\nafter=%v", before, after)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T"); code == 0 {
+		t.Fatalf("node create succeeded without manifest: %s", stderr)
+	}
+	if !reflect.DeepEqual(before, eventHashesCLI(t, ws)) {
+		t.Fatal("node create without manifest wrote an event")
+	}
+	// Restoring the original manifest is the explicit recovery path.
+	if err := os.Rename(saved, filepath.Join(ws, "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
+	out, _, code := runCLI(t, root, "status", "--dir", ws, "--json")
+	if code != 0 || !strings.Contains(out, `"projection_status": "complete"`) || !strings.Contains(out, `"goal1"`) {
+		t.Fatalf("original workspace did not recover after manifest restore: %s", out)
+	}
+}
+
+func TestCLIConcurrentInitOneIdentity(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	procs := raceCLI(t, root,
+		[]string{"init", "--dir", target, "--workspace", "ws-a", "--device", "dev-a"},
+		[]string{"init", "--dir", target, "--workspace", "ws-b", "--device", "dev-b"},
+	)
+	success, failed := 0, 0
+	for _, p := range procs {
+		if p.code == 0 {
+			success++
+		} else {
+			failed++
+			if p.stderr.Len() == 0 {
+				t.Fatal("losing init had no diagnostic")
+			}
+		}
+	}
+	if success != 1 || failed != 1 {
+		t.Fatalf("expected one init winner, got success=%d failed=%d", success, failed)
+	}
+	b, err := os.ReadFile(filepath.Join(target, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		WorkspaceID     string `json:"workspace_id"`
+		DeviceID        string `json:"device_id"`
+		EventLogVersion int    `json:"event_log_version"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if !((m.WorkspaceID == "ws-a" && m.DeviceID == "dev-a") || (m.WorkspaceID == "ws-b" && m.DeviceID == "dev-b")) || m.EventLogVersion != 2 {
+		t.Fatalf("partial/mixed workspace identity: %+v", m)
+	}
+	if entries, err := os.ReadDir(filepath.Join(target, "events")); err != nil || len(entries) != 0 {
+		t.Fatalf("events directory not empty after init: %v %v", entries, err)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".anchor.init.lock")); !os.IsNotExist(err) {
+		t.Fatal("init lock left behind")
+	}
+	out, _, code := runCLI(t, root, "status", "--dir", target, "--json")
+	if code != 0 || !strings.Contains(out, `"projection_status": "complete"`) {
+		t.Fatalf("initialized workspace is not openable: %s", out)
+	}
+}
