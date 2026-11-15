@@ -84,7 +84,7 @@ func TestCLIWorkflowRecoveryAndRestoreBoundary(t *testing.T) {
 	must(runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1"))
 	must(runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "Ship"))
 	must(runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "Core"))
-	must(runCLI(t, root, "node", "create", "--dir", ws, "--id", "note1", "--type", "note", "--title", "note"))
+	must(runCLI(t, root, "node", "create", "--dir", ws, "--id", "note1", "--type", "note", "--parent", "goal1", "--title", "note"))
 	must(runCLI(t, root, "note", "set", "--dir", ws, "--id", "note1", "--text", "hello"))
 	must(runCLI(t, root, "node", "edit", "--dir", ws, "--id", "task1", "--title", "Core v2"))
 	must(runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "in_progress"))
@@ -145,13 +145,16 @@ func TestCLIRejectsIllegalTransitions(t *testing.T) {
 	if out, errText, code := runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1"); code != 0 {
 		t.Fatalf("%s %s", out, errText)
 	}
-	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--title", "T"); code != 0 {
+	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G"); code != 0 {
+		t.Fatalf("%s %s", out, errText)
+	}
+	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T"); code != 0 {
 		t.Fatalf("%s %s", out, errText)
 	}
 	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "done"); code == 0 {
 		t.Fatal("todo->done should fail")
 	}
-	if _, _, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "note1", "--type", "note", "--title", "N"); code != 0 {
+	if _, _, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "note1", "--type", "note", "--parent", "goal1", "--title", "N"); code != 0 {
 		t.Fatal("note create failed")
 	}
 	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "note1", "--to", "archived"); code != 0 {
@@ -159,5 +162,31 @@ func TestCLIRejectsIllegalTransitions(t *testing.T) {
 	}
 	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "note1", "--to", "active"); code == 0 {
 		t.Fatal("note archived->active should fail")
+	}
+}
+
+func TestCLIConsecutiveTransitions(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	if out, errText, code := runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1"); code != 0 {
+		t.Fatalf("%s %s", out, errText)
+	}
+	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G"); code != 0 {
+		t.Fatalf("%s %s", out, errText)
+	}
+	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T"); code != 0 {
+		t.Fatalf("%s %s", out, errText)
+	}
+	for _, to := range []string{"in_progress", "done"} {
+		if out, errText, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", to); code != 0 {
+			t.Fatalf("transition %s: %s %s", to, out, errText)
+		}
+	}
+	out, _, _ := runCLI(t, root, "status", "--dir", ws, "--json")
+	if !strings.Contains(out, `"projection_status": "complete"`) {
+		t.Fatalf("projection incomplete after consecutive transitions: %s", out)
+	}
+	if !strings.Contains(out, `"status": "done"`) {
+		t.Fatalf("final status not done: %s", out)
 	}
 }
