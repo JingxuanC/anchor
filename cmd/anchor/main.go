@@ -87,7 +87,8 @@ func usage() {
   anchor handoff prepare --dir DIR --repo REPO
   anchor handoff restore --dir DIR --repo REPO --packet PACKET.json [--ack | --verify]
       [--evidence ID]... [--force] [--verifier NAME] [--note TEXT]
-  anchor handoff export --dir WS --repo REPO --out DIR [--include-bytes] [--json]
+  anchor handoff export --dir WS --repo REPO --out DIR [--include-bytes] [--include-code] [--json]
+  anchor handoff apply-code --package DIR --repo DIR [--apply] [--force] [--json]
   anchor handoff import --package DIR --target DIR [--apply] [--json]
   anchor handoff status --dir DIR --repo REPO
   anchor adapter capabilities [--json]
@@ -942,22 +943,23 @@ func cmdHandoff(args []string) {
 		repo := fs.String("repo", ".", "git working tree")
 		out := fs.String("out", "", "explicit new export package directory")
 		includeBytes := fs.Bool("include-bytes", false, "explicitly include selected local bytes")
+		includeCode := fs.Bool("include-code", false, "include a verified git bundle of the prepared commit")
 		asJSON := fs.Bool("json", false, "JSON output")
 		_ = fs.Parse(args[1:])
 		if *out == "" {
 			die(fmt.Errorf("--out is required"))
 		}
-		m, path, err := recovery.Export(*dir, *repo, *out, *includeBytes)
+		m, path, err := recovery.ExportWithCode(*dir, *repo, *out, *includeBytes, *includeCode)
 		if err != nil {
 			die(err)
 		}
-		summary := map[string]any{"export_id": m.ExportID, "path": path, "workspace_id": m.WorkspaceID, "device_id": m.DeviceID, "artifact_availability": m.ArtifactAvailability, "recovery_status": m.RecoveryStatus, "code_apply": m.CodeApply, "adapter_native_recovery": m.AdapterNativeRecovery, "code_commit_included": m.CodeCommitIncluded, "files": len(m.Files), "event_batches": m.EventBatches, "workspace_state_included": true, "evidence_bytes": m.EvidenceBytesIncluded, "untracked_bytes": m.UntrackedBytesIncluded, "auto_install": false, "upload": false, "warnings": m.Warnings}
+		summary := map[string]any{"export_id": m.ExportID, "path": path, "workspace_id": m.WorkspaceID, "device_id": m.DeviceID, "artifact_availability": m.ArtifactAvailability, "recovery_status": m.RecoveryStatus, "code_apply": m.CodeApply, "adapter_native_recovery": m.AdapterNativeRecovery, "code_commit_included": m.CodeCommitIncluded, "code_bundle_included": m.CodeBundleIncluded, "files": len(m.Files), "event_batches": m.EventBatches, "workspace_state_included": true, "evidence_bytes": m.EvidenceBytesIncluded, "untracked_bytes": m.UntrackedBytesIncluded, "auto_install": false, "upload": false, "warnings": m.Warnings}
 		if *asJSON {
 			b, _ := json.MarshalIndent(summary, "", "  ")
 			fmt.Println(string(b))
 			return
 		}
-		fmt.Printf("exported %s to %s (recovery=%s artifacts=%s files=%d event_batches=%d)\n", m.ExportID, path, m.RecoveryStatus, m.ArtifactAvailability, len(m.Files), m.EventBatches)
+		fmt.Printf("exported %s to %s (recovery=%s artifacts=%s files=%d event_batches=%d code_bundle=%v)\n", m.ExportID, path, m.RecoveryStatus, m.ArtifactAvailability, len(m.Files), m.EventBatches, m.CodeBundleIncluded)
 	case "import":
 		fs := flag.NewFlagSet("handoff import", flag.ExitOnError)
 		pkg := fs.String("package", "", "export package directory")
@@ -978,6 +980,37 @@ func cmdHandoff(args []string) {
 			return
 		}
 		fmt.Printf("import dry_run=%v target=%s verified_files=%d workspace_rebuilt=%v event_batches=%d events_applied=%d projection=%s recovery=%s code_apply=%s writes=%d\n", r.DryRun, r.Target, r.FilesVerified, r.WorkspaceRebuilt, r.EventBatches, r.EventsApplied, r.ProjectionStatus, r.RecoveryStatus, r.CodeApply, r.Writes)
+	case "apply-code":
+		fs := flag.NewFlagSet("handoff apply-code", flag.ExitOnError)
+		pkg := fs.String("package", "", "export package directory")
+		repo := fs.String("repo", "", "git working tree to restore code into")
+		apply := fs.Bool("apply", false, "apply the code bytes; default is a read-only plan")
+		force := fs.Bool("force", false, "apply even if the target working tree is dirty (changes are stashed and a backup ref is created)")
+		asJSON := fs.Bool("json", false, "JSON output")
+		_ = fs.Parse(args[1:])
+		if *pkg == "" || *repo == "" {
+			die(fmt.Errorf("--package and --repo are required"))
+		}
+		r, err := recovery.ApplyCode(*pkg, *repo, !*apply, *force)
+		if err != nil {
+			die(err)
+		}
+		if *asJSON {
+			b, _ := json.MarshalIndent(r, "", "  ")
+			fmt.Println(string(b))
+		} else {
+			fmt.Printf("apply-code dry_run=%v repo=%s packet_head=%s bundle=%v trusted=%v applied=%v backup_ref=%s untracked=%d\n",
+				r.DryRun, r.Repo, r.PacketHead, r.BundleIncluded, r.BundleVerified, r.Applied, r.BackupRef, r.UntrackedWritten)
+			for _, b := range r.Blockers {
+				fmt.Printf("blocker: %s\n", b)
+			}
+			for _, w := range r.Warnings {
+				fmt.Printf("warning: %s\n", w)
+			}
+		}
+		if len(r.Blockers) > 0 || (!*apply && !r.DryRun) {
+			os.Exit(1)
+		}
 	case "status":
 		fs := flag.NewFlagSet("handoff status", flag.ExitOnError)
 		dir := fs.String("dir", ".", "workspace directory")

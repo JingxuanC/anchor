@@ -390,8 +390,10 @@ func TestExportIncludeBytesCapturesEvidenceAndWorktree(t *testing.T) {
 	if !m.StagedDiffIncluded || !m.UnstagedDiffIncluded {
 		t.Fatalf("diff flags: staged=%v unstaged=%v", m.StagedDiffIncluded, m.UnstagedDiffIncluded)
 	}
-	if m.RecoveryStatus != handoff.StatusIncomplete {
-		t.Fatalf("dirty export status = %q", m.RecoveryStatus)
+	// All uncommitted bytes (staged+unstaged diffs, untracked) are transported, so
+	// the package can reproduce the dirty code state via apply-code.
+	if m.RecoveryStatus != handoff.StatusComplete {
+		t.Fatalf("dirty export with complete bytes status = %q (%v)", m.RecoveryStatus, m.Warnings)
 	}
 	// Evidence bytes round-trip exactly.
 	evPath := filepath.Join(pkg, "payload", "evidence", artifact.SHA256)

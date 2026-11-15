@@ -37,10 +37,10 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | WS | 4 | 3 | 1 | 0 | 8 |
 | ST | 5 | 5 | 3 | 0 | 13 |
 | CAP | 4 | 5 | 0 | 0 | 9 |
-| RST | 6 | 2 | 3 | 0 | 11 |
+| RST | 8 | 0 | 3 | 0 | 11 |
 | AD | 0 | 10 | 3 | 0 | 13 |
 | CM | 0 | 1 | 12 | 0 | 13 |
-| SY | 1 | 7 | 4 | 0 | 12 |
+| SY | 2 | 6 | 4 | 0 | 12 |
 | CFG | 0 | 0 | 8 | 0 | 8 |
 | VT | 0 | 3 | 7 | 0 | 10 |
 | UI | 0 | 3 | 4 | 0 | 7 |
@@ -50,7 +50,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | SEC | 0 | 4 | 3 | 0 | 7 |
 | NFR | 2 | 2 | 3 | 0 | 7 |
 | OPS | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **27** | **56** | **56** | **1** | **140** |
+| **Total** | **30** | **53** | **56** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -90,12 +90,17 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    `handoff_verified` events, and refuses node mutations until the latest
    prepared handoff is verified. Code is still never applied: the plan states
    `code_apply: disabled` and tells the successor what to check out.
-9. **Restorable packages** — export always transports the workspace manifest and
+9. **Code byte transport** — `handoff export --include-code` bundles the prepared
+   commit (verified with `git bundle list-heads`) and `handoff apply-code`
+   restores it into a repository: fetch, backup ref, stash when forced, checkout,
+   then applies the packaged staged/unstaged diffs and untracked bytes after
+   hash and secret checks. Code is never applied unless `--apply` is explicit.
+10. **Restorable packages** — export always transports the workspace manifest and
    event log; import rebuilds the workspace in a fresh empty target, replays it,
    verifies evidence blobs and reports an honest `complete`/`incomplete` status.
    Legacy artifact-only packages still import their bytes but are reported as not
    rebuilding a workspace.
-10. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
+11. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
 
@@ -158,9 +163,9 @@ authoritative.
 | RST-004 | implemented | `handoff.go:248`, `main.go:484`; `TestCLIWorkflowRecoveryAndRestoreBoundary` | Partially vacuous: no summary object exists. |
 | RST-005 | missing | one static packet format only | No per-adapter cross-agent handoff. |
 | RST-006 | missing | export/import now transports the workspace (`recovery.go`); no Git sync | Handoff across devices works only by manually moving a package; the requirement's Git-sync path does not exist. |
-| RST-007 | partial | `handoff.go:34,116`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | No bundle/patch artifact, no restore instructions, no base commit. |
+| RST-007 | implemented | `recovery.ExportWithCode`, `recovery.ApplyCode`; `TestApplyCodeRestoresUncommittedWorktree`, `TestCLIExportApplyCodeEndToEnd` | Bundle carries the commit; diffs and untracked bytes carry the dirty state; apply-code restores both with hash checks. |
 | RST-008 | implemented | `handoff restore --ack/--verify`, plan actions; `TestCLIRestoreStaleCodeRequiresForce` | Restore is plan-first, a stale/dirty packet needs explicit `--force` (recorded as forced), and code bytes are never applied by design. |
-| RST-009 | partial | `handoff.go:358`, `recovery.go:203` | Does not enumerate missing artifacts/unreachable evidence; returns a status only. |
+| RST-009 | implemented | `handoff.BuildPlan` blockers/actions; export/import warnings; `TestBuildPlanStaleCodeAndGateLifecycle` | Plans enumerate stale code, missing evidence, dirty trees and missing bundle/code bytes instead of only returning a status. |
 | RST-010 | implemented | `Node.Provenance` + packet blocks; `TestPrepareCarriesTaskStructure` | Provenance is labeled per goal/decision/next step/question and summarized; `user_confirmed` is refused until a verified attestation exists. |
 | RST-011 | implemented | `handoff.go:103`, `recovery.go:433`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | Code apply disabled, so "unrecovered" is always true; no per-artifact list. |
 
@@ -201,7 +206,7 @@ matches only capability strings.
 | SY-002 | missing | no remote operations | No divergence detection, no force-push guard. |
 | SY-003 | partial | `replay.go:170`; `TestSameRevisionConcurrentMutationsBothIsolate` | Replay-level union only; no merge driver, no deletion-conflict surfacing. |
 | SY-004 | partial | `replay.go:609`; `TestP1TombstoneIsTerminal` | Tombstone survival across devices untested (no sync). |
-| SY-005 | partial | `handoff.go:178`, `recovery.go:117` | Bytes never restored to a repo; no bundle. |
+| SY-005 | implemented | `recovery.ExportWithCode`/`ApplyCode`; `TestApplyCodeRoundTripIntoFreshRepo` | Commit bundle + staged/unstaged/untracked bytes are hashed, size-limited and restorable via apply-code. |
 | SY-006 | missing | no sync code | No opt-in, credential handling, or secret-free remotes. |
 | SY-007 | missing | no queue | Offline queue absent. |
 | SY-008 | partial | `store.go:133`, `replay.go:46`; `TestDeviceSeqMonotonic` | No last-sync state; no clock-skew handling. |
@@ -304,8 +309,9 @@ Ranked by "what blocks a usable local segment":
 
 1. ~~**Make restore actually restore** (RST-003/008, EVID-003).~~ **Done** —
    `handoff restore` now emits a plan, records `handoff_acked`/`handoff_verified`,
-   and gates node mutations until verification. Remaining: code bytes are still
-   never applied (`git bundle` transport is the open part).
+   and gates node mutations until verification. Code bytes are now transported
+   too (`--include-code` + `handoff apply-code`). Remaining: bundles are capped at
+   the package file limit (64 MiB) and are not signed.
 2. ~~**Carry the workspace inside the export package** (WS-007).~~ **Done** — the
    package always carries the workspace manifest and event log; import rebuilds,
    replays and verifies. Remaining: config/rules snapshot and bundled commit bytes.
@@ -396,9 +402,9 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 | RST-004 | implemented |  |
 | RST-005 | missing | no cross-agent restore |
 | RST-006 | missing | no Git sync; manual export/import only |
-| RST-007 | partial |  |
+| RST-007 | implemented | git bundle + diffs + untracked bytes, restorable via apply-code |
 | RST-008 | implemented | plan-first restore, forced override recorded |
-| RST-009 | partial |  |
+| RST-009 | implemented | plan blockers/actions + export/import warnings |
 | RST-010 | implemented | packet labels provenance on goal/decisions/next steps/questions |
 | RST-011 | implemented |  |
 
@@ -446,7 +452,7 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 | SY-002 | missing |  |
 | SY-003 | partial |  |
 | SY-004 | partial |  |
-| SY-005 | partial |  |
+| SY-005 | implemented | code bytes hashed and restorable |
 | SY-006 | missing |  |
 | SY-007 | missing |  |
 | SY-008 | partial |  |
@@ -575,10 +581,10 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `internal/core` | 69.4% | 92.9% | Remaining gaps are OS-error paths (rename/sync failures) and the test-only tx hook shim. |
 | `internal/adapter` | 75.8% | 93.2% | Remaining gaps are `json.Marshal`/`Write` error branches. |
 | `internal/handoff` | 78.1% | 95.3% | Goal ranking, packet blocks, stale/detached eval covered. |
-| `internal/recovery` | 51.9% | 90.3% | Export/import branches, staging atomicity, limits, legacy packages covered. |
+| `internal/recovery` | 51.9% | 86.4% | Export/import branches, staging atomicity, limits, legacy packages covered. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 323 top-level test functions / 904 run entries, ~16,100 test lines.
+Test suite: 335 top-level test functions / ~950 run entries, ~15,700 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
@@ -605,6 +611,11 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   example a referenced evidence blob disappeared), the gate reports the handoff
   as pending instead of assuming progress; the workspace then refuses writes
   until the projection is repaired.
+- **Code transport is explicit and capped.** `--include-code` bundles the
+  prepared commit; the bundle must fit the 64 MiB package file limit and is not
+  signed, so verify provenance out of band. `apply-code --apply` is the only
+  command that writes code: it stashes dirty changes (when forced), creates a
+  `refs/anchor/backup/*` ref, then checks out and applies the packaged bytes.
 - **Package limits are symmetric.** Export refuses a workspace that would exceed
   the import limits (1000 files / 256 MiB), so an export can never produce a
   package that import rejects.

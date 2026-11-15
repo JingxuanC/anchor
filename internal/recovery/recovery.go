@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -50,6 +51,8 @@ type Manifest struct {
 	UntrackedBytesIncluded int            `json:"untracked_bytes_included"`
 	EvidenceBytesIncluded  int            `json:"evidence_bytes_included"`
 	EventBatches           int            `json:"event_batches,omitempty"`
+	CodeBundleIncluded     bool           `json:"code_bundle_included,omitempty"`
+	CodeBundleSHA256       string         `json:"code_bundle_sha256,omitempty"`
 	Files                  []FileEntry    `json:"files,omitempty"`
 	Warnings               []string       `json:"warnings,omitempty"`
 	ContentHash            string         `json:"content_hash"`
@@ -120,6 +123,34 @@ func safePackagePath(rel string) error {
 	return nil
 }
 
+// bundleContainsHead reports whether a `git bundle list-heads` listing contains sha.
+func bundleContainsHead(listing, sha string) bool {
+	if sha == "" {
+		return false
+	}
+	for _, line := range strings.Split(listing, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && strings.EqualFold(fields[0], sha) {
+			return true
+		}
+	}
+	return false
+}
+
+// hashFile returns the sha256 (with prefix) and size of a regular file.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func writePackageFile(staging, rel, kind string, data []byte, files *[]FileEntry) error {
 	if err := safePackagePath(rel); err != nil {
 		return err
@@ -163,11 +194,18 @@ func git(repo string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// Export is explicit and local-only. The canonical workspace state (workspace
-// manifest and event log) is always transported, so an import can rebuild the
-// workspace. Artifact bytes are included only when includeBytes is true, and
-// Git commit bytes are never included.
+// Export keeps the historical signature: workspace state always, artifact bytes
+// only when includeBytes is true, and no code bundle.
 func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) {
+	return ExportWithCode(dir, repo, out, includeBytes, false)
+}
+
+// ExportWithCode is explicit and local-only. The canonical workspace state
+// (workspace manifest and event log) is always transported, so an import can
+// rebuild the workspace. Artifact bytes are included when includeBytes is true;
+// a verified git bundle of the prepared commit is included when includeCode is
+// true. Nothing is uploaded anywhere.
+func ExportWithCode(dir, repo, out string, includeBytes, includeCode bool) (Manifest, string, error) {
 	store, err := core.Open(dir)
 	if err != nil {
 		return Manifest{}, "", err
@@ -238,6 +276,38 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 		m.EventBatches++
 	}
 
+	if includeCode {
+		bundleRel := "payload/git/code.bundle"
+		bundlePath := filepath.Join(staging, filepath.FromSlash(bundleRel))
+		if err := os.MkdirAll(filepath.Dir(bundlePath), 0o700); err != nil {
+			return Manifest{}, "", err
+		}
+		if _, err := git(repo, "bundle", "create", bundlePath, "HEAD"); err != nil {
+			return Manifest{}, "", fmt.Errorf("cannot bundle the prepared commit: %w", err)
+		}
+		info, err := os.Lstat(bundlePath)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return Manifest{}, "", fmt.Errorf("code bundle was not created as a regular file")
+		}
+		if info.Size() > MaxFileBytes {
+			return Manifest{}, "", fmt.Errorf("code bundle is %d bytes, above the %d-byte package file limit", info.Size(), MaxFileBytes)
+		}
+		heads, err := git(repo, "bundle", "list-heads", bundlePath)
+		if err != nil {
+			return Manifest{}, "", fmt.Errorf("cannot inspect the code bundle: %w", err)
+		}
+		if !bundleContainsHead(string(heads), p.CodeState.Head) {
+			return Manifest{}, "", fmt.Errorf("code bundle does not contain the prepared commit %s; the repository moved during export", p.CodeState.Head)
+		}
+		sha, err := hashFile(bundlePath)
+		if err != nil {
+			return Manifest{}, "", err
+		}
+		files = append(files, FileEntry{Path: bundleRel, SHA256: sha, Size: info.Size(), Kind: "git_bundle"})
+		m.CodeBundleIncluded = true
+		m.CodeBundleSHA256 = sha
+	}
+
 	if len(p.Quarantined) > 0 {
 		// Quarantined batches are transported verbatim; recovery stays incomplete
 		// because their events cannot be replayed or trusted.
@@ -246,13 +316,11 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 	if p.Tree.ProjectionStatus != "complete" {
 		markIncomplete("projection has pending or conflicting events")
 	}
-	if p.CodeState.Dirty {
-		markIncomplete("uncommitted code is not transported; code apply is disabled")
-	}
 	if len(p.Tree.Evidence) > 0 && !includeBytes {
 		markIncomplete("evidence bytes were not included; evidence cannot be verified after import")
 	}
 
+	untrackedCovered := len(p.CodeState.Untracked) == 0
 	if includeBytes {
 		m.ArtifactAvailability = "partial"
 		var evidenceOK, untrackedOK bool = true, true
@@ -331,6 +399,7 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 		} else if p.CodeState.UnstagedCount > 0 {
 			m.Warnings = append(m.Warnings, "unstaged diff bytes unavailable")
 		}
+		untrackedCovered = untrackedOK && m.UntrackedBytesIncluded == len(p.CodeState.Untracked)
 		if !evidenceOK || !untrackedOK {
 			markIncomplete("some selected bytes were unavailable")
 		}
@@ -339,7 +408,20 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 		}
 	}
 
-	m.Warnings = append(m.Warnings, "git commit bytes are not included; the successor must check out the recorded commit and code apply stays disabled")
+	if p.CodeState.Dirty {
+		codeCovered := includeBytes &&
+			(p.CodeState.StagedCount == 0 || m.StagedDiffIncluded) &&
+			(p.CodeState.UnstagedCount == 0 || m.UnstagedDiffIncluded) &&
+			untrackedCovered
+		if !codeCovered {
+			markIncomplete("uncommitted code is not fully transported; the successor cannot reproduce it")
+		}
+	}
+	if m.CodeBundleIncluded {
+		m.Warnings = append(m.Warnings, "code is included as a git bundle; applying it requires an explicit `anchor handoff apply-code --apply`")
+	} else {
+		m.Warnings = append(m.Warnings, "git commit bytes are not included; the successor must check out the recorded commit and code apply stays disabled")
+	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	m.Files = files
 	// Import enforces these same limits; fail here instead of producing a package
@@ -507,6 +589,36 @@ func importPlanOf(v verifiedPackage) importPlan {
 	return plan
 }
 
+// packageCodeCovered reports whether the package carries enough verified code
+// bytes to reproduce the prepared code state: a clean tree needs no bytes, a
+// dirty tree needs its staged/unstaged diffs and untracked files.
+func packageCodeCovered(v verifiedPackage) bool {
+	cs := v.manifest.Packet.CodeState
+	if !cs.Dirty {
+		return true
+	}
+	if cs.StagedCount > 0 && !v.manifest.StagedDiffIncluded {
+		return false
+	}
+	if cs.UnstagedCount > 0 && !v.manifest.UnstagedDiffIncluded {
+		return false
+	}
+	if cs.StagedCount > 0 || cs.UnstagedCount > 0 {
+		if !hasKind(v.manifest.Files, "git_diff") {
+			return false
+		}
+	}
+	for _, f := range cs.Untracked {
+		if f.SHA256 == "" || f.Skipped {
+			return false
+		}
+		if _, ok := payloadPath(v, "payload/untracked/"+f.Path); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // assessImport predicts the import outcome from the verified manifest without
 // writing anything, so a dry run reports the same status as an applied import
 // would (barring a filesystem error).
@@ -521,8 +633,8 @@ func assessImport(v verifiedPackage, plan importPlan) (string, []string) {
 	if len(v.manifest.Packet.Quarantined) > 0 {
 		reasons = append(reasons, "package contains quarantined event batches; recovery is incomplete")
 	}
-	if v.manifest.Packet.CodeState.Dirty {
-		reasons = append(reasons, "uncommitted code was not transported; code apply is disabled")
+	if !packageCodeCovered(v) {
+		reasons = append(reasons, "uncommitted code bytes are missing; the successor cannot reproduce the code state")
 	}
 	uniqueEvidence := map[string]bool{}
 	for _, ev := range v.manifest.Packet.Tree.Evidence {
@@ -712,8 +824,11 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 		complete = false
 		r.Warnings = append(r.Warnings, fmt.Sprintf("%d evidence artifacts could not be verified", missingEvidence))
 	}
-	if v.manifest.Packet.CodeState.Dirty {
+	if !packageCodeCovered(v) {
 		complete = false
+		r.Warnings = append(r.Warnings, "uncommitted code bytes are missing from the package")
+	} else if v.manifest.Packet.CodeState.Dirty {
+		r.Warnings = append(r.Warnings, "package carries uncommitted code bytes; run `anchor handoff apply-code --apply` in the project repository")
 	}
 	if complete {
 		r.RecoveryStatus = handoff.StatusComplete

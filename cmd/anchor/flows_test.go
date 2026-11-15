@@ -1093,3 +1093,133 @@ func TestCLIRestoreVerifyValidatesEvidence(t *testing.T) {
 		t.Fatalf("unexpected fail-closed diagnostic: %s", stderr)
 	}
 }
+
+// TestCLIExportApplyCodeEndToEnd restores both halves of a handoff: the
+// workspace via import and the code via apply-code, on a "second device" with an
+// empty repository.
+func TestCLIExportApplyCodeEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	repoA := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "laptop")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "Ship", "--north-star", "zero loss")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	// Uncommitted work: staged change + untracked file.
+	if err := os.WriteFile(filepath.Join(repoA, "tracked.txt"), []byte("staged change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("git", "-C", repoA, "add", "tracked.txt").Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoA, "notes.txt"), []byte("uncommitted notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repoA); code != 0 {
+		t.Fatalf("prepare: %s", stderr)
+	}
+	pkg := filepath.Join(root, "pkg")
+	out, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repoA, "--out", pkg, "--include-bytes", "--include-code", "--json")
+	if code != 0 {
+		t.Fatalf("export: %s%s", out, stderr)
+	}
+	var exported map[string]any
+	if err := json.Unmarshal([]byte(out), &exported); err != nil {
+		t.Fatal(err)
+	}
+	if exported["code_bundle_included"] != true || exported["recovery_status"] != "complete" {
+		t.Fatalf("export did not carry complete code bytes: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(pkg, "payload", "git", "code.bundle")); err != nil {
+		t.Fatal("package has no code bundle")
+	}
+
+	// "Second device": empty repo + fresh workspace target.
+	repoB := filepath.Join(root, "device2")
+	if err := os.MkdirAll(repoB, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.email", "t@example.invalid"}, {"config", "user.name", "T"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repoB}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+
+	planOut, stderr, code := runCLI(t, root, "handoff", "apply-code", "--package", pkg, "--repo", repoB, "--json")
+	if code != 0 {
+		t.Fatalf("apply-code plan: %s%s", planOut, stderr)
+	}
+	var plan map[string]any
+	if err := json.Unmarshal([]byte(planOut), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan["bundle_verified"] != true || plan["applied"] != false || plan["bundle_included"] != true {
+		t.Fatalf("apply-code plan wrong: %s", planOut)
+	}
+
+	appliedOut, stderr, code := runCLI(t, root, "handoff", "apply-code", "--package", pkg, "--repo", repoB, "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("apply-code: %s%s", appliedOut, stderr)
+	}
+	var applied struct {
+		Applied           bool   `json:"applied"`
+		NewHead           string `json:"new_head"`
+		PacketHead        string `json:"packet_head"`
+		StagedDiffApplied bool   `json:"staged_diff_applied"`
+		UntrackedWritten  int    `json:"untracked_written"`
+	}
+	if err := json.Unmarshal([]byte(appliedOut), &applied); err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Applied || applied.NewHead == "" || applied.NewHead != applied.PacketHead || !applied.StagedDiffApplied || applied.UntrackedWritten != 1 {
+		t.Fatalf("apply-code result wrong: %s", appliedOut)
+	}
+	headB, err := exec.Command("git", "-C", repoB, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(headB)) != applied.PacketHead {
+		t.Fatalf("repoB HEAD = %s, want %s", strings.TrimSpace(string(headB)), applied.PacketHead)
+	}
+	if b, err := os.ReadFile(filepath.Join(repoB, "notes.txt")); err != nil || string(b) != "uncommitted notes\n" {
+		t.Fatalf("untracked file not restored: %q %v", b, err)
+	}
+
+	// Workspace half: import and confirm the successor can work.
+	ws2 := filepath.Join(root, "ws2")
+	importOut, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", ws2, "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("import: %s%s", importOut, stderr)
+	}
+	if !strings.Contains(importOut, `"recovery_status": "complete"`) {
+		t.Fatalf("import did not report complete: %s", importOut)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws2, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "continue"); code != 0 {
+		t.Fatalf("successor workspace not usable: %s", stderr)
+	}
+}
+
+// TestCLIApplyCodeRefusesWithoutBundle covers the honest error for packages that
+// did not transport code.
+func TestCLIApplyCodeRefusesWithoutBundle(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	pkg := filepath.Join(root, "pkg")
+	if _, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", pkg); code != 0 {
+		t.Fatalf("export: %s", stderr)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", target, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	_, stderr, code := runCLI(t, root, "handoff", "apply-code", "--package", pkg, "--repo", target)
+	if code != 1 || !strings.Contains(stderr, "no code bundle") {
+		t.Fatalf("apply-code without a bundle: code=%d %s", code, stderr)
+	}
+}

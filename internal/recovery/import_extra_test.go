@@ -323,7 +323,7 @@ func TestImportDirtyExportedCodeIsIncomplete(t *testing.T) {
 	}
 	found := false
 	for _, w := range dry.Warnings {
-		if w == "uncommitted code was not transported; code apply is disabled" {
+		if w == "uncommitted code bytes are missing; the successor cannot reproduce the code state" {
 			found = true
 		}
 	}
