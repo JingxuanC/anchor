@@ -49,6 +49,7 @@ type Manifest struct {
 	UnstagedDiffIncluded   bool           `json:"unstaged_diff_included"`
 	UntrackedBytesIncluded int            `json:"untracked_bytes_included"`
 	EvidenceBytesIncluded  int            `json:"evidence_bytes_included"`
+	EventBatches           int            `json:"event_batches,omitempty"`
 	Files                  []FileEntry    `json:"files,omitempty"`
 	Warnings               []string       `json:"warnings,omitempty"`
 	ContentHash            string         `json:"content_hash"`
@@ -71,6 +72,11 @@ type Report struct {
 	DoesNotExecute        bool     `json:"does_not_execute"`
 	AutoInstall           bool     `json:"auto_install"`
 	Upload                bool     `json:"upload"`
+	WorkspaceRebuilt      bool     `json:"workspace_rebuilt"`
+	EventBatches          int      `json:"event_batches,omitempty"`
+	EventsApplied         int      `json:"events_applied,omitempty"`
+	EvidenceVerified      int      `json:"evidence_verified,omitempty"`
+	ProjectionStatus      string   `json:"projection_status,omitempty"`
 	Warnings              []string `json:"warnings,omitempty"`
 }
 
@@ -157,9 +163,10 @@ func git(repo string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// Export is explicit and local-only. Bytes are omitted unless includeBytes is
-// true. Code commit objects are never included, so import recovery remains
-// incomplete even when selected bytes are present.
+// Export is explicit and local-only. The canonical workspace state (workspace
+// manifest and event log) is always transported, so an import can rebuild the
+// workspace. Artifact bytes are included only when includeBytes is true, and
+// Git commit bytes are never included.
 func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) {
 	store, err := core.Open(dir)
 	if err != nil {
@@ -191,13 +198,57 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 		return Manifest{}, "", err
 	}
 	defer os.RemoveAll(staging)
-	m := Manifest{SchemaVersion: SchemaVersion, ExportID: newID(), CreatedAt: time.Now().UTC(), WorkspaceID: wsID, DeviceID: devID, EventLogVersion: version, Packet: p, ArtifactAvailability: "metadata_only", RecoveryStatus: "incomplete", CodeApply: "disabled", AdapterNativeRecovery: "unverified"}
+
+	m := Manifest{SchemaVersion: SchemaVersion, ExportID: newID(), CreatedAt: time.Now().UTC(), WorkspaceID: wsID, DeviceID: devID, EventLogVersion: version, Packet: p, ArtifactAvailability: "metadata_only", RecoveryStatus: "complete", CodeApply: "disabled", AdapterNativeRecovery: "unverified"}
 	m.Warnings = append(m.Warnings, p.Warnings...)
-	m.Warnings = append(m.Warnings, "git commit bytes are not included; code apply is disabled")
+	var files []FileEntry
+	markIncomplete := func(reason string) {
+		m.RecoveryStatus = handoff.StatusIncomplete
+		m.Warnings = append(m.Warnings, reason)
+	}
+
+	// Canonical state is always part of the package: without the event log an
+	// import can only drop bytes into an empty directory, never rebuild a
+	// workspace.
+	wsManifest, err := core.ReadRegularFileLimited(filepath.Join(store.Dir, "manifest.json"), MaxFileBytes)
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	if err := writePackageFile(staging, "payload/workspace/manifest.json", "workspace_manifest", wsManifest, &files); err != nil {
+		return Manifest{}, "", err
+	}
+	batches, err := store.EventBatchPaths()
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	for _, batchPath := range batches {
+		data, err := core.ReadRegularFileLimited(batchPath, MaxFileBytes)
+		if err != nil {
+			return Manifest{}, "", err
+		}
+		name := filepath.Base(batchPath)
+		if err := writePackageFile(staging, "payload/events/"+name, "event", data, &files); err != nil {
+			return Manifest{}, "", err
+		}
+		m.EventBatches++
+	}
+
+	if len(p.Quarantined) > 0 {
+		markIncomplete("some event batches are quarantined and were not exported")
+	}
+	if p.Tree.ProjectionStatus != "complete" {
+		markIncomplete("projection has pending or conflicting events")
+	}
+	if p.CodeState.Dirty {
+		markIncomplete("uncommitted code is not transported; code apply is disabled")
+	}
+	if len(p.Tree.Evidence) > 0 && !includeBytes {
+		markIncomplete("evidence bytes were not included; evidence cannot be verified after import")
+	}
+
 	if includeBytes {
 		m.ArtifactAvailability = "partial"
-		var files []FileEntry
-		evidenceOK := true
+		var evidenceOK, untrackedOK bool = true, true
 		for _, ev := range p.Tree.Evidence {
 			if err := core.VerifyEvidenceArtifact(store.Dir, ev); err != nil {
 				m.Warnings = append(m.Warnings, "evidence "+ev.EvidenceID+" unavailable: "+err.Error())
@@ -220,7 +271,6 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 			}
 			m.EvidenceBytesIncluded++
 		}
-		untrackedOK := true
 		for _, f := range p.CodeState.Untracked {
 			if f.SHA256 == "" || f.Skipped {
 				m.Warnings = append(m.Warnings, "untracked bytes unavailable: "+f.Path)
@@ -268,19 +318,17 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 		} else if p.CodeState.UnstagedCount > 0 {
 			m.Warnings = append(m.Warnings, "unstaged diff bytes unavailable")
 		}
+		if !evidenceOK || !untrackedOK {
+			markIncomplete("some selected bytes were unavailable")
+		}
 		if len(files) == 0 {
 			m.ArtifactAvailability = "missing"
-		} else {
-			// Even when all selected evidence/untracked/diff bytes are present,
-			// Git commit bytes and code apply are unavailable.
-			m.ArtifactAvailability = "partial"
-			if !evidenceOK || !untrackedOK {
-				m.Warnings = append(m.Warnings, "some selected bytes were unavailable")
-			}
 		}
-		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-		m.Files = files
 	}
+
+	m.Warnings = append(m.Warnings, "git commit bytes are not included; the successor must check out the recorded commit and code apply stays disabled")
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	m.Files = files
 	if len(m.Warnings) == 0 {
 		m.Warnings = nil
 	}
@@ -404,9 +452,85 @@ func inspectPackage(pkg string) (verifiedPackage, error) {
 	return verifiedPackage{manifest: m, data: data}, nil
 }
 
-// Import verifies the package first. Dry-run performs no writes. Actual import
-// writes only verified payload bytes into a new/empty explicit target and never
-// executes package content or applies code.
+// importPlan classifies the verified payload of a package.
+type importPlan struct {
+	workspaceManifest []byte
+	hasWorkspace      bool
+	events            map[string][]byte // batch file name -> bytes
+	evidence          map[string][]byte // sha256 -> bytes
+	artifacts         map[string][]byte // path under payload/ -> bytes (untracked, git diffs)
+}
+
+func importPlanOf(v verifiedPackage) importPlan {
+	plan := importPlan{events: map[string][]byte{}, evidence: map[string][]byte{}, artifacts: map[string][]byte{}}
+	for path, data := range v.data {
+		switch {
+		case path == "payload/workspace/manifest.json":
+			plan.workspaceManifest = data
+		case strings.HasPrefix(path, "payload/events/"):
+			plan.events[strings.TrimPrefix(path, "payload/events/")] = data
+		case strings.HasPrefix(path, "payload/evidence/"):
+			plan.evidence[strings.TrimPrefix(path, "payload/evidence/")] = data
+		case strings.HasPrefix(path, "payload/"):
+			plan.artifacts[strings.TrimPrefix(path, "payload/")] = data
+		}
+	}
+	// A workspace manifest is enough to rebuild identity; a freshly initialized
+	// workspace legitimately has no event batches yet. Packages without it are
+	// legacy artifact-only packages that cannot rebuild a workspace.
+	plan.hasWorkspace = len(plan.workspaceManifest) > 0
+	return plan
+}
+
+// assessImport predicts the import outcome from the verified manifest without
+// writing anything, so a dry run reports the same status as an applied import
+// would (barring a filesystem error).
+func assessImport(v verifiedPackage, plan importPlan) (string, []string) {
+	if !plan.hasWorkspace {
+		return handoff.StatusIncomplete, []string{"package carries no workspace state (no event log or workspace manifest); only verified payload bytes can be written"}
+	}
+	var reasons []string
+	if v.manifest.Packet.Tree.ProjectionStatus != "complete" {
+		reasons = append(reasons, "exported projection is not complete")
+	}
+	if v.manifest.Packet.CodeState.Dirty {
+		reasons = append(reasons, "uncommitted code was not transported; code apply is disabled")
+	}
+	if len(plan.evidence) < len(v.manifest.Packet.Tree.Evidence) {
+		reasons = append(reasons, "evidence bytes are missing; evidence cannot be verified after import")
+	}
+	if len(reasons) > 0 {
+		return handoff.StatusIncomplete, reasons
+	}
+	return handoff.StatusComplete, nil
+}
+
+func writeExclusive(dst string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func safePackageBase(name string) error {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, "/\\:\x00") {
+		return fmt.Errorf("unsafe package entry name %q", name)
+	}
+	return nil
+}
+
+// Import verifies the package first. Dry-run performs no writes. An applied
+// import rebuilds the workspace (manifest, event log, evidence blobs) in an
+// empty explicit target, then replays it to report an honest recovery status.
+// It never executes package content and never applies code.
 func Import(pkg, target string, dryRun bool) (Report, error) {
 	v, err := inspectPackage(pkg)
 	if err != nil {
@@ -430,7 +554,12 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 	} else if !os.IsNotExist(err) {
 		return Report{}, err
 	}
-	r := Report{DryRun: dryRun, PackageDir: pkg, Target: canonical, WorkspaceID: v.manifest.WorkspaceID, DeviceID: v.manifest.DeviceID, RecoveryStatus: "incomplete", ArtifactAvailability: v.manifest.ArtifactAvailability, CodeApply: "disabled", AdapterNativeRecovery: "unverified", FilesVerified: len(v.data), BytesVerified: totalBytes(v.data), DoesNotExecute: true, AutoInstall: false, Upload: false}
+	plan := importPlanOf(v)
+	status, reasons := assessImport(v, plan)
+	r := Report{DryRun: dryRun, PackageDir: pkg, Target: canonical, WorkspaceID: v.manifest.WorkspaceID, DeviceID: v.manifest.DeviceID,
+		RecoveryStatus: status, ArtifactAvailability: v.manifest.ArtifactAvailability, CodeApply: "disabled", AdapterNativeRecovery: "unverified",
+		FilesVerified: len(v.data), BytesVerified: totalBytes(v.data), DoesNotExecute: true, AutoInstall: false, Upload: false,
+		WorkspaceRebuilt: plan.hasWorkspace, EventBatches: len(plan.events), Warnings: reasons}
 	r.Warnings = append(r.Warnings, "code apply is disabled; Git commit/dirty worktree restoration is incomplete")
 	if dryRun {
 		return r, nil
@@ -440,35 +569,119 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 			return Report{}, err
 		}
 	}
-	for rel, data := range v.data {
-		dst := filepath.Join(canonical, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+
+	if !plan.hasWorkspace {
+		// Legacy package: mirror the verified payload bytes and report honestly
+		// that no workspace was rebuilt.
+		for path, data := range v.data {
+			if err := writeExclusive(filepath.Join(canonical, filepath.FromSlash(path)), data); err != nil {
+				return Report{}, err
+			}
+			r.FilesWritten++
+		}
+		r.Writes = r.FilesWritten
+		return writeImportReport(canonical, r)
+	}
+
+	if err := writeExclusive(filepath.Join(canonical, "manifest.json"), plan.workspaceManifest); err != nil {
+		return Report{}, err
+	}
+	r.FilesWritten++
+	if err := os.MkdirAll(filepath.Join(canonical, "events"), 0o700); err != nil {
+		return Report{}, err
+	}
+	for name, data := range plan.events {
+		if err := safePackageBase(name); err != nil {
 			return Report{}, err
 		}
-		f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err != nil {
-			return Report{}, err
-		}
-		if _, err := f.Write(data); err != nil {
-			_ = f.Close()
-			return Report{}, err
-		}
-		if err := f.Close(); err != nil {
+		if err := writeExclusive(filepath.Join(canonical, "events", name), data); err != nil {
 			return Report{}, err
 		}
 		r.FilesWritten++
-		r.Writes++
 	}
-	rb, _ := json.MarshalIndent(r, "", "  ")
-	f, err := os.OpenFile(filepath.Join(canonical, "anchor-import.json"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	for sha, data := range plan.evidence {
+		if err := safePackageBase(sha); err != nil {
+			return Report{}, err
+		}
+		if err := writeExclusive(filepath.Join(canonical, "evidence", "blobs", sha), data); err != nil {
+			return Report{}, err
+		}
+		r.FilesWritten++
+	}
+	for rel, data := range plan.artifacts {
+		if err := handoff.CheckPath(rel); err != nil {
+			return Report{}, fmt.Errorf("unsafe artifact path %q", rel)
+		}
+		// Imported code bytes are device-local staging, not canonical workspace
+		// state: keep them under local/ so they are never synced or mistaken for
+		// applied code.
+		if err := writeExclusive(filepath.Join(canonical, "local", "imported", filepath.FromSlash(rel)), data); err != nil {
+			return Report{}, err
+		}
+		r.FilesWritten++
+	}
+
+	// Verify the rebuilt workspace instead of trusting the package labels.
+	wsID, _, _, err := workspaceIdentity(canonical)
+	if err != nil {
+		return Report{}, fmt.Errorf("rebuilt workspace manifest unreadable: %w", err)
+	}
+	if v.manifest.WorkspaceID != "" && wsID != v.manifest.WorkspaceID {
+		return Report{}, fmt.Errorf("rebuilt workspace identity %q does not match the package workspace %q", wsID, v.manifest.WorkspaceID)
+	}
+	store, err := core.Open(canonical)
+	if err != nil {
+		return Report{}, fmt.Errorf("rebuilt workspace is not openable: %w", err)
+	}
+	load, err := store.LoadReport()
 	if err != nil {
 		return Report{}, err
 	}
-	if _, err := f.Write(append(rb, '\n')); err != nil {
-		_ = f.Close()
+	replay, err := store.LoadReplay()
+	if err != nil {
 		return Report{}, err
 	}
-	if err := f.Close(); err != nil {
+	missingEvidence := 0
+	for _, ev := range replay.Tree.Evidence {
+		if err := core.VerifyEvidenceArtifact(canonical, ev); err != nil {
+			missingEvidence++
+		}
+	}
+	r.EventsApplied = len(replay.Applied)
+	r.ProjectionStatus = replay.RecoveryStatus
+	r.EvidenceVerified = len(replay.Tree.Evidence) - missingEvidence
+
+	complete := true
+	if len(load.Quarantined) > 0 {
+		complete = false
+		r.Warnings = append(r.Warnings, "rebuilt workspace has quarantined event batches")
+	}
+	if replay.RecoveryStatus != "complete" {
+		complete = false
+		r.Warnings = append(r.Warnings, "rebuilt projection is not complete (pending events or conflicts)")
+	}
+	if missingEvidence > 0 {
+		complete = false
+		r.Warnings = append(r.Warnings, fmt.Sprintf("%d evidence artifacts could not be verified", missingEvidence))
+	}
+	if v.manifest.Packet.CodeState.Dirty {
+		complete = false
+	}
+	if complete {
+		r.RecoveryStatus = handoff.StatusComplete
+	} else {
+		r.RecoveryStatus = handoff.StatusIncomplete
+	}
+	r.Writes = r.FilesWritten
+	return writeImportReport(canonical, r)
+}
+
+func writeImportReport(canonical string, r Report) (Report, error) {
+	rb, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return Report{}, err
+	}
+	if err := writeExclusive(filepath.Join(canonical, "anchor-import.json"), append(rb, '\n')); err != nil {
 		return Report{}, err
 	}
 	r.Writes++

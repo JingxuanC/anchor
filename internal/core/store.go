@@ -246,6 +246,33 @@ func validateEventID(id string) error {
 
 func (s *Store) eventsDir() string { return filepath.Join(s.Dir, "events") }
 
+// EventBatchPaths returns the regular event batch files in deterministic order.
+// Symlinks and non-regular entries are rejected so an export never follows a
+// link out of the workspace.
+func (s *Store) EventBatchPaths() ([]string, error) {
+	entries, err := os.ReadDir(s.eventsDir())
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		p := filepath.Join(s.eventsDir(), entry.Name())
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("event batch %s must be a regular file, not a symlink", entry.Name())
+		}
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // LoadReport reads all valid events and quarantines individual corrupt files
 // instead of failing the whole workspace. Valid events continue to replay.
 func (s *Store) LoadReport() (LoadResult, error) {

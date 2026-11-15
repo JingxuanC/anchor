@@ -1655,14 +1655,23 @@ func TestCLIHandoffExportImportDryRunAndBytes(t *testing.T) {
 	if dry["dry_run"] != true || dry["writes"] != float64(0) || dry["recovery_status"] != "incomplete" || dry["code_apply"] != "disabled" || dry["adapter_native_recovery"] != "unverified" || dry["does_not_execute"] != true {
 		t.Fatalf("dry-run report wrong: %s", dryOut)
 	}
+	if dry["workspace_rebuilt"] != true || dry["event_batches"].(float64) < 1 {
+		t.Fatalf("dry-run does not plan a workspace rebuild: %s", dryOut)
+	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatal("dry-run created target")
 	}
 	if out, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", target, "--apply", "--json"); code != 0 {
 		t.Fatalf("actual import failed: %s%s", out, stderr)
 	}
-	if _, err := os.Stat(filepath.Join(target, "payload", "untracked", "notes.txt")); err != nil {
-		t.Fatal("untracked bytes not imported")
+	if _, err := os.Stat(filepath.Join(target, "manifest.json")); err != nil {
+		t.Fatalf("import did not rebuild the workspace manifest: %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(target, "events")); err != nil || len(entries) == 0 {
+		t.Fatalf("import did not restore the event log: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "local", "imported", "untracked", "notes.txt")); err != nil {
+		t.Fatalf("untracked bytes not staged under local/imported: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(target, "anchor-import.json")); err != nil {
 		t.Fatal("import report missing")
@@ -1691,8 +1700,17 @@ func TestCLIHandoffExportImportDryRunAndBytes(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("metadata export failed: %s%s", out, stderr)
 	}
-	if !strings.Contains(out, `"artifact_availability": "metadata_only"`) || !strings.Contains(out, `"files": 0`) || !strings.Contains(out, `"recovery_status": "incomplete"`) {
+	if !strings.Contains(out, `"artifact_availability": "metadata_only"`) || !strings.Contains(out, `"recovery_status": "incomplete"`) {
 		t.Fatalf("metadata-only export overclaimed: %s", out)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(out), &meta); err != nil {
+		t.Fatal(err)
+	}
+	// Metadata-only still transports the canonical workspace state so the
+	// workspace is restorable; it only omits evidence/artifact bytes.
+	if meta["event_batches"].(float64) < 1 || meta["workspace_state_included"] != true {
+		t.Fatalf("metadata-only export dropped workspace state: %s", out)
 	}
 	metaTarget := filepath.Join(root, "metadata-target")
 	if _, _, code := runCLI(t, root, "handoff", "import", "--package", metaPkg, "--target", metaTarget, "--json"); code != 0 {
@@ -1957,5 +1975,149 @@ func TestCLINodeDetailFieldsAndPacket(t *testing.T) {
 	}
 	if packet.ProvenanceSummary["imported"] != 1 {
 		t.Fatalf("packet provenance summary incomplete: %+v", packet.ProvenanceSummary)
+	}
+}
+
+// TestCLIExportImportRebuildsWorkspace covers REQ-WS-007 and REQ-RST-006: an
+// export must carry the canonical workspace so an import can rebuild a working
+// workspace on a fresh device, with an honest verified status.
+func TestCLIExportImportRebuildsWorkspace(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	if _, stderr, code := runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "Ship",
+		"--north-star", "successor resumes with zero context loss", "--must", "keep evidence immutable")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "Carry the log")
+	evFile := writeFixture(t, filepath.Join(root, "evidence.txt"), "round trip evidence fixture\n")
+	if _, stderr, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev1", "--node", "task1", "--kind", "test", "--file", evFile); code != 0 {
+		t.Fatalf("evidence add: %s", stderr)
+	}
+
+	pkg := filepath.Join(root, "pkg")
+	out, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", pkg, "--include-bytes", "--json")
+	if code != 0 {
+		t.Fatalf("export failed: %s%s", out, stderr)
+	}
+	var ex map[string]any
+	if err := json.Unmarshal([]byte(out), &ex); err != nil {
+		t.Fatal(err)
+	}
+	if ex["recovery_status"] != "complete" {
+		t.Fatalf("clean workspace export should be complete: %s", out)
+	}
+	if ex["event_batches"].(float64) < 1 || ex["workspace_state_included"] != true {
+		t.Fatalf("export did not carry workspace state: %s", out)
+	}
+	if ex["evidence_bytes"].(float64) != 1 {
+		t.Fatalf("evidence bytes not exported: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(pkg, "payload", "workspace", "manifest.json")); err != nil {
+		t.Fatal("package has no workspace manifest")
+	}
+	if _, err := os.Stat(filepath.Join(pkg, "payload", "events")); err != nil {
+		t.Fatal("package has no event log")
+	}
+
+	target := filepath.Join(root, "restored")
+	dryOut, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", target, "--json")
+	if code != 0 {
+		t.Fatalf("dry run failed: %s%s", dryOut, stderr)
+	}
+	var dry map[string]any
+	if err := json.Unmarshal([]byte(dryOut), &dry); err != nil {
+		t.Fatal(err)
+	}
+	if dry["workspace_rebuilt"] != true || dry["recovery_status"] != "complete" {
+		t.Fatalf("dry run mispredicted the rebuild: %s", dryOut)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("dry run created the target")
+	}
+
+	appOut, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", target, "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("import failed: %s%s", appOut, stderr)
+	}
+	var imp map[string]any
+	if err := json.Unmarshal([]byte(appOut), &imp); err != nil {
+		t.Fatal(err)
+	}
+	if imp["recovery_status"] != "complete" || imp["workspace_rebuilt"] != true ||
+		imp["projection_status"] != "complete" || imp["events_applied"].(float64) < 4 || imp["evidence_verified"].(float64) != 1 {
+		t.Fatalf("import report wrong: %s", appOut)
+	}
+	if imp["workspace_id"] != "ws1" {
+		t.Fatalf("import lost workspace identity: %s", appOut)
+	}
+
+	// The rebuilt workspace must be a real, usable workspace.
+	restoredStatus, stderr, code := runCLI(t, root, "status", "--dir", target, "--repo", repo, "--json")
+	if code != 0 {
+		t.Fatalf("restored workspace status failed: %s%s", restoredStatus, stderr)
+	}
+	var st struct {
+		Projection string `json:"projection_status"`
+		Tree       struct {
+			Nodes map[string]struct {
+				NorthStar string `json:"north_star"`
+				Status    string `json:"status"`
+			} `json:"nodes"`
+		} `json:"tree"`
+	}
+	if err := json.Unmarshal([]byte(restoredStatus), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Projection != "complete" {
+		t.Fatalf("restored projection incomplete: %s", restoredStatus)
+	}
+	if st.Tree.Nodes["goal1"].NorthStar != "successor resumes with zero context loss" {
+		t.Fatalf("restored goal lost its north star: %s", restoredStatus)
+	}
+	if st.Tree.Nodes["task1"].Status != "todo" {
+		t.Fatalf("restored task missing: %s", restoredStatus)
+	}
+	if _, _, code := runCLI(t, root, "node", "transition", "--dir", target, "--id", "task1", "--to", "in_progress"); code != 0 {
+		t.Fatal("restored workspace is not writable")
+	}
+	auditOut, _, code := runCLI(t, root, "evidence", "audit", "--dir", target, "--json")
+	if code != 0 {
+		t.Fatalf("restored evidence audit failed: %s", auditOut)
+	}
+	var audit struct {
+		Referenced []string `json:"referenced_digests"`
+		Blobs      []string `json:"blob_files"`
+		Orphans    []string `json:"orphan_blobs"`
+	}
+	if err := json.Unmarshal([]byte(auditOut), &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.Referenced) != 1 || len(audit.Blobs) != 1 || len(audit.Orphans) != 0 {
+		t.Fatalf("restored evidence not intact: %s", auditOut)
+	}
+
+	// Import refuses a non-empty target and a tampered package.
+	if _, _, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", target, "--apply"); code == 0 {
+		t.Fatal("import overwrote a non-empty target")
+	}
+	eventFiles, err := filepath.Glob(filepath.Join(pkg, "payload", "events", "*.json"))
+	if err != nil || len(eventFiles) == 0 {
+		t.Fatalf("no event batches in package: %v", eventFiles)
+	}
+	original, err := os.ReadFile(eventFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(eventFiles[0], append(original, ' '), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tampered := filepath.Join(root, "tampered-target")
+	if _, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", tampered, "--apply"); code == 0 {
+		t.Fatalf("tampered event log was imported: %s", stderr)
+	}
+	if _, err := os.Stat(tampered); !os.IsNotExist(err) {
+		t.Fatal("tampered import created a target")
 	}
 }

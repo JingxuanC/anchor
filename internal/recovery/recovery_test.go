@@ -128,3 +128,46 @@ func TestImportDryRunWritesNothingAndActualImportDoesNotOverwrite(t *testing.T) 
 		t.Fatal("second import overwrote non-empty target")
 	}
 }
+
+// TestImportLegacyPackageMirrorsBytesWithoutRebuilding keeps the pre-event-log
+// package format honest: it still imports verified bytes, but reports that no
+// workspace was rebuilt instead of pretending recovery happened.
+func TestImportLegacyPackageMirrorsBytesWithoutRebuilding(t *testing.T) {
+	pkg := t.TempDir()
+	data := []byte("legacy payload bytes\n")
+	if err := os.MkdirAll(filepath.Join(pkg, "payload", "untracked"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "payload", "untracked", "notes.txt"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := baseManifest()
+	m.Files = []FileEntry{{Path: "payload/untracked/notes.txt", SHA256: hashBytes(data), Size: int64(len(data)), Kind: "untracked"}}
+	writeManifest(t, pkg, m)
+
+	target := filepath.Join(t.TempDir(), "restored")
+	dry, err := Import(pkg, target, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.WorkspaceRebuilt || dry.Writes != 0 || dry.RecoveryStatus != "incomplete" {
+		t.Fatalf("legacy dry run overclaimed: %+v", dry)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("dry run created the target")
+	}
+	r, err := Import(pkg, target, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.WorkspaceRebuilt || r.RecoveryStatus != "incomplete" || r.FilesWritten != 1 {
+		t.Fatalf("legacy import overclaimed: %+v", r)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "payload", "untracked", "notes.txt"))
+	if err != nil || string(got) != string(data) {
+		t.Fatalf("legacy bytes not mirrored: %q %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatal("legacy import fabricated a workspace manifest")
+	}
+}

@@ -798,13 +798,13 @@ func cmdHandoff(args []string) {
 		if err != nil {
 			die(err)
 		}
-		summary := map[string]any{"export_id": m.ExportID, "path": path, "workspace_id": m.WorkspaceID, "device_id": m.DeviceID, "artifact_availability": m.ArtifactAvailability, "recovery_status": m.RecoveryStatus, "code_apply": m.CodeApply, "adapter_native_recovery": m.AdapterNativeRecovery, "code_commit_included": m.CodeCommitIncluded, "files": len(m.Files), "evidence_bytes": m.EvidenceBytesIncluded, "untracked_bytes": m.UntrackedBytesIncluded, "auto_install": false, "upload": false, "warnings": m.Warnings}
+		summary := map[string]any{"export_id": m.ExportID, "path": path, "workspace_id": m.WorkspaceID, "device_id": m.DeviceID, "artifact_availability": m.ArtifactAvailability, "recovery_status": m.RecoveryStatus, "code_apply": m.CodeApply, "adapter_native_recovery": m.AdapterNativeRecovery, "code_commit_included": m.CodeCommitIncluded, "files": len(m.Files), "event_batches": m.EventBatches, "workspace_state_included": true, "evidence_bytes": m.EvidenceBytesIncluded, "untracked_bytes": m.UntrackedBytesIncluded, "auto_install": false, "upload": false, "warnings": m.Warnings}
 		if *asJSON {
 			b, _ := json.MarshalIndent(summary, "", "  ")
 			fmt.Println(string(b))
 			return
 		}
-		fmt.Printf("exported %s to %s (recovery=%s artifacts=%s files=%d)\n", m.ExportID, path, m.RecoveryStatus, m.ArtifactAvailability, len(m.Files))
+		fmt.Printf("exported %s to %s (recovery=%s artifacts=%s files=%d event_batches=%d)\n", m.ExportID, path, m.RecoveryStatus, m.ArtifactAvailability, len(m.Files), m.EventBatches)
 	case "import":
 		fs := flag.NewFlagSet("handoff import", flag.ExitOnError)
 		pkg := fs.String("package", "", "export package directory")
@@ -824,7 +824,7 @@ func cmdHandoff(args []string) {
 			fmt.Println(string(b))
 			return
 		}
-		fmt.Printf("import dry_run=%v target=%s verified_files=%d recovery=%s code_apply=%s writes=%d\n", r.DryRun, r.Target, r.FilesVerified, r.RecoveryStatus, r.CodeApply, r.Writes)
+		fmt.Printf("import dry_run=%v target=%s verified_files=%d workspace_rebuilt=%v event_batches=%d events_applied=%d projection=%s recovery=%s code_apply=%s writes=%d\n", r.DryRun, r.Target, r.FilesVerified, r.WorkspaceRebuilt, r.EventBatches, r.EventsApplied, r.ProjectionStatus, r.RecoveryStatus, r.CodeApply, r.Writes)
 	case "status":
 		fs := flag.NewFlagSet("handoff status", flag.ExitOnError)
 		dir := fs.String("dir", ".", "workspace directory")

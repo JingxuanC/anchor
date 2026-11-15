@@ -1,8 +1,10 @@
 # Implementation Status (audited)
 
 **Audit date:** 2026-11-16
-**Commit:** audited at `1a6acc5`; WS-001 closed afterwards (see §4 note), 35 Go files /
-~8,700 LOC / 90 Go test functions
+**Commit:** audited at `1a6acc5`; since then WS-001 (`init --attach`), the packet
+content work (ST-001/002/005, RST-001/010) and workspace-carrying export/import
+(WS-007) landed. 36 Go files / ~9,900 LOC / 101 Go test functions.
+The authoritative per-requirement status is the ledger in §5.
 **Method:** read-only code audit. `go build ./...` OK; `go test ./... -count=1` and
 `go test -race ./...` pass for `cmd/anchor`, `internal/{core,adapter,handoff,recovery}`
 (`internal/pathguard` has no test files). Cross-compilation verified for
@@ -32,23 +34,23 @@ Where `docs/` claims a capability but no code was found, the row is marked
 
 | Domain | Implemented | Partial | Missing | Deferred | Total |
 |---|---:|---:|---:|---:|---:|
-| WS workspace/store | 3 | 4 | 1 | 0 | 8 |
-| ST session tree | 3 | 6 | 4 | 0 | 13 |
-| CAP capture | 4 | 5 | 0 | 0 | 9 |
-| RST restore/handoff | 2 | 5 | 4 | 0 | 11 |
-| AD adapters | 0 | 10 | 3 | 0 | 13 |
-| CM causal memory | 0 | 1 | 12 | 0 | 13 |
-| SY sync | 1 | 6 | 5 | 0 | 12 |
-| CFG config/rules/skills | 0 | 0 | 8 | 0 | 8 |
-| VT vault/secrets | 0 | 3 | 7 | 0 | 10 |
-| UI CLI/web | 0 | 3 | 4 | 0 | 7 |
-| CONC ownership | 2 | 3 | 0 | 0 | 5 |
-| EVID evidence | 0 | 5 | 1 | 0 | 6 |
-| RT Roost boundary | 1 | 1 | 0 | 1 | 3 |
-| SEC security | 0 | 4 | 3 | 0 | 7 |
-| NFR non-functional | 2 | 2 | 3 | 0 | 7 |
-| OPS operations | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **19** | **61** | **59** | **1** | **140** |
+| WS | 4 | 3 | 1 | 0 | 8 |
+| ST | 5 | 5 | 3 | 0 | 13 |
+| CAP | 4 | 5 | 0 | 0 | 9 |
+| RST | 4 | 4 | 3 | 0 | 11 |
+| AD | 0 | 10 | 3 | 0 | 13 |
+| CM | 0 | 1 | 12 | 0 | 13 |
+| SY | 1 | 7 | 4 | 0 | 12 |
+| CFG | 0 | 0 | 8 | 0 | 8 |
+| VT | 0 | 3 | 7 | 0 | 10 |
+| UI | 0 | 3 | 4 | 0 | 7 |
+| CONC | 2 | 3 | 0 | 0 | 5 |
+| EVID | 0 | 5 | 1 | 0 | 6 |
+| RT | 1 | 1 | 0 | 1 | 3 |
+| SEC | 0 | 4 | 3 | 0 | 7 |
+| NFR | 2 | 2 | 3 | 0 | 7 |
+| OPS | 1 | 3 | 4 | 0 | 8 |
+| **Total** | **24** | **59** | **56** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -76,9 +78,24 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
 6. **Path/secret/lock hardening** — canonicalized paths, shared agent-config refusal,
    `O_NOFOLLOW` evidence reads, 0600/0700 modes, symlink/traversal rejection
    (`internal/pathguard`, `internal/core`).
-7. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
+7. **Task-structure model** — goal nodes carry north star, must/must-not
+   constraints and success criteria; decision nodes carry decision, rationale,
+   alternatives and consequences; every node can carry provenance + confidence,
+   with replay rejecting goal fields on non-goals, decision fields on
+   non-decisions, unknown provenance, out-of-range confidence, and any
+   `user_confirmed` claim without a local attestation (`internal/core`).
+8. **Restorable packages** — export always transports the workspace manifest and
+   event log; import rebuilds the workspace in a fresh empty target, replays it,
+   verifies evidence blobs and reports an honest `complete`/`incomplete` status.
+   Legacy artifact-only packages still import their bytes but are reported as not
+   rebuilding a workspace.
+9. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
+
+This section keeps the evidence notes gathered during the audit. Where a row
+groups several requirements or was superseded by later work, the ledger in §5 is
+authoritative.
 
 ### 3.1 WS — Workspace / event store
 
@@ -90,18 +107,18 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
 | WS-004 | implemented | `internal/core/transaction.go:143,231`, `lock_unix.go:16`; `TestTransactionBatchIsAllOrNothing`, `TestWorkspaceLockReleasedOnProcessCrash` | Directory fsync is best-effort (`_ = d.Sync()`). |
 | WS-005 | partial | `internal/adapter/capture.go:102`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | No sync boundary to test; no workspace-wide assertion; `evidence --file` accepts absolute paths outside the workspace. |
 | WS-006 | implemented | `internal/core/replay.go:42`, `evidence.go:229`; `TestDeterministicReplayIndependentOfSliceOrder` | Rebuild is in-memory only; no persisted projections. |
-| WS-007 | partial | `internal/recovery/recovery.go:163,410`; `TestCLIHandoffExportImportDryRunAndBytes` | Package carries no event log or config; import writes bytes into a bare target and cannot recreate a workspace. |
+| WS-007 | implemented | `internal/recovery/recovery.go` (`Export`/`Import`); `TestCLIExportImportRebuildsWorkspace`, `TestImportLegacyPackageMirrorsBytesWithoutRebuilding` | Export carries the workspace manifest + event log; import rebuilds, replays and verifies. Still missing: config/rules snapshot, bundled commit bytes. |
 | WS-008 | missing | no `uninstall` verb (`cmd/anchor/main.go:31`) | Entire behavior absent. |
 
 ### 3.2 ST — Session Tree
 
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
-| ST-001 | partial | `internal/core/tree.go:10`, `cmd/anchor/main.go:248` | Goal has only `title` (`tree.go:30`); no north star, must/must-not constraints, or success criteria. |
-| ST-002 | partial | `internal/core/tree.go:11`; `TestLegalAndIllegalTransitions` | Decision nodes store no decision/rationale/alternatives/consequences payload. |
+| ST-001 | implemented | `internal/core/tree.go` (`Node.NorthStar/Must/MustNot/SuccessCriteria`), CLI flags; `TestGoalDetailFieldsAreProjected`, `TestCLINodeDetailFieldsAndPacket` | Fields recorded, validated, projected and carried in the packet. |
+| ST-002 | implemented | `internal/core/tree.go`, replay validation; `TestDecisionDetailFieldsAreProjected` | Decision fields recorded, validated, projected and carried in the packet. |
 | ST-003 | implemented | `internal/core/tree.go:20,102`; `TestLegalAndIllegalTransitions`, `TestCLIConsecutiveTransitions` | — |
 | ST-004 | partial | `internal/core/tree.go:136` | Fork parent may be any node type; no hypothesis field; no merge command or event. |
-| ST-005 | missing | grep `provenance|confidence` → comments only | Whole concept absent from the model. |
+| ST-005 | implemented | `core.Provenance`, `Node.Provenance/Confidence`, replay validation; `TestProvenanceAndConfidenceAreValidated` | Values are recorded and enforced; `user_confirmed` still needs an attestation mechanism (ST-013), so that path is currently unreachable. |
 | ST-006 | partial | `internal/core/event.go:46,56,81` | `ActorKind` never set by any command; nodes store no actor/agent/session/time; no agent version field. |
 | ST-007 | implemented | `internal/core/event.go:40`, `transaction.go:83,46`; `TestCLIConcurrentSameNodeOneWins` | CLI node mutations generate no idempotency key (only adapter ingest does). |
 | ST-008 | partial | `internal/core/replay.go:548,609`; `TestP1TombstoneIsTerminal` | Edit-vs-delete relies on the generic same-base-revision rule; no dedicated conflict class or test. |
@@ -129,7 +146,7 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
 
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
-| RST-001 | partial | `internal/handoff/handoff.go:48,60`; `TestPrepareCleanRepoIsComplete` | Missing goal constraints, decisions, next steps, open questions, ownership block, provenance summary. |
+| RST-001 | implemented | `handoff.Packet` (`goal`/`decisions`/`next_steps`/`open_questions`/`ownership`/`provenance_summary`); `TestPrepareCarriesTaskStructure` | Packet now carries the task structure a successor needs; packet hash covers the new blocks. |
 | RST-002 | missing | render emits unverified fragments (`internal/adapter/render.go:69`) | No injection path, no size/token caps. |
 | RST-003 | partial | `handoff.go:323`; `TestEvaluateDetectsStaleCodeWithoutOverwriting` | No `handoff_acked`/`handoff_verified` events; no gate before editing. |
 | RST-004 | implemented | `handoff.go:248`, `main.go:484`; `TestCLIWorkflowRecoveryAndRestoreBoundary` | Partially vacuous: no summary object exists. |
@@ -138,7 +155,7 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
 | RST-007 | partial | `handoff.go:34,116`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | No bundle/patch artifact, no restore instructions, no base commit. |
 | RST-008 | partial | restore always evaluates, `apply: disabled` (`main.go:644`) | No apply path, so "explicit confirmation" is unimplemented. |
 | RST-009 | partial | `handoff.go:358`, `recovery.go:203` | Does not enumerate missing artifacts/unreachable evidence; returns a status only. |
-| RST-010 | missing | no provenance in `Node`/`Packet` | No user-confirmed/inferred/unverified labeling. |
+| RST-010 | implemented | `Node.Provenance` + packet blocks; `TestPrepareCarriesTaskStructure` | Provenance is labeled per goal/decision/next step/question and summarized; `user_confirmed` requires attestation. |
 | RST-011 | implemented | `handoff.go:103`, `recovery.go:433`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | Code apply disabled, so "unrecovered" is always true; no per-artifact list. |
 
 ### 3.5 AD — Adapters
@@ -283,14 +300,12 @@ Ranked by "what blocks a usable local segment":
    only evaluates and prints `apply: disabled`. Add `--plan` (commit match, dirty
    status, files to overwrite), `--apply` requiring a clean tree or `--force` +
    backup ref, and `handoff_acked`/`handoff_verified` events plus a successor gate.
-2. **Carry the workspace inside the export package** (WS-007, RST-006). Export writes
-   only `manifest.json` + `payload/`; include event batches (and config/rules
-   snapshot), verify them, and let import create a new workspace with identity check
-   and replay.
-3. **Give the packet the task structure a successor needs** (RST-001/010,
-   ST-001/002/005). Add goal north-star/constraints/success-criteria and decision
-   fields to the event model, then emit `next_steps`, `open_questions`,
-   `provenance_summary`, `ownership` in the packet.
+2. ~~**Carry the workspace inside the export package** (WS-007).~~ **Done** — the
+   package always carries the workspace manifest and event log; import rebuilds,
+   replays and verifies. Remaining: config/rules snapshot and bundled commit bytes.
+3. ~~**Give the packet the task structure a successor needs** (RST-001/010,
+   ST-001/002/005).~~ **Done** — goal constraints, decision trade-offs, provenance,
+   next steps, open questions and ownership are in the model and the packet.
 4. **Context injection + managed rules files** (RST-002, AD-002/003/004/006,
    CFG-002/007). Managed-block renderer for `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` with
    dry-run/diff, backup, idempotent re-apply, and size-capped SessionStart injection.
@@ -316,21 +331,249 @@ Ranked by "what blocks a usable local segment":
     dry-run/backup/rollback, `uninstall --purge` confirmation, CI (gofmt/vet/race on
     3 OSes), checksummed release builds.
 
-## 5. Accuracy caveats
+## 5. Status ledger (authoritative)
+
+Every requirement in `acceptance/matrix.yaml` appears exactly once.
+
+### WS
+
+| Req | Status | Note |
+|---|---|---|
+| WS-001 | implemented | `init --attach` adopts an existing project; state in `<project>/.anchor` |
+| WS-002 | partial |  |
+| WS-003 | partial |  |
+| WS-004 | implemented |  |
+| WS-005 | partial |  |
+| WS-006 | implemented |  |
+| WS-007 | implemented | export always carries workspace manifest + event log; import rebuilds and verifies |
+| WS-008 | missing | no uninstall verb |
+
+### ST
+
+| Req | Status | Note |
+|---|---|---|
+| ST-001 | implemented | goal north star, must/must-not, success criteria |
+| ST-002 | implemented | decision, rationale, alternatives, consequences |
+| ST-003 | implemented |  |
+| ST-004 | partial |  |
+| ST-005 | implemented | provenance + confidence; user_confirmed still requires attestation (ST-013) |
+| ST-006 | partial |  |
+| ST-007 | implemented |  |
+| ST-008 | partial |  |
+| ST-009 | partial |  |
+| ST-010 | missing | no drift/constraint evaluation |
+| ST-011 | partial |  |
+| ST-012 | missing | no summary representation |
+| ST-013 | missing | `user_override` / attestation hard-disabled |
+
+### CAP
+
+| Req | Status | Note |
+|---|---|---|
+| CAP-001 | partial |  |
+| CAP-002 | partial |  |
+| CAP-003 | partial |  |
+| CAP-004 | implemented |  |
+| CAP-005 | implemented |  |
+| CAP-006 | implemented |  |
+| CAP-007 | implemented | by-absence: satisfied only by absence of network code (no positive test) |
+| CAP-008 | partial |  |
+| CAP-009 | partial |  |
+
+### RST
+
+| Req | Status | Note |
+|---|---|---|
+| RST-001 | implemented | packet carries goal, decisions, next steps, open questions, ownership, provenance |
+| RST-002 | missing | no context injection path |
+| RST-003 | partial |  |
+| RST-004 | implemented |  |
+| RST-005 | missing | no cross-agent restore |
+| RST-006 | missing | no Git sync; manual export/import only |
+| RST-007 | partial |  |
+| RST-008 | partial |  |
+| RST-009 | partial |  |
+| RST-010 | implemented | packet labels provenance on goal/decisions/next steps/questions |
+| RST-011 | implemented |  |
+
+### AD
+
+| Req | Status | Note |
+|---|---|---|
+| AD-001 | partial |  |
+| AD-002 | partial |  |
+| AD-003 | partial |  |
+| AD-004 | partial |  |
+| AD-005 | partial |  |
+| AD-006 | partial |  |
+| AD-007 | partial |  |
+| AD-008 | partial |  |
+| AD-009 | partial |  |
+| AD-010 | missing | no MCP server |
+| AD-011 | missing |  |
+| AD-012 | missing |  |
+| AD-013 | partial |  |
+
+### CM
+
+| Req | Status | Note |
+|---|---|---|
+| CM-001 | partial | prohibition satisfied; no remote-MCP client |
+| CM-002 | missing |  |
+| CM-003 | missing |  |
+| CM-004 | missing |  |
+| CM-005 | missing |  |
+| CM-006 | missing |  |
+| CM-007 | missing |  |
+| CM-008 | missing |  |
+| CM-009 | missing |  |
+| CM-010 | missing |  |
+| CM-011 | missing |  |
+| CM-012 | missing |  |
+| CM-013 | missing |  |
+
+### SY
+
+| Req | Status | Note |
+|---|---|---|
+| SY-001 | missing |  |
+| SY-002 | missing |  |
+| SY-003 | partial |  |
+| SY-004 | partial |  |
+| SY-005 | partial |  |
+| SY-006 | missing |  |
+| SY-007 | missing |  |
+| SY-008 | partial |  |
+| SY-009 | partial |  |
+| SY-010 | partial |  |
+| SY-011 | partial |  |
+| SY-012 | implemented | `complete` is now reachable when state and selected bytes verify |
+
+### CFG
+
+| Req | Status | Note |
+|---|---|---|
+| CFG-001 | missing |  |
+| CFG-002 | missing |  |
+| CFG-003 | missing |  |
+| CFG-004 | missing |  |
+| CFG-005 | missing |  |
+| CFG-006 | missing |  |
+| CFG-007 | missing |  |
+| CFG-008 | missing |  |
+
+### VT
+
+| Req | Status | Note |
+|---|---|---|
+| VT-001 | missing |  |
+| VT-002 | missing |  |
+| VT-003 | missing |  |
+| VT-004 | partial |  |
+| VT-005 | missing |  |
+| VT-006 | missing |  |
+| VT-007 | missing |  |
+| VT-008 | missing |  |
+| VT-009 | partial |  |
+| VT-010 | partial |  |
+
+### UI
+
+| Req | Status | Note |
+|---|---|---|
+| UI-001 | partial |  |
+| UI-002 | partial |  |
+| UI-003 | partial |  |
+| UI-004 | missing |  |
+| UI-005 | missing |  |
+| UI-006 | missing |  |
+| UI-007 | missing |  |
+
+### CONC
+
+| Req | Status | Note |
+|---|---|---|
+| CONC-001 | partial |  |
+| CONC-002 | partial |  |
+| CONC-003 | implemented |  |
+| CONC-004 | partial |  |
+| CONC-005 | implemented |  |
+
+### EVID
+
+| Req | Status | Note |
+|---|---|---|
+| EVID-001 | partial |  |
+| EVID-002 | partial |  |
+| EVID-003 | partial |  |
+| EVID-004 | missing |  |
+| EVID-005 | partial |  |
+| EVID-006 | partial |  |
+
+### RT
+
+| Req | Status | Note |
+|---|---|---|
+| RT-001 | out-of-scope | docs defer Roost runtime scope |
+| RT-002 | implemented | by-absence: satisfied only by absence of dependencies (no CI guard) |
+| RT-003 | partial |  |
+
+### SEC
+
+| Req | Status | Note |
+|---|---|---|
+| SEC-001 | partial |  |
+| SEC-002 | partial |  |
+| SEC-003 | partial |  |
+| SEC-004 | partial |  |
+| SEC-005 | missing | no network code |
+| SEC-006 | missing | no sync code |
+| SEC-007 | missing | no web server |
+
+### NFR
+
+| Req | Status | Note |
+|---|---|---|
+| NFR-001 | partial |  |
+| NFR-002 | missing | no latency benchmarks |
+| NFR-003 | implemented | by-absence: satisfied only by absence of network code (no offline test) |
+| NFR-004 | partial |  |
+| NFR-005 | missing | no retention/delete commands |
+| NFR-006 | implemented |  |
+| NFR-007 | missing | no UI |
+
+### OPS
+
+| Req | Status | Note |
+|---|---|---|
+| OPS-001 | missing | no packaging |
+| OPS-002 | missing | no migrate/rollback |
+| OPS-003 | missing | no uninstall |
+| OPS-004 | missing | no CI |
+| OPS-005 | partial |  |
+| OPS-006 | partial |  |
+| OPS-007 | implemented | by-absence: satisfied only by absence of payments/network code |
+| OPS-008 | partial |  |
+
+## 6. Accuracy caveats
 
 - **`by-absence` rows** (CAP-007, NFR-003, RT-002, OPS-007, plus NFR-004 partly) are
   satisfied only because the feature does not exist. They must not be counted as
   positive delivery evidence in a release review.
 - **`evidence --file`** intentionally accepts absolute paths outside the workspace, so
   SEC-001 has no single unified path validator. `docs/04` should say so explicitly.
-- **`handoff import`** reports `recovery_status=incomplete` even when every byte
-  verifies; `complete` is currently unreachable by construction.
+- **`handoff import`** now reports `complete` only after replaying the rebuilt
+  workspace, verifying evidence blobs and confirming the exported code state was
+  clean. Code is never applied: imported untracked bytes are staged under
+  `local/imported/`, and the successor must check out the recorded commit.
+- **Legacy artifact-only packages** (no workspace payload) still import their
+  verified bytes but never report a rebuilt workspace.
 - **`acceptance/matrix.yaml`** still lists all 140 requirements as `planned` with
   test IDs (`UT-*`, `IT-*`, `SEC-*`, `E2E-*`) that do not exist in the repo. The
   matrix is a design artifact, not evidence. `docs/05` §5 promises an
   `internal/acceptance/` coverage test; it does not exist.
 
-## 6. Keeping this file current
+## 7. Keeping this file current
 
 Update this file when a commit closes any row above. Keep the rubric honest:
 `implemented` requires both code and an asserting test. When the matrix is next
