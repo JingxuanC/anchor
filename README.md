@@ -15,13 +15,18 @@ experience lives in the user's independent **causal-memory** project and is used
 through its remote MCP endpoint. Anchor stores tree state, decisions, evidence,
 configuration and secret *references* only.
 
-> **Status: design baseline (pre-implementation).**
+> **Status: documentation baseline + partially implemented local core.**
 > The design documents in `docs/` are the review artifact for the architect and
-> the user. No application code has been written yet. The private repository
-> `JingxuanC/anchor` exists and was verified at initialization commit
-> `39b6fffdb35511859a82632d174b97ca304e26f5`. A draft PR for the design
-> branch exists; no main push, force-push, merge, or further default-branch
-> write was performed (see `docs/07-repo-bootstrap.md`).
+> the user. Application code now exists for the local segment (event store,
+> Session Tree CLI, evidence, handoff, recovery export/import, adapter capture
+> skeleton); see `docs/09-implementation-status.md` for the audited,
+> requirement-by-requirement status (18 implemented / 62 partial / 59 missing /
+> 1 deferred as of commit `1a6acc5`). Phases 4–8 of `docs/06` §4 are unstarted,
+> and `acceptance/matrix.yaml` still labels every requirement `planned`, so it
+> is a design artifact rather than evidence of coverage. The private repository
+> `JingxuanC/anchor` was verified at initialization commit
+> `39b6fffdb35511859a82632d174b97ca304e26f5`; no main push, force-push, merge,
+> or default-branch write has been performed (see `docs/07-repo-bootstrap.md`).
 
 ## What Anchor will deliver
 
@@ -59,7 +64,8 @@ configuration and secret *references* only.
 | `docs/06-decisions-and-open-questions.md` | Confirmed decisions vs proposals vs blockers |
 | `docs/07-repo-bootstrap.md` | GitHub verification result and required approvals |
 | `docs/08-design-review-response.md` | Architect P0/P1 review findings and point-by-point disposition |
-| `acceptance/matrix.yaml` | Machine-readable requirement/test coverage plan |
+| `docs/09-implementation-status.md` | Audited requirement-by-requirement implementation status (18/62/59/1) |
+| `acceptance/matrix.yaml` | Machine-readable requirement/test coverage plan (all rows still `planned`) |
 
 ## Provenance
 
