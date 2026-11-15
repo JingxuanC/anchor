@@ -24,9 +24,12 @@ type LoadResult struct {
 	Quarantined []Quarantine `json:"quarantined"`
 }
 
+const CurrentEventLogVersion = 2
+
 type Store struct {
-	Dir string
-	mu  sync.Mutex
+	Dir             string
+	EventLogVersion int
+	mu              sync.Mutex
 }
 
 func Open(dir string) (*Store, error) {
@@ -37,7 +40,22 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(eventsDir, 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{Dir: dir}, nil
+	version := 0
+	if b, err := os.ReadFile(filepath.Join(dir, "manifest.json")); err == nil {
+		var m struct {
+			EventLogVersion int `json:"event_log_version"`
+		}
+		if err := json.Unmarshal(b, &m); err != nil {
+			return nil, fmt.Errorf("invalid workspace manifest: %w", err)
+		}
+		version = m.EventLogVersion
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if version < 0 || version > CurrentEventLogVersion {
+		return nil, fmt.Errorf("unsupported workspace event_log_version %d (supported up to %d)", version, CurrentEventLogVersion)
+	}
+	return &Store{Dir: dir, EventLogVersion: version}, nil
 }
 
 func validateEventID(id string) error {
@@ -76,7 +94,7 @@ func (s *Store) LoadReport() (LoadResult, error) {
 			bad = append(bad, Quarantine{File: entry.Name(), Reason: err.Error()})
 			continue
 		}
-		batch, reason := decodeBatchFile(b)
+		batch, reason := decodeBatchFile(b, s.EventLogVersion)
 		if reason != "" {
 			bad = append(bad, Quarantine{File: entry.Name(), Reason: reason})
 			continue
@@ -112,17 +130,13 @@ func (s *Store) LoadReport() (LoadResult, error) {
 	return LoadResult{Events: out, Quarantined: bad}, nil
 }
 
-func decodeBatchFile(b []byte) ([]Event, string) {
+func decodeBatchFile(b []byte, version int) ([]Event, string) {
 	trimmed := bytes.TrimSpace(b)
 	if len(trimmed) == 0 {
 		return nil, "empty event file"
 	}
 	if trimmed[0] == '[' {
-		var batch []Event
-		if err := json.Unmarshal(trimmed, &batch); err != nil {
-			return nil, "batch parse: " + err.Error()
-		}
-		return batch, ""
+		return nil, fmt.Sprintf("legacy bare event array is not allowed (workspace event_log_version %d); use read-only event audit/migration dry-run", version)
 	}
 	if trimmed[0] != '{' {
 		return nil, "parse: expected JSON object or array"
@@ -136,11 +150,7 @@ func decodeBatchFile(b []byte) ([]Event, string) {
 		return nil, "parse: " + err.Error()
 	}
 	if probe.AnchorBatch == 0 && probe.BatchID == "" && len(probe.Events) == 0 {
-		var e Event
-		if err := json.Unmarshal(trimmed, &e); err != nil {
-			return nil, "parse: " + err.Error()
-		}
-		return []Event{e}, ""
+		return nil, fmt.Sprintf("legacy single-event object is not allowed (workspace event_log_version %d); use read-only event audit/migration dry-run", version)
 	}
 	var env batchEnvelope
 	if err := json.Unmarshal(trimmed, &env); err != nil {

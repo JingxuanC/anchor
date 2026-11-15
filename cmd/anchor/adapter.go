@@ -101,6 +101,26 @@ func appendParent(parents []string, id string) []string {
 	return append(parents, id)
 }
 
+func readCaptureInput(eventFile string, stdin bool) ([]byte, error) {
+	var b []byte
+	var err error
+	if stdin {
+		b, err = io.ReadAll(io.LimitReader(os.Stdin, maxCaptureInput+1))
+	} else {
+		if strings.TrimSpace(eventFile) == "" {
+			return nil, fmt.Errorf("--event is required")
+		}
+		b, err = core.ReadRegularFileLimited(eventFile, maxCaptureInput)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxCaptureInput {
+		return nil, fmt.Errorf("capture input exceeds %d bytes", maxCaptureInput)
+	}
+	return b, nil
+}
+
 func adapterIngest(args []string) {
 	fs := flag.NewFlagSet("adapter ingest", flag.ExitOnError)
 	id := fs.String("adapter", "", "adapter id")
@@ -120,18 +140,9 @@ func adapterIngest(args []string) {
 	if (*eventFile == "") == !*stdin {
 		die(fmt.Errorf("exactly one of --event or --stdin is required"))
 	}
-	var input []byte
-	var err error
-	if *stdin {
-		input, err = io.ReadAll(io.LimitReader(os.Stdin, maxCaptureInput+1))
-	} else {
-		input, err = os.ReadFile(*eventFile)
-	}
+	input, err := readCaptureInput(*eventFile, *stdin)
 	if err != nil {
 		die(err)
-	}
-	if len(input) > maxCaptureInput {
-		die(fmt.Errorf("capture input exceeds %d bytes", maxCaptureInput))
 	}
 	result, err := adapter.Capture(*id, input)
 	if err != nil {
@@ -228,18 +239,9 @@ func adapterCapture(args []string) {
 	if (*outFile == "") == !*printOut {
 		die(fmt.Errorf("exactly one of --out or --print is required"))
 	}
-	var input []byte
-	var err error
-	if *stdin {
-		input, err = io.ReadAll(io.LimitReader(os.Stdin, maxCaptureInput+1))
-	} else {
-		input, err = os.ReadFile(*eventFile)
-	}
+	input, err := readCaptureInput(*eventFile, *stdin)
 	if err != nil {
 		die(err)
-	}
-	if len(input) > maxCaptureInput {
-		die(fmt.Errorf("capture input exceeds %d bytes", maxCaptureInput))
 	}
 	result, err := adapter.Capture(*id, input)
 	if err != nil {

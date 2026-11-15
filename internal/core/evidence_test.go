@@ -240,7 +240,12 @@ func TestLegacyEvidenceSchemaRejectedAndAudited(t *testing.T) {
 	if err := ev.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := json.Marshal(ev)
+	h, err := batchHash([]Event{ev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := batchEnvelope{AnchorBatch: 1, BatchID: "batch_legacy", EventCount: 1, EventsSHA256: h, Events: []Event{ev}}
+	b, _ := json.Marshal(env)
 	if err := os.WriteFile(filepath.Join(ws, "events", "legacy-event.json"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}

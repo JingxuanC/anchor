@@ -56,19 +56,19 @@ func ensureEvidenceDir(root string) error {
 	return nil
 }
 
-func readEvidenceFile(path string, limit int64) ([]byte, error) {
+func readRegularFile(path string, limit int64) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("evidence file must not be a symlink")
+		return nil, fmt.Errorf("file must not be a symlink")
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("evidence file must be a regular file")
+		return nil, fmt.Errorf("file must be a regular file")
 	}
 	if info.Size() > limit {
-		return nil, fmt.Errorf("evidence file exceeds %d bytes", limit)
+		return nil, fmt.Errorf("file exceeds %d bytes", limit)
 	}
 	f, err := openEvidenceRead(path)
 	if err != nil {
@@ -80,7 +80,7 @@ func readEvidenceFile(path string, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("evidence file exceeds %d bytes", limit)
+		return nil, fmt.Errorf("file exceeds %d bytes", limit)
 	}
 	return b, nil
 }
@@ -105,7 +105,7 @@ func (s *Store) PutEvidenceFile(src, expectedSHA256 string, metadata []string) (
 	if err := scanEvidenceMetadata(append([]string{src}, metadata...)...); err != nil {
 		return EvidenceArtifact{}, err
 	}
-	data, err := readEvidenceFile(src, MaxEvidenceBytes)
+	data, err := readRegularFile(src, MaxEvidenceBytes)
 	if err != nil {
 		return EvidenceArtifact{}, err
 	}
@@ -206,7 +206,7 @@ func VerifyEvidenceArtifact(workspace string, entry EvidenceEntry) error {
 	if entry.Size != info.Size() {
 		return fmt.Errorf("evidence artifact size mismatch: recorded %d, actual %d", entry.Size, info.Size())
 	}
-	data, err := readEvidenceFile(path, MaxEvidenceBytes)
+	data, err := readRegularFile(path, MaxEvidenceBytes)
 	if err != nil {
 		return err
 	}
@@ -305,4 +305,11 @@ func (s *Store) AuditEvidence() (EvidenceAudit, error) {
 	sort.Strings(audit.InvalidArtifacts)
 	sort.Strings(audit.LegacyEvidence)
 	return audit, nil
+}
+
+// ReadRegularFileLimited is a shared bounded reader for explicit local inputs.
+// It rejects symlinks and non-regular files (including FIFOs/devices) before
+// opening, uses O_NOFOLLOW on Unix, and never reads more than limit+1 bytes.
+func ReadRegularFileLimited(path string, limit int64) ([]byte, error) {
+	return readRegularFile(path, limit)
 }

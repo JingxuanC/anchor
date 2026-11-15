@@ -423,3 +423,85 @@ func TestBatchManifestCountAndHashValidated(t *testing.T) {
 		t.Fatalf("duplicate batch event not quarantined: %+v", r)
 	}
 }
+
+// A manifested batch must not be downgraded to a legacy bare array or single
+// object. New workspace metadata pins the strict event-log version; legacy
+// formats are read-only audit diagnostics, never silently applied.
+func TestTamperedEnvelopeCannotDowngradeToLegacy(t *testing.T) {
+	ws := t.TempDir()
+	manifest := `{"schema_version":1,"event_log_version":2,"workspace_id":"ws1","device_id":"d1"}`
+	if err := os.WriteFile(filepath.Join(ws, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1 := withID(rawOwn("down-a", "l1", "a", 1), "down-a", "d1", 1)
+	e2 := withID(rawOwn("down-b", "l2", "a", 1), "down-b", "d1", 2)
+	if _, err := s.Transact(func(tx *Tx) error {
+		if _, err := tx.Add(e1); err != nil {
+			return err
+		}
+		_, err := tx.Add(e2)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := filepath.Glob(filepath.Join(ws, "events", "*.json"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("batch file not found: %v %v", paths, err)
+	}
+	original, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env batchEnvelope
+	if err := json.Unmarshal(original, &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Events) != 2 {
+		t.Fatalf("unexpected batch: %+v", env)
+	}
+	write := func(b []byte) {
+		if err := os.WriteFile(paths[0], b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertQuarantined := func(want string) {
+		t.Helper()
+		r, err := s.LoadReport()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(r.Events) != 0 || len(r.Quarantined) != 1 {
+			t.Fatalf("tampered batch partially applied: events=%d quarantined=%+v", len(r.Events), r.Quarantined)
+		}
+		if !strings.Contains(r.Quarantined[0].Reason, want) {
+			t.Fatalf("quarantine reason %q missing %q", r.Quarantined[0].Reason, want)
+		}
+	}
+	bare, _ := json.Marshal([]Event{env.Events[0]})
+	write(bare)
+	assertQuarantined("legacy bare event array")
+	audit, err := s.AuditEventFormats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !audit.ReadOnly || audit.Writes || !audit.MigrationDryRunOnly || len(audit.LegacyFiles) != 1 {
+		t.Fatalf("legacy audit wrong: %+v", audit)
+	}
+	single, _ := json.Marshal(env.Events[0])
+	write(single)
+	assertQuarantined("legacy single-event object")
+	truncated := env
+	truncated.Events = env.Events[:1]
+	b, _ := json.Marshal(truncated)
+	write(b)
+	assertQuarantined("event_count mismatch")
+	write(original)
+	r, err := s.LoadReport()
+	if err != nil || len(r.Events) != 2 || len(r.Quarantined) != 0 {
+		t.Fatalf("restored batch not readable: %+v %v", r, err)
+	}
+}

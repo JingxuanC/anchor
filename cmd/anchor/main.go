@@ -14,10 +14,11 @@ import (
 )
 
 type manifest struct {
-	SchemaVersion int    `json:"schema_version"`
-	WorkspaceID   string `json:"workspace_id"`
-	DeviceID      string `json:"device_id"`
-	CreatedAt     string `json:"created_at"`
+	SchemaVersion   int    `json:"schema_version"`
+	EventLogVersion int    `json:"event_log_version"`
+	WorkspaceID     string `json:"workspace_id"`
+	DeviceID        string `json:"device_id"`
+	CreatedAt       string `json:"created_at"`
 }
 
 func main() {
@@ -59,6 +60,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `Anchor core (first local segment)
   anchor init --dir DIR --workspace ID --device ID
   anchor event append --dir DIR --file EVENT.json
+  anchor event audit --dir DIR [--json]
   anchor node create --dir DIR --id ID --type goal|decision|task|branch|question|note --title T [--parent ID]
   anchor node edit --dir DIR --id ID --title T
   anchor node tombstone --dir DIR --id ID
@@ -97,7 +99,7 @@ func cmdInit(args []string) {
 	if _, err := core.Open(*dir); err != nil {
 		die(err)
 	}
-	m := manifest{SchemaVersion: core.SchemaVersion, WorkspaceID: *ws, DeviceID: *dev, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	m := manifest{SchemaVersion: core.SchemaVersion, EventLogVersion: core.CurrentEventLogVersion, WorkspaceID: *ws, DeviceID: *dev, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	if err := os.WriteFile(filepath.Join(*dir, "manifest.json"), b, 0o600); err != nil {
 		die(err)
@@ -180,7 +182,15 @@ func replayDir(dir string) core.ReplayResult {
 }
 
 func cmdEvent(args []string) {
-	if len(args) < 1 || args[0] != "append" {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	if args[0] == "audit" {
+		eventAudit(args[1:])
+		return
+	}
+	if args[0] != "append" {
 		usage()
 		os.Exit(2)
 	}
@@ -201,6 +211,26 @@ func cmdEvent(args []string) {
 	}
 	stored, created := appendEvent(*dir, e)
 	fmt.Printf("%s %s created=%v\n", stored.EventID, stored.Type, created)
+}
+
+func eventAudit(args []string) {
+	fs := flag.NewFlagSet("event audit", flag.ExitOnError)
+	dir := fs.String("dir", ".", "workspace directory")
+	asJSON := fs.Bool("json", false, "JSON output")
+	_ = fs.Parse(args)
+	a, err := openStore(*dir).AuditEventFormats()
+	if err != nil {
+		die(err)
+	}
+	if *asJSON {
+		b, _ := json.MarshalIndent(a, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("read_only=%v writes=%v migration_dry_run_only=%v event_log_version=%d\n", a.ReadOnly, a.Writes, a.MigrationDryRunOnly, a.EventLogVersion)
+	for _, f := range a.Files {
+		fmt.Printf("%-40s format=%-22s events=%d %s\n", f.File, f.Format, f.Events, f.Reason)
+	}
 }
 
 func cmdNode(args []string) {
@@ -440,6 +470,9 @@ func cmdStatus(args []string) {
 	eval := handoff.Evaluate(*dir, *repo, packet)
 	quarantined := quarantineDir(*dir)
 	if len(quarantined) > 0 {
+		if r.RecoveryStatus == "complete" {
+			r.RecoveryStatus = "incomplete"
+		}
 		if eval.Status == handoff.StatusComplete {
 			eval.Status = handoff.StatusIncomplete
 		}

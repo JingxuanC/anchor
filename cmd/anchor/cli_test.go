@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -976,5 +977,261 @@ func TestCLIAdapterIngestNeverExecutesHookInput(t *testing.T) {
 	}
 	if _, err := os.Stat(pwn); err == nil {
 		t.Fatal("hook input command was executed")
+	}
+}
+
+func TestCLIEventFormatDowngradeRejectedAndAudited(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	manifestBytes, err := os.ReadFile(filepath.Join(ws, "manifest.json"))
+	if err != nil || !strings.Contains(string(manifestBytes), `"event_log_version": 2`) {
+		t.Fatalf("new workspace missing persisted event_log_version=2: %s %v", manifestBytes, err)
+	}
+	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G"); code != 0 {
+		t.Fatalf("create failed: %s%s", out, errText)
+	}
+	paths, err := filepath.Glob(filepath.Join(ws, "events", "*.json"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("batch file not found: %v %v", paths, err)
+	}
+	batchPath := paths[0]
+	original, err := os.ReadFile(batchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		AnchorBatch  int               `json:"anchor_batch"`
+		BatchID      string            `json:"batch_id"`
+		EventCount   int               `json:"event_count"`
+		EventsSHA256 string            `json:"events_sha256"`
+		Events       []json.RawMessage `json:"events"`
+	}
+	if err := json.Unmarshal(original, &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.AnchorBatch != 1 || len(env.Events) != 2 {
+		t.Fatalf("unexpected batch: %+v", env)
+	}
+	status := func() map[string]any {
+		t.Helper()
+		out, _, code := runCLI(t, root, "status", "--dir", ws, "--json")
+		if code != 0 {
+			t.Fatalf("status failed: %s", out)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(out), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	assertTampered := func(reason string) {
+		t.Helper()
+		m := status()
+		if m["projection_status"] != "incomplete" || m["recovery_status"] != "incomplete" {
+			t.Fatalf("tampered batch not incomplete: %v", m)
+		}
+		q, _ := m["quarantined"].([]any)
+		if len(q) != 1 || !strings.Contains(q[0].(map[string]any)["reason"].(string), reason) {
+			t.Fatalf("quarantine reason missing %q: %v", reason, m["quarantined"])
+		}
+		nodes := m["tree"].(map[string]any)["nodes"].(map[string]any)
+		if len(nodes) != 0 {
+			t.Fatalf("tampered batch partially applied nodes: %v", nodes)
+		}
+	}
+	bare, _ := json.Marshal([]json.RawMessage{env.Events[0]})
+	if err := os.WriteFile(batchPath, bare, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertTampered("legacy bare event array")
+	beforeAudit, _ := os.ReadFile(batchPath)
+	auditOut, _, code := runCLI(t, root, "event", "audit", "--dir", ws, "--json")
+	if code != 0 || !strings.Contains(auditOut, `"read_only": true`) || !strings.Contains(auditOut, `"writes": false`) || !strings.Contains(auditOut, `"migration_dry_run_only": true`) || !strings.Contains(auditOut, `"legacy_bare_array"`) || !strings.Contains(auditOut, filepath.Base(batchPath)) {
+		t.Fatalf("event audit failed: %s", auditOut)
+	}
+	afterAudit, _ := os.ReadFile(batchPath)
+	if !bytes.Equal(beforeAudit, afterAudit) {
+		t.Fatal("event audit mutated the batch")
+	}
+	single, _ := json.Marshal(env.Events[0])
+	if err := os.WriteFile(batchPath, single, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertTampered("legacy single-event object")
+	truncated := map[string]any{
+		"anchor_batch": env.AnchorBatch, "batch_id": env.BatchID,
+		"event_count": env.EventCount, "events_sha256": env.EventsSHA256,
+		"events": []json.RawMessage{env.Events[0]},
+	}
+	tb, _ := json.Marshal(truncated)
+	if err := os.WriteFile(batchPath, tb, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertTampered("event_count mismatch")
+	auditOut, _, _ = runCLI(t, root, "event", "audit", "--dir", ws, "--json")
+	if !strings.Contains(auditOut, `"invalid_manifest_batch"`) || !strings.Contains(auditOut, `"invalid_files"`) {
+		t.Fatalf("truncated manifest not audited: %s", auditOut)
+	}
+	if err := os.WriteFile(batchPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := status()
+	if m["projection_status"] != "complete" || len(m["tree"].(map[string]any)["nodes"].(map[string]any)) != 1 {
+		t.Fatalf("restored batch not readable: %v", m)
+	}
+}
+
+func runCLITimeout(t *testing.T, timeout time.Duration, dir string, args ...string) (string, string, int, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, anchorBin, args...)
+	cmd.Dir = dir
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return stdout.String(), stderr.String(), -1, true
+	}
+	code := 0
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			code = exit.ExitCode()
+		} else {
+			t.Fatalf("run %v: %v", args, err)
+		}
+	}
+	return stdout.String(), stderr.String(), code, false
+}
+
+func TestCLIAdapterInputRejectsSpecialAndOversizeFiles(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	clean := writeFixture(t, filepath.Join(root, "clean.json"), `{"hook_event_name":"PostToolUse","session_id":"input-session","tool_name":"Bash"}`)
+	link := filepath.Join(root, "link.json")
+	if err := os.Symlink(clean, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"adapter", "capture", "--adapter", "claude-code", "--event", link, "--print"},
+		{"adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", link},
+	} {
+		if _, stderr, code := runCLI(t, root, args...); code == 0 || !strings.Contains(stderr, "symlink") {
+			t.Fatalf("symlink input accepted: %v %s", args, stderr)
+		}
+	}
+	if _, err := os.Stat(clean); err != nil {
+		t.Fatal(err)
+	}
+	dirTarget := t.TempDir()
+	for _, args := range [][]string{
+		{"adapter", "capture", "--adapter", "claude-code", "--event", dirTarget, "--print"},
+		{"adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", dirTarget},
+	} {
+		if _, stderr, code := runCLI(t, root, args...); code == 0 || !strings.Contains(stderr, "regular file") {
+			t.Fatalf("directory input accepted: %v %s", args, stderr)
+		}
+	}
+	if dev, err := os.Stat("/dev/null"); err == nil && !dev.Mode().IsRegular() {
+		for _, args := range [][]string{
+			{"adapter", "capture", "--adapter", "claude-code", "--event", "/dev/null", "--print"},
+			{"adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", "/dev/null"},
+		} {
+			if _, stderr, code := runCLI(t, root, args...); code == 0 || !strings.Contains(stderr, "regular file") {
+				t.Fatalf("device input accepted: %v %s", args, stderr)
+			}
+		}
+	}
+	if _, err := exec.LookPath("mkfifo"); err == nil {
+		fifo := filepath.Join(root, "input.fifo")
+		if out, err := exec.Command("mkfifo", fifo).CombinedOutput(); err != nil {
+			t.Fatalf("mkfifo: %v %s", err, out)
+		}
+		for _, args := range [][]string{
+			{"adapter", "capture", "--adapter", "claude-code", "--event", fifo, "--print"},
+			{"adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", fifo},
+		} {
+			out, stderr, code, timedOut := runCLITimeout(t, 2*time.Second, root, args...)
+			if timedOut {
+				t.Fatalf("FIFO input hung: %v", args)
+			}
+			if code == 0 || !strings.Contains(stderr, "regular file") {
+				t.Fatalf("FIFO input accepted/hung: %v code=%d out=%s err=%s", args, code, out, stderr)
+			}
+		}
+	}
+	large := filepath.Join(root, "large.json")
+	marker := "XXOVERSIZEXX"
+	if err := os.WriteFile(large, bytes.Repeat([]byte(marker), (maxCaptureInput/len(marker))+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := len(eventFiles(t, ws))
+	for _, args := range [][]string{
+		{"adapter", "capture", "--adapter", "claude-code", "--event", large, "--print"},
+		{"adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", large},
+	} {
+		if _, stderr, code := runCLI(t, root, args...); code == 0 || !strings.Contains(stderr, "exceeds") {
+			t.Fatalf("oversize input accepted: %v %s", args, stderr)
+		} else if strings.Contains(stderr, marker) {
+			t.Fatalf("oversize error echoed content: %s", stderr)
+		}
+	}
+	if len(eventFiles(t, ws)) != before {
+		t.Fatal("rejected oversize ingest wrote an event")
+	}
+	stdinLarge := strings.Repeat("Y", maxCaptureInput+1)
+	for _, args := range [][]string{
+		{"adapter", "capture", "--adapter", "claude-code", "--stdin", "--print"},
+		{"adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--stdin"},
+	} {
+		if _, stderr, code := runCLIInput(t, root, stdinLarge, args...); code == 0 || !strings.Contains(stderr, "exceeds") {
+			t.Fatalf("oversize stdin accepted: %v %s", args, stderr)
+		}
+	}
+}
+
+func TestCLIAdapterIngestWorkspaceIsolationAndUnverifiedSource(t *testing.T) {
+	root := t.TempDir()
+	ws1 := filepath.Join(root, "ws1")
+	ws2 := filepath.Join(root, "ws2")
+	runCLI(t, root, "init", "--dir", ws1, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "init", "--dir", ws2, "--workspace", "ws2", "--device", "dev2")
+	runCLI(t, root, "node", "create", "--dir", ws1, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws1, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T1")
+	runCLI(t, root, "node", "create", "--dir", ws2, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws2, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "T2")
+	fixture := writeFixture(t, filepath.Join(root, "shared-hook.json"), `{"hook_event_name":"PostToolUse","session_id":"shared-session","cwd":"/tmp/shared","tool_name":"Bash","timestamp":"2026-11-15T00:00:00Z"}`)
+	out1, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "codex", "--dir", ws1, "--node", "task1", "--event", fixture, "--source", "fixture", "--json")
+	if code != 0 {
+		t.Fatalf("ws1 ingest failed: %s%s", out1, stderr)
+	}
+	out2, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "codex", "--dir", ws2, "--node", "task2", "--event", fixture, "--source", "hook_unverified", "--json")
+	if code != 0 {
+		t.Fatalf("ws2 ingest failed: %s%s", out2, stderr)
+	}
+	var r1, r2 map[string]any
+	_ = json.Unmarshal([]byte(out1), &r1)
+	_ = json.Unmarshal([]byte(out2), &r2)
+	if r1["session_id"] == "" || r1["session_id"] != r2["session_id"] {
+		t.Fatalf("session identity is not stable across workspaces: %v vs %v", r1["session_id"], r2["session_id"])
+	}
+	if r2["trust_level"] != "unverified_adapter" || r2["source"] != "hook_unverified" {
+		t.Fatalf("hook_unverified source was treated as verified: %v", r2)
+	}
+	status1, _, _ := runCLI(t, root, "status", "--dir", ws1, "--json")
+	status2, _, _ := runCLI(t, root, "status", "--dir", ws2, "--json")
+	if !strings.Contains(status1, `"node_id": "task1"`) || strings.Contains(status1, `"node_id": "task2"`) {
+		t.Fatalf("workspace 1 cross-contaminated: %s", status1)
+	}
+	if !strings.Contains(status2, `"node_id": "task2"`) || strings.Contains(status2, `"node_id": "task1"`) {
+		t.Fatalf("workspace 2 cross-contaminated: %s", status2)
+	}
+	if strings.Count(status1, `"adapter": "codex"`) != 1 || strings.Count(status2, `"adapter": "codex"`) != 1 {
+		t.Fatalf("session registry not workspace-local: ws1=%s ws2=%s", status1, status2)
 	}
 }
