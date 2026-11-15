@@ -20,7 +20,7 @@ configuration and secret *references* only.
 > the user. Application code now exists for the local segment (event store,
 > Session Tree CLI, evidence, handoff, recovery export/import, adapter capture
 > skeleton); see `docs/09-implementation-status.md` for the audited,
-> requirement-by-requirement status (24 implemented / 59 partial / 56 missing /
+> requirement-by-requirement status (27 implemented / 56 partial / 56 missing /
 > 1 deferred). Phases 4–8 of `docs/06` §4 are unstarted,
 > and `acceptance/matrix.yaml` still labels every requirement `planned`, so it
 > is a design artifact rather than evidence of coverage. The private repository
@@ -64,7 +64,7 @@ configuration and secret *references* only.
 | `docs/06-decisions-and-open-questions.md` | Confirmed decisions vs proposals vs blockers |
 | `docs/07-repo-bootstrap.md` | GitHub verification result and required approvals |
 | `docs/08-design-review-response.md` | Architect P0/P1 review findings and point-by-point disposition |
-| `docs/09-implementation-status.md` | Audited requirement-by-requirement implementation status (24/59/56/1) |
+| `docs/09-implementation-status.md` | Audited requirement-by-requirement implementation status (27/56/56/1) |
 | `acceptance/matrix.yaml` | Machine-readable requirement/test coverage plan (all rows still `planned`) |
 
 ## Provenance

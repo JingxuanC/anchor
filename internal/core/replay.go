@@ -515,6 +515,57 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 		}
 		return nil
 	}
+	if e.Type == EvHandoffAcked || e.Type == EvHandoffVerified {
+		var p HandoffPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return err
+		}
+		if p.HandoffID == "" {
+			return fmt.Errorf("handoff event %s has no handoff_id", e.EventID)
+		}
+		if p.ContentHash != "" && !validSHA256(strings.TrimPrefix(p.ContentHash, "sha256:")) {
+			return fmt.Errorf("handoff event %s has an invalid content hash", e.EventID)
+		}
+		if p.CodeHead != "" && !validHex(p.CodeHead, 40) {
+			return fmt.Errorf("handoff event %s has an invalid code head", e.EventID)
+		}
+		st := tree.Handoffs[p.HandoffID]
+		if st == nil {
+			st = &HandoffState{HandoffID: p.HandoffID}
+			tree.Handoffs[p.HandoffID] = st
+		}
+		if e.Type == EvHandoffAcked {
+			if st.Acked && !p.Forced {
+				return fmt.Errorf("handoff %s is already acked", p.HandoffID)
+			}
+			st.Acked = true
+			st.AckedBy = p.Verifier
+			st.AckedEventID = e.EventID
+			if p.ContentHash != "" {
+				st.ContentHash = p.ContentHash
+			}
+			st.Forced = st.Forced || p.Forced
+			return nil
+		}
+		if !st.Acked {
+			return fmt.Errorf("handoff_verified requires a prior handoff_acked for %s", p.HandoffID)
+		}
+		if st.Verified && !p.Forced {
+			return fmt.Errorf("handoff %s is already verified", p.HandoffID)
+		}
+		for _, id := range p.EvidenceIDs {
+			if _, ok := tree.Evidence[id]; !ok {
+				return fmt.Errorf("handoff verification references unknown evidence %q", id)
+			}
+		}
+		st.Verified = true
+		st.VerifiedBy = p.Verifier
+		st.VerifiedEventID = e.EventID
+		st.CodeHead = p.CodeHead
+		st.EvidenceIDs = append([]string(nil), p.EvidenceIDs...)
+		st.Forced = st.Forced || p.Forced
+		return nil
+	}
 	if e.Type == EvNodeCreated {
 		var p NodePayload
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
@@ -592,6 +643,19 @@ func containsString(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// validHex reports whether s is exactly n hex characters.
+func validHex(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func applyMutation(tree *Tree, e Event, nodeID string, verify EvidenceVerifier) error {

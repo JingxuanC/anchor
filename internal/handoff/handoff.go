@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -467,6 +468,168 @@ func Latest(dir string) (Packet, string, error) {
 		}
 	}
 	return Packet{}, "", os.ErrNotExist
+}
+
+// CodeComparison records the prepared code state against the repository as it is
+// now, so a plan can say exactly what drifted.
+type CodeComparison struct {
+	ExpectedBranch      string `json:"expected_branch"`
+	ActualBranch        string `json:"actual_branch"`
+	ExpectedHead        string `json:"expected_head"`
+	ActualHead          string `json:"actual_head"`
+	ExpectedDirty       bool   `json:"expected_dirty"`
+	ActualDirty         bool   `json:"actual_dirty"`
+	BranchMatches       bool   `json:"branch_matches"`
+	HeadMatches         bool   `json:"head_matches"`
+	StagedDiffMatches   bool   `json:"staged_diff_matches"`
+	UnstagedDiffMatches bool   `json:"unstaged_diff_matches"`
+}
+
+// HandoffProgress is the recorded successor progress for a packet.
+type HandoffProgress struct {
+	Acked       bool     `json:"acked"`
+	AckedBy     string   `json:"acked_by,omitempty"`
+	Verified    bool     `json:"verified"`
+	VerifiedBy  string   `json:"verified_by,omitempty"`
+	CodeHead    string   `json:"code_head,omitempty"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	Forced      bool     `json:"forced,omitempty"`
+}
+
+// RestoreAction is one step the successor should take.
+type RestoreAction struct {
+	Kind        string `json:"kind"`
+	Description string `json:"description"`
+	Command     string `json:"command,omitempty"`
+	Blocked     bool   `json:"blocked,omitempty"`
+}
+
+// RestorePlan is the read-only answer to "can I resume from this packet, and
+// what exactly do I have to do first?".
+type RestorePlan struct {
+	SchemaVersion  int             `json:"schema_version"`
+	HandoffID      string          `json:"handoff_id"`
+	PacketPath     string          `json:"packet_path"`
+	RecoveryStatus string          `json:"recovery_status"`
+	CodeApply      string          `json:"code_apply"`
+	Reasons        []string        `json:"reasons,omitempty"`
+	Code           CodeComparison  `json:"code"`
+	Progress       HandoffProgress `json:"progress"`
+	CanAck         bool            `json:"can_ack"`
+	AckBlockers    []string        `json:"ack_blockers,omitempty"`
+	CanVerify      bool            `json:"can_verify"`
+	VerifyBlockers []string        `json:"verify_blockers,omitempty"`
+	Actions        []RestoreAction `json:"actions,omitempty"`
+}
+
+// GateState is the successor gate for the latest prepared handoff: while a
+// packet is pending verification the workspace must not be mutated.
+type GateState struct {
+	Pending        bool            `json:"pending"`
+	HandoffID      string          `json:"handoff_id,omitempty"`
+	PacketPath     string          `json:"packet_path,omitempty"`
+	RecoveryStatus string          `json:"recovery_status,omitempty"`
+	Progress       HandoffProgress `json:"progress"`
+}
+
+// handoffProgress reads the recorded successor progress for a packet id.
+func handoffProgress(dir, handoffID string) HandoffProgress {
+	store, err := core.Open(dir)
+	if err != nil {
+		return HandoffProgress{}
+	}
+	replay, err := store.LoadReplay()
+	if err != nil || replay.Tree == nil {
+		return HandoffProgress{}
+	}
+	st, ok := replay.Tree.Handoffs[handoffID]
+	if !ok {
+		return HandoffProgress{}
+	}
+	return HandoffProgress{Acked: st.Acked, AckedBy: st.AckedBy, Verified: st.Verified, VerifiedBy: st.VerifiedBy,
+		CodeHead: st.CodeHead, EvidenceIDs: st.EvidenceIDs, Forced: st.Forced}
+}
+
+// Gate reports whether the latest prepared handoff still blocks mutations.
+func Gate(dir string) (GateState, error) {
+	p, path, err := Latest(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return GateState{Pending: false}, nil
+		}
+		return GateState{}, err
+	}
+	progress := handoffProgress(dir, p.HandoffID)
+	return GateState{Pending: !progress.Verified, HandoffID: p.HandoffID, PacketPath: path,
+		RecoveryStatus: p.RecoveryStatus, Progress: progress}, nil
+}
+
+// BuildPlan compares a packet with the current repository and projects the
+// successor steps. It is read-only.
+func BuildPlan(dir, repo string, p Packet, path string) (RestorePlan, error) {
+	ev := Evaluate(dir, repo, &p)
+	plan := RestorePlan{SchemaVersion: 1, HandoffID: p.HandoffID, PacketPath: path,
+		RecoveryStatus: ev.Status, CodeApply: "disabled: restore never applies code or executes commands",
+		Reasons: ev.Reasons, Progress: handoffProgress(dir, p.HandoffID)}
+
+	cs, csErr := codeState(repo)
+	if csErr != nil {
+		plan.Reasons = append(plan.Reasons, "cannot read code state: "+csErr.Error())
+	} else {
+		plan.Code = CodeComparison{
+			ExpectedBranch: p.CodeState.Branch, ActualBranch: cs.Branch,
+			ExpectedHead: p.CodeState.Head, ActualHead: cs.Head,
+			ExpectedDirty: p.CodeState.Dirty, ActualDirty: cs.Dirty,
+			BranchMatches:       cs.Branch == p.CodeState.Branch,
+			HeadMatches:         cs.Head == p.CodeState.Head,
+			StagedDiffMatches:   cs.StagedDiffSHA256 == p.CodeState.StagedDiffSHA256,
+			UnstagedDiffMatches: cs.UnstagedDiffSHA256 == p.CodeState.UnstagedDiffSHA256,
+		}
+	}
+
+	if plan.Progress.Acked {
+		plan.AckBlockers = append(plan.AckBlockers, "handoff is already acked")
+	} else if plan.RecoveryStatus != StatusComplete {
+		plan.AckBlockers = append(plan.AckBlockers, "recovery status is "+plan.RecoveryStatus+"; --force is required to acknowledge anyway")
+	}
+	plan.CanAck = len(plan.AckBlockers) == 0
+
+	if !plan.Progress.Acked {
+		plan.VerifyBlockers = append(plan.VerifyBlockers, "handoff must be acked first")
+	} else if plan.Progress.Verified {
+		plan.VerifyBlockers = append(plan.VerifyBlockers, "handoff is already verified")
+	} else if !plan.Code.HeadMatches {
+		plan.VerifyBlockers = append(plan.VerifyBlockers, "repository HEAD differs from the packet; --force is required to verify anyway")
+	}
+	plan.CanVerify = len(plan.VerifyBlockers) == 0
+
+	if !plan.Code.BranchMatches || !plan.Code.HeadMatches {
+		plan.Actions = append(plan.Actions, RestoreAction{Kind: "checkout",
+			Description: "check out the prepared commit " + p.CodeState.Head + " on branch " + p.CodeState.Branch,
+			Command:     "git checkout " + p.CodeState.Head, Blocked: true})
+	}
+	if !plan.Code.StagedDiffMatches || !plan.Code.UnstagedDiffMatches {
+		plan.Actions = append(plan.Actions, RestoreAction{Kind: "restore_worktree",
+			Description: "stash or discard local changes so the working tree matches the packet (uncommitted bytes are not transported)",
+			Command:     "git stash --include-untracked", Blocked: true})
+	}
+	if len(p.Tree.Evidence) > 0 {
+		plan.Actions = append(plan.Actions, RestoreAction{Kind: "verify_evidence",
+			Description: "verify the successor still has the referenced evidence artifacts",
+			Command:     "anchor evidence audit --dir " + dir})
+	}
+	if !plan.Progress.Acked {
+		plan.Actions = append(plan.Actions, RestoreAction{Kind: "ack",
+			Description: "acknowledge the handoff", Command: "anchor handoff restore --ack --packet " + path, Blocked: !plan.CanAck})
+	}
+	if plan.Progress.Acked && !plan.Progress.Verified {
+		plan.Actions = append(plan.Actions, RestoreAction{Kind: "verify",
+			Description: "record successor verification (code + evidence)", Command: "anchor handoff restore --verify --packet " + path, Blocked: !plan.CanVerify})
+	}
+	if plan.Progress.Verified {
+		plan.Actions = append(plan.Actions, RestoreAction{Kind: "resume", Description: "handoff verified; the workspace is editable"})
+	}
+	return plan, nil
 }
 
 // Evaluate is read-only: it never applies code or executes restore commands.

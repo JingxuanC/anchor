@@ -102,14 +102,30 @@ type Session struct {
 	EndEventID             string `json:"end_event_id,omitempty"`
 }
 
+// HandoffState is the successor progress for one prepared handoff packet.
+type HandoffState struct {
+	HandoffID       string   `json:"handoff_id"`
+	ContentHash     string   `json:"content_hash,omitempty"`
+	Acked           bool     `json:"acked,omitempty"`
+	AckedBy         string   `json:"acked_by,omitempty"`
+	AckedEventID    string   `json:"acked_event_id,omitempty"`
+	Verified        bool     `json:"verified,omitempty"`
+	VerifiedBy      string   `json:"verified_by,omitempty"`
+	VerifiedEventID string   `json:"verified_event_id,omitempty"`
+	CodeHead        string   `json:"code_head,omitempty"`
+	EvidenceIDs     []string `json:"evidence_ids,omitempty"`
+	Forced          bool     `json:"forced,omitempty"`
+}
+
 type Tree struct {
 	Nodes    map[string]*Node         `json:"nodes"`
 	Evidence map[string]EvidenceEntry `json:"evidence,omitempty"`
 	Sessions map[string]Session       `json:"sessions,omitempty"`
+	Handoffs map[string]*HandoffState `json:"handoffs,omitempty"`
 }
 
 func NewTree() *Tree {
-	return &Tree{Nodes: map[string]*Node{}, Evidence: map[string]EvidenceEntry{}, Sessions: map[string]Session{}}
+	return &Tree{Nodes: map[string]*Node{}, Evidence: map[string]EvidenceEntry{}, Sessions: map[string]Session{}, Handoffs: map[string]*HandoffState{}}
 }
 
 func (t *Tree) SortedSessions() []Session {

@@ -412,19 +412,38 @@ func TestCLIHandoffErrorsAndStatus(t *testing.T) {
 	}
 	sort.Strings(pkt)
 	restoreOut, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0])
-	if code != 0 {
-		t.Fatalf("restore: %s", stderr)
+	if code != 1 {
+		t.Fatalf("pending restore should exit 1: code=%d %s%s", code, restoreOut, stderr)
 	}
 	var restore struct {
-		Apply          string `json:"apply"`
+		CodeApply      string `json:"code_apply"`
 		RecoveryStatus string `json:"recovery_status"`
 		HandoffID      string `json:"handoff_id"`
+		CanAck         bool   `json:"can_ack"`
+		Progress       struct {
+			Acked    bool `json:"acked"`
+			Verified bool `json:"verified"`
+		} `json:"progress"`
 	}
 	if err := json.Unmarshal([]byte(restoreOut), &restore); err != nil {
 		t.Fatal(err)
 	}
-	if restore.RecoveryStatus != "complete" || !strings.Contains(restore.Apply, "disabled") || restore.HandoffID == "" {
-		t.Fatalf("restore contract broken: %s", restoreOut)
+	if restore.RecoveryStatus != "complete" || !strings.Contains(restore.CodeApply, "disabled") || restore.HandoffID == "" || !restore.CanAck || restore.Progress.Verified {
+		t.Fatalf("restore plan contract broken: %s", restoreOut)
+	}
+	// Ack then verify the handoff, and the plan becomes verified.
+	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--ack"); code != 0 {
+		t.Fatalf("ack: %s%s", out, stderr)
+	}
+	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify"); code != 0 {
+		t.Fatalf("verify: %s%s", out, stderr)
+	}
+	verifiedOut, _, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0])
+	if code != 0 {
+		t.Fatalf("verified plan should exit 0: %s", verifiedOut)
+	}
+	if !strings.Contains(verifiedOut, `"verified": true`) {
+		t.Fatalf("plan does not show verification: %s", verifiedOut)
 	}
 }
 
@@ -482,8 +501,9 @@ func TestCLIStatusDoctorJSONContract(t *testing.T) {
 	if err := json.Unmarshal([]byte(doctorOut), &doctor); err != nil {
 		t.Fatal(err)
 	}
-	if doctor.WorkspaceDir == "" || len(doctor.Checks) != 3 || doctor.Checks[0].Check != "manifest" ||
-		doctor.Checks[1].Check != "events" || doctor.Checks[2].Check != "recovery" || !doctor.RecoveryNotImplied {
+	if doctor.WorkspaceDir == "" || len(doctor.Checks) != 4 || doctor.Checks[0].Check != "manifest" ||
+		doctor.Checks[1].Check != "events" || doctor.Checks[2].Check != "recovery" ||
+		doctor.Checks[3].Check != "handoff" || !doctor.RecoveryNotImplied {
 		t.Fatalf("doctor JSON contract broken: %s", doctorOut)
 	}
 }
@@ -893,5 +913,183 @@ func TestCLIPacketPicksActiveGoal(t *testing.T) {
 	}
 	if packet.Goal.ID != "g1" || packet.Goal.NorthStar != "current star" || len(packet.Goal.Must) != 1 {
 		t.Fatalf("packet selected the wrong goal: %+v", packet.Goal)
+	}
+}
+
+// TestCLIRestoreSuccessorGateFlow covers the successor gate end to end: a
+// prepared handoff blocks mutations until the successor acks AND verifies it.
+func TestCLIRestoreSuccessorGateFlow(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "note1", "--type", "note", "--parent", "goal1", "--title", "N")
+	if _, stderr, code := runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo); code != 0 {
+		t.Fatalf("prepare: %s", stderr)
+	}
+	pkt, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("packets: %v %v", pkt, err)
+	}
+
+	// Every mutation surface is gated while the handoff is pending.
+	pending := []struct {
+		name string
+		args []string
+	}{
+		{"node create", []string{"node", "create", "--dir", ws, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "blocked"}},
+		{"node edit", []string{"node", "edit", "--dir", ws, "--id", "task1", "--title", "blocked"}},
+		{"node transition", []string{"node", "transition", "--dir", ws, "--id", "task1", "--to", "in_progress"}},
+		{"node tombstone", []string{"node", "tombstone", "--dir", ws, "--id", "note1"}},
+		{"note set", []string{"note", "set", "--dir", ws, "--id", "note1", "--text", "blocked"}},
+		{"ownership takeover", []string{"ownership", "takeover", "--dir", ws, "--id", "task1", "--owner", "someone"}},
+	}
+	for _, tc := range pending {
+		t.Run("gated/"+tc.name, func(t *testing.T) {
+			_, stderr, code := runCLI(t, root, tc.args...)
+			if code != 1 {
+				t.Fatalf("%s was allowed while a handoff is pending: %s", tc.name, stderr)
+			}
+			if !strings.Contains(stderr, "pending successor verification") || !strings.Contains(stderr, "--ack") {
+				t.Fatalf("%s diagnostic not actionable: %s", tc.name, stderr)
+			}
+		})
+	}
+	// A raw mutation event cannot bypass the gate either.
+	raw := writeFixture(t, filepath.Join(root, "raw.json"),
+		`{"type":"node_created","causal_parents":[],"payload":{"node_id":"raw1","type":"goal","title":"raw"}}`)
+	if _, stderr, code := runCLI(t, root, "event", "append", "--dir", ws, "--file", raw); code == 0 {
+		t.Fatalf("raw mutation event bypassed the gate: %s", stderr)
+	}
+
+	// The plan says ack is possible; status exposes the pending gate.
+	planOut, _, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0])
+	if code != 1 || !strings.Contains(planOut, `"can_ack": true`) {
+		t.Fatalf("plan should be pending but ackable: code=%d %s", code, planOut)
+	}
+	statusOut, _, _ := runCLI(t, root, "status", "--dir", ws, "--repo", repo, "--json")
+	if !strings.Contains(statusOut, `"pending": true`) || !strings.Contains(statusOut, `"handoff_id": "ho_`) {
+		t.Fatalf("status does not expose the gate: %s", statusOut)
+	}
+
+	// Ack alone keeps the gate closed; verification opens it.
+	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--ack"); code != 0 {
+		t.Fatalf("ack: %s%s", out, stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "still blocked"); code != 1 {
+		t.Fatalf("mutation allowed after ack but before verify: %s", stderr)
+	} else if !strings.Contains(stderr, "--verify") {
+		t.Fatalf("diagnostic should point at --verify: %s", stderr)
+	}
+	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify"); code != 0 {
+		t.Fatalf("verify: %s%s", out, stderr)
+	}
+	if out, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "allowed"); code != 0 {
+		t.Fatalf("mutation still blocked after verification: %s%s", out, stderr)
+	}
+	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0]); code != 0 || !strings.Contains(out, `"verified": true`) {
+		t.Fatalf("verified plan should exit 0: code=%d %s%s", code, out, stderr)
+	}
+	// Duplicate transitions are refused with an actionable message.
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--ack"); code != 1 {
+		t.Fatalf("duplicate ack accepted: %s", stderr)
+	} else if !strings.Contains(stderr, "already acked") {
+		t.Fatalf("unexpected duplicate-ack diagnostic: %s", stderr)
+	}
+	if out, _, code := runCLI(t, root, "doctor", "--dir", ws, "--repo", repo, "--json"); code != 0 || !strings.Contains(out, `"check": "handoff"`) {
+		t.Fatalf("doctor should report the handoff check: %s", out)
+	}
+}
+
+// TestCLIRestoreStaleCodeRequiresForce covers acking a handoff whose code state
+// no longer matches: it must fail closed unless --force is recorded.
+func TestCLIRestoreStaleCodeRequiresForce(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	pkt, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("packets: %v %v", pkt, err)
+	}
+	// Drift the tracked file so the packet is stale.
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("dirty\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planOut, _, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0])
+	if code != 1 || !strings.Contains(planOut, `"recovery_status": "stale_code"`) {
+		t.Fatalf("plan should be stale_code: code=%d %s", code, planOut)
+	}
+	if !strings.Contains(planOut, `"kind": "restore_worktree"`) {
+		t.Fatalf("plan should suggest restoring the worktree: %s", planOut)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--ack"); code != 1 {
+		t.Fatalf("stale ack accepted without --force: %s", stderr)
+	} else if !strings.Contains(stderr, "force") {
+		t.Fatalf("stale ack diagnostic should mention --force: %s", stderr)
+	}
+	out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--ack", "--force")
+	if code != 0 {
+		t.Fatalf("forced ack failed: %s%s", out, stderr)
+	}
+	if !strings.Contains(out, `"forced": true`) {
+		t.Fatalf("forced ack was not recorded as forced: %s", out)
+	}
+	// The gate still requires verification, which the dirty tree permits here.
+	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify"); code != 0 {
+		t.Fatalf("verify after forced ack: %s%s", out, stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "allowed"); code != 0 {
+		t.Fatalf("workspace still gated after a forced ack+verify: %s", stderr)
+	}
+}
+
+// TestCLIRestoreVerifyValidatesEvidence covers evidence validation on verify.
+func TestCLIRestoreVerifyValidatesEvidence(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	ev := writeFixture(t, filepath.Join(root, "prooflog.txt"), "tests passed\n")
+	runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev1", "--node", "task1", "--kind", "test", "--file", ev)
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	pkt, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("packets: %v %v", pkt, err)
+	}
+	runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--ack")
+	// Unknown evidence is refused before an event is recorded.
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify", "--evidence", "ghost"); code != 1 {
+		t.Fatalf("verify accepted unknown evidence: %s", stderr)
+	} else if !strings.Contains(stderr, "unknown") {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+	// Verifying a real artifact records the successor's evidence ids.
+	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify", "--evidence", "ev1"); code != 0 {
+		t.Fatalf("verify with evidence: %s%s", out, stderr)
+	}
+	statusOut, _, _ := runCLI(t, root, "status", "--dir", ws, "--repo", repo, "--json")
+	if !strings.Contains(statusOut, `"verified": true`) || !strings.Contains(statusOut, `"ev1"`) {
+		t.Fatalf("status does not record the verified evidence: %s", statusOut)
+	}
+	// A blob that disappears invalidates the projection, so the workspace refuses
+	// to record further events at all (fail-closed) rather than verifying blind.
+	blobs, err := filepath.Glob(filepath.Join(ws, "evidence", "blobs", "*"))
+	if err != nil || len(blobs) != 1 {
+		t.Fatalf("blobs: %v %v", blobs, err)
+	}
+	if err := os.Remove(blobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "x"); code != 1 {
+		t.Fatalf("write succeeded with a missing evidence blob: %s", stderr)
+	} else if !strings.Contains(stderr, "pending successor verification") && !strings.Contains(stderr, "incomplete projection") {
+		t.Fatalf("unexpected fail-closed diagnostic: %s", stderr)
 	}
 }

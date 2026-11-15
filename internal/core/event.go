@@ -25,6 +25,8 @@ const (
 	EvEvidenceAdded       EventType = "evidence_added"
 	EvAdapterSessionSeen  EventType = "adapter_session_seen"
 	EvAdapterSessionEnded EventType = "adapter_session_ended"
+	EvHandoffAcked        EventType = "handoff_acked"
+	EvHandoffVerified     EventType = "handoff_verified"
 )
 
 var ownershipTypes = map[EventType]bool{
@@ -104,6 +106,19 @@ type AdapterSessionPayload struct {
 	TrustLevel     string `json:"trust_level"`
 	SourceEventRef string `json:"source_event_ref"`
 	SourceSeq      uint64 `json:"source_seq,omitempty"`
+}
+
+// HandoffPayload records a successor accepting (acked) or verifying a prepared
+// handoff packet. It never carries code bytes; it records what the successor
+// observed so the resume is auditable.
+type HandoffPayload struct {
+	HandoffID   string   `json:"handoff_id"`
+	ContentHash string   `json:"content_hash,omitempty"`
+	CodeHead    string   `json:"code_head,omitempty"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	Verifier    string   `json:"verifier,omitempty"`
+	Forced      bool     `json:"forced,omitempty"`
+	Note        string   `json:"note,omitempty"`
 }
 
 type OwnershipPayload struct {

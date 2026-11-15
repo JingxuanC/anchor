@@ -37,7 +37,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | WS | 4 | 3 | 1 | 0 | 8 |
 | ST | 5 | 5 | 3 | 0 | 13 |
 | CAP | 4 | 5 | 0 | 0 | 9 |
-| RST | 4 | 4 | 3 | 0 | 11 |
+| RST | 6 | 2 | 3 | 0 | 11 |
 | AD | 0 | 10 | 3 | 0 | 13 |
 | CM | 0 | 1 | 12 | 0 | 13 |
 | SY | 1 | 7 | 4 | 0 | 12 |
@@ -45,12 +45,12 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | VT | 0 | 3 | 7 | 0 | 10 |
 | UI | 0 | 3 | 4 | 0 | 7 |
 | CONC | 2 | 3 | 0 | 0 | 5 |
-| EVID | 0 | 5 | 1 | 0 | 6 |
+| EVID | 1 | 4 | 1 | 0 | 6 |
 | RT | 1 | 1 | 0 | 1 | 3 |
 | SEC | 0 | 4 | 3 | 0 | 7 |
 | NFR | 2 | 2 | 3 | 0 | 7 |
 | OPS | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **24** | **59** | **56** | **1** | **140** |
+| **Total** | **27** | **56** | **56** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -85,12 +85,17 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    non-decisions, unknown provenance, out-of-range confidence, empty constraint
    entries, any `user_confirmed` claim, and any event carrying a self-declared
    `actor_attestation` (`internal/core`).
-8. **Restorable packages** — export always transports the workspace manifest and
+8. **Successor restore + gate** — `handoff restore` emits a read-only plan
+   (code comparison, blocker list, actions), records `handoff_acked` /
+   `handoff_verified` events, and refuses node mutations until the latest
+   prepared handoff is verified. Code is still never applied: the plan states
+   `code_apply: disabled` and tells the successor what to check out.
+9. **Restorable packages** — export always transports the workspace manifest and
    event log; import rebuilds the workspace in a fresh empty target, replays it,
    verifies evidence blobs and reports an honest `complete`/`incomplete` status.
    Legacy artifact-only packages still import their bytes but are reported as not
    rebuilding a workspace.
-9. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
+10. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
 
@@ -149,12 +154,12 @@ authoritative.
 |---|---|---|---|
 | RST-001 | implemented | `handoff.Packet` (`goal`/`decisions`/`next_steps`/`open_questions`/`ownership`/`provenance_summary`); `TestPrepareCarriesTaskStructure` | Packet now carries the task structure a successor needs; packet hash covers the new blocks. |
 | RST-002 | missing | render emits unverified fragments (`internal/adapter/render.go:69`) | No injection path, no size/token caps. |
-| RST-003 | partial | `handoff.go:323`; `TestEvaluateDetectsStaleCodeWithoutOverwriting` | No `handoff_acked`/`handoff_verified` events; no gate before editing. |
+| RST-003 | implemented | `core.EvHandoffAcked/Verified`, `handoff.BuildPlan`/`Gate`; `TestHandoffAckAndVerifyAreProjected`, `TestCLIRestoreSuccessorGateFlow` | Ack/verify are recorded events; the gate blocks mutations until verification; `--force` is recorded. |
 | RST-004 | implemented | `handoff.go:248`, `main.go:484`; `TestCLIWorkflowRecoveryAndRestoreBoundary` | Partially vacuous: no summary object exists. |
 | RST-005 | missing | one static packet format only | No per-adapter cross-agent handoff. |
 | RST-006 | missing | export/import now transports the workspace (`recovery.go`); no Git sync | Handoff across devices works only by manually moving a package; the requirement's Git-sync path does not exist. |
 | RST-007 | partial | `handoff.go:34,116`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | No bundle/patch artifact, no restore instructions, no base commit. |
-| RST-008 | partial | restore always evaluates, `apply: disabled` (`main.go:644`) | No apply path, so "explicit confirmation" is unimplemented. |
+| RST-008 | implemented | `handoff restore --ack/--verify`, plan actions; `TestCLIRestoreStaleCodeRequiresForce` | Restore is plan-first, a stale/dirty packet needs explicit `--force` (recorded as forced), and code bytes are never applied by design. |
 | RST-009 | partial | `handoff.go:358`, `recovery.go:203` | Does not enumerate missing artifacts/unreachable evidence; returns a status only. |
 | RST-010 | implemented | `Node.Provenance` + packet blocks; `TestPrepareCarriesTaskStructure` | Provenance is labeled per goal/decision/next step/question and summarized; `user_confirmed` is refused until a verified attestation exists. |
 | RST-011 | implemented | `handoff.go:103`, `recovery.go:433`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | Code apply disabled, so "unrecovered" is always true; no per-artifact list. |
@@ -245,7 +250,7 @@ matches only capability strings.
 |---|---|---|---|
 | EVID-001 | partial | `tree.go:46`; `TestEvidenceArtifactRehashAndPathSafety` | Missing source, command/argv, exit code, timestamp, actor, verification state, redactions. |
 | EVID-002 | partial | `replay.go:574`, `main.go:346`; `TestCLIDoneRequiresEvidenceOrLocalOverride` | Override hard-disabled (`main.go:315`), so the "or explicit override" branch cannot work. |
-| EVID-003 | partial | `handoff.go:323` | No `handoff_verified` event; no gate before editing. |
+| EVID-003 | implemented | `core.EvHandoffVerified` projection; `TestHandoffAckAndVerifyAreProjected`, `TestCLIRestoreVerifyValidatesEvidence` | Verification is an event with the observed code head and re-verified evidence ids; mutations stay gated until it exists. |
 | EVID-004 | missing | no causal link model | Causal links requiring evidence/confirmation absent. |
 | EVID-005 | partial | `replay.go:403`, `evidence.go:92`; `TestEvidenceAuditReportsOrphansWithoutDeleting` | No correction event referencing old evidence IDs. |
 | EVID-006 | partial | `handoff.go:248` (disclaimer) | Vacuous: nothing stores summaries, so the boundary cannot be enforced. |
@@ -297,10 +302,10 @@ matches only capability strings.
 
 Ranked by "what blocks a usable local segment":
 
-1. **Make restore actually restore** (RST-003/008, EVID-003). Today `handoff restore`
-   only evaluates and prints `apply: disabled`. Add `--plan` (commit match, dirty
-   status, files to overwrite), `--apply` requiring a clean tree or `--force` +
-   backup ref, and `handoff_acked`/`handoff_verified` events plus a successor gate.
+1. ~~**Make restore actually restore** (RST-003/008, EVID-003).~~ **Done** —
+   `handoff restore` now emits a plan, records `handoff_acked`/`handoff_verified`,
+   and gates node mutations until verification. Remaining: code bytes are still
+   never applied (`git bundle` transport is the open part).
 2. ~~**Carry the workspace inside the export package** (WS-007).~~ **Done** — the
    package always carries the workspace manifest and event log; import rebuilds,
    replays and verifies. Remaining: config/rules snapshot and bundled commit bytes.
@@ -387,12 +392,12 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 |---|---|---|
 | RST-001 | implemented | packet carries goal, decisions, next steps, open questions, ownership, provenance |
 | RST-002 | missing | no context injection path |
-| RST-003 | partial |  |
+| RST-003 | implemented | successor ack/verify events + mutation gate |
 | RST-004 | implemented |  |
 | RST-005 | missing | no cross-agent restore |
 | RST-006 | missing | no Git sync; manual export/import only |
 | RST-007 | partial |  |
-| RST-008 | partial |  |
+| RST-008 | implemented | plan-first restore, forced override recorded |
 | RST-009 | partial |  |
 | RST-010 | implemented | packet labels provenance on goal/decisions/next steps/questions |
 | RST-011 | implemented |  |
@@ -506,7 +511,7 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 |---|---|---|
 | EVID-001 | partial |  |
 | EVID-002 | partial |  |
-| EVID-003 | partial |  |
+| EVID-003 | implemented | handoff_verified event with code head + evidence ids |
 | EVID-004 | missing |  |
 | EVID-005 | partial |  |
 | EVID-006 | partial |  |
@@ -573,7 +578,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `internal/recovery` | 51.9% | 90.3% | Export/import branches, staging atomicity, limits, legacy packages covered. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 311 top-level test functions / ~900 run entries, ~14,900 test lines.
+Test suite: 323 top-level test functions / 904 run entries, ~16,100 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
@@ -596,6 +601,10 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   diagnostic names the rejected batch, but events are immutable and there is no
   redaction tool yet: the only remedies today are rebuilding the workspace or
   deleting the offending batch.
+- **The successor gate fails closed.** If the projection cannot be replayed (for
+  example a referenced evidence blob disappeared), the gate reports the handoff
+  as pending instead of assuming progress; the workspace then refuses writes
+  until the projection is repaired.
 - **Package limits are symmetric.** Export refuses a workspace that would exceed
   the import limits (1000 files / 256 MiB), so an export can never produce a
   package that import rejects.

@@ -85,7 +85,8 @@ func usage() {
   anchor evidence audit --dir DIR [--json]
   anchor ownership takeover --dir DIR --id ID --owner NAME
   anchor handoff prepare --dir DIR --repo REPO
-  anchor handoff restore --dir DIR --repo REPO --packet PACKET.json
+  anchor handoff restore --dir DIR --repo REPO --packet PACKET.json [--ack | --verify]
+      [--evidence ID]... [--force] [--verifier NAME] [--note TEXT]
   anchor handoff export --dir WS --repo REPO --out DIR [--include-bytes] [--json]
   anchor handoff import --package DIR --target DIR [--apply] [--json]
   anchor handoff status --dir DIR --repo REPO
@@ -293,6 +294,11 @@ func cmdEvent(args []string) {
 	if err := json.Unmarshal(b, &e); err != nil {
 		die(err)
 	}
+	// The successor gate also covers the raw event surface: a mutation event must
+	// not slip past verification just because it was not issued by a node command.
+	if e.Type.IsMutation() || e.Type == core.EvNodeCreated {
+		requireHandoffCleared(*dir)
+	}
 	stored, created := appendEvent(*dir, e)
 	fmt.Printf("%s %s created=%v\n", stored.EventID, stored.Type, created)
 }
@@ -367,6 +373,7 @@ func nodeCreate(args []string) {
 	if *confidence > 1 {
 		die(fmt.Errorf("--confidence must be between 0 and 1"))
 	}
+	requireHandoffCleared(*dir)
 	nt, ok := core.ValidNodeType(*typ)
 	if !ok {
 		die(fmt.Errorf("invalid node type %q", *typ))
@@ -428,6 +435,7 @@ func nodeTransition(args []string) {
 	if *id == "" || *to == "" {
 		die(fmt.Errorf("--id and --to are required"))
 	}
+	requireHandoffCleared(*dir)
 	if *userOverride {
 		die(fmt.Errorf("user_override is disabled: no trusted local attestation mechanism is available; use --evidence"))
 	}
@@ -581,6 +589,10 @@ func cmdStatus(args []string) {
 		packet = &p
 	}
 	eval := handoff.Evaluate(*dir, *repo, packet)
+	gate, gateErr := handoff.Gate(*dir)
+	if gateErr == nil && gate.Pending {
+		eval.Reasons = append(eval.Reasons, "handoff "+gate.HandoffID+" is pending successor verification")
+	}
 	quarantined := quarantineDir(*dir)
 	if len(quarantined) > 0 {
 		if r.RecoveryStatus == "complete" {
@@ -597,6 +609,7 @@ func cmdStatus(args []string) {
 			"projection_status": r.RecoveryStatus, "recovery_status": eval.Status,
 			"recovery_reasons": eval.Reasons, "handoff_id": eval.PacketID, "quarantined": quarantined,
 			"tree": r.Tree, "applied": r.Applied, "pending": r.Pending, "conflicts": r.Conflicts,
+			"handoff": gate,
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
@@ -605,6 +618,9 @@ func cmdStatus(args []string) {
 	fmt.Printf("workspace_dir: %s\n", stateDir)
 	fmt.Printf("projection_status: %s\n", r.RecoveryStatus)
 	fmt.Printf("recovery_status: %s (a projection alone is not a complete recovery)\n", eval.Status)
+	if gate.HandoffID != "" {
+		fmt.Printf("handoff: id=%s acked=%v verified=%v pending=%v\n", gate.HandoffID, gate.Progress.Acked, gate.Progress.Verified, gate.Pending)
+	}
 	for _, reason := range eval.Reasons {
 		fmt.Printf("  reason: %s\n", reason)
 	}
@@ -619,6 +635,67 @@ func cmdStatus(args []string) {
 	}
 	for _, p := range r.Pending {
 		fmt.Printf("pending %s (waiting for causal parent/ownership)\n", p)
+	}
+}
+
+// appendHandoffEvent records a handoff ack/verify event.
+func appendHandoffEvent(dir string, typ core.EventType, payload core.HandoffPayload) core.Event {
+	var out core.Event
+	_, err := openStore(dir).Transact(func(tx *core.Tx) error {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		e, err := localEvent(dir, core.Event{Type: typ, CausalParents: []string{}, Payload: b})
+		if err != nil {
+			return err
+		}
+		out, err = tx.Add(e)
+		return err
+	})
+	if err != nil {
+		die(err)
+	}
+	return out
+}
+
+// verifyEvidenceIDs makes sure the successor actually still has the artifacts it
+// claims to have verified.
+func verifyEvidenceIDs(dir string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	store := openStore(dir)
+	replay, err := store.LoadReplay()
+	if err != nil {
+		die(err)
+	}
+	for _, id := range ids {
+		entry, ok := replay.Tree.Evidence[id]
+		if !ok {
+			die(fmt.Errorf("verified evidence %s is unknown in this workspace", id))
+		}
+		if err := core.VerifyEvidenceArtifact(store.Dir, entry); err != nil {
+			die(fmt.Errorf("verified evidence %s failed verification: %w", id, err))
+		}
+	}
+}
+
+// requireHandoffCleared is the successor gate: while the latest prepared handoff
+// is unverified, mutations are refused so a successor cannot silently edit on
+// top of an unexamined snapshot.
+func requireHandoffCleared(dir string) {
+	gate, err := handoff.Gate(dir)
+	if err != nil {
+		die(err)
+	}
+	if gate.Pending {
+		next := "--ack"
+		if gate.Progress.Acked {
+			next = "--verify"
+		}
+		die(fmt.Errorf("handoff %s is pending successor verification; run 'anchor handoff restore --dir %s --repo <repo> --packet %s %s' first (or verify it) before editing",
+			gate.HandoffID, dir, gate.PacketPath, next))
 	}
 }
 
@@ -670,6 +747,7 @@ func nodeEdit(args []string) {
 	if *id == "" {
 		die(fmt.Errorf("--id is required"))
 	}
+	requireHandoffCleared(*dir)
 	if err := checkProvenanceFlag(*provenance); err != nil {
 		die(err)
 	}
@@ -711,6 +789,7 @@ func nodeTombstone(args []string) {
 	if *id == "" {
 		die(fmt.Errorf("--id is required"))
 	}
+	requireHandoffCleared(*dir)
 	ev := appendOwnedMutation(*dir, *id, core.EvNodeTombstoned, core.NodePayload{NodeID: *id})
 	fmt.Printf("tombstoned %s (%s)\n", *id, ev.EventID)
 }
@@ -728,6 +807,7 @@ func cmdNote(args []string) {
 	if *id == "" {
 		die(fmt.Errorf("--id is required"))
 	}
+	requireHandoffCleared(*dir)
 	ev := appendOwnedMutation(*dir, *id, core.EvNoteUpdated, core.NodePayload{NodeID: *id, Note: *text})
 	fmt.Printf("note updated %s (%s)\n", *id, ev.EventID)
 }
@@ -745,6 +825,7 @@ func cmdOwnership(args []string) {
 	if *id == "" {
 		die(fmt.Errorf("--id is required"))
 	}
+	requireHandoffCleared(*dir)
 	var out core.Event
 	var token uint64
 	var lease string
@@ -796,18 +877,63 @@ func cmdHandoff(args []string) {
 		dir := fs.String("dir", ".", "workspace directory")
 		repo := fs.String("repo", ".", "git working tree")
 		packet := fs.String("packet", "", "handoff packet path")
+		ack := fs.Bool("ack", false, "record successor acknowledgement of the packet")
+		verify := fs.Bool("verify", false, "record successor verification of the packet")
+		var evidence stringList
+		fs.Var(&evidence, "evidence", "evidence id the successor re-verified (repeatable, --verify only)")
+		force := fs.Bool("force", false, "record the event despite blockers (recorded as forced)")
+		verifier := fs.String("verifier", "local", "identity recorded on the event")
+		note := fs.String("note", "", "free-form note recorded with the event")
 		_ = fs.Parse(args[1:])
 		if *packet == "" {
 			die(fmt.Errorf("--packet is required"))
+		}
+		if *ack && *verify {
+			die(fmt.Errorf("--ack and --verify are mutually exclusive"))
 		}
 		p, err := handoff.Load(*packet)
 		if err != nil {
 			die(err)
 		}
-		eval := handoff.Evaluate(*dir, *repo, &p)
-		b, _ := json.MarshalIndent(map[string]any{"handoff_id": p.HandoffID, "recovery_status": eval.Status, "reasons": eval.Reasons, "apply": "disabled: restore never overwrites code or executes commands"}, "", "  ")
+		plan, err := handoff.BuildPlan(*dir, *repo, p, *packet)
+		if err != nil {
+			die(err)
+		}
+		if *ack {
+			if plan.Progress.Acked && !*force {
+				die(fmt.Errorf("handoff %s is already acked", p.HandoffID))
+			}
+			if !plan.CanAck && !*force {
+				die(fmt.Errorf("cannot acknowledge handoff %s: %s", p.HandoffID, strings.Join(plan.AckBlockers, "; ")))
+			}
+			payload := core.HandoffPayload{HandoffID: p.HandoffID, ContentHash: p.ContentHash, CodeHead: plan.Code.ActualHead,
+				Verifier: *verifier, Forced: *force || !plan.CanAck, Note: *note}
+			ev := appendHandoffEvent(*dir, core.EvHandoffAcked, payload)
+			b, _ := json.MarshalIndent(map[string]any{"handoff_id": p.HandoffID, "acked": true, "forced": payload.Forced, "event": ev.EventID}, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+		if *verify {
+			if !plan.Progress.Acked {
+				die(fmt.Errorf("handoff %s must be acked before verification", p.HandoffID))
+			}
+			if plan.Progress.Verified && !*force {
+				die(fmt.Errorf("handoff %s is already verified", p.HandoffID))
+			}
+			if !plan.CanVerify && !*force {
+				die(fmt.Errorf("cannot verify handoff %s: %s", p.HandoffID, strings.Join(plan.VerifyBlockers, "; ")))
+			}
+			verifyEvidenceIDs(*dir, evidence)
+			payload := core.HandoffPayload{HandoffID: p.HandoffID, ContentHash: p.ContentHash, CodeHead: plan.Code.ActualHead,
+				EvidenceIDs: evidence, Verifier: *verifier, Forced: *force || !plan.CanVerify, Note: *note}
+			ev := appendHandoffEvent(*dir, core.EvHandoffVerified, payload)
+			b, _ := json.MarshalIndent(map[string]any{"handoff_id": p.HandoffID, "verified": true, "forced": payload.Forced, "event": ev.EventID}, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+		b, _ := json.MarshalIndent(plan, "", "  ")
 		fmt.Println(string(b))
-		if eval.Status != handoff.StatusComplete {
+		if !plan.Progress.Verified {
 			os.Exit(1)
 		}
 	case "export":
@@ -863,7 +989,9 @@ func cmdHandoff(args []string) {
 			return
 		}
 		eval := handoff.Evaluate(*dir, *repo, &p)
-		b, _ := json.MarshalIndent(map[string]any{"handoff_id": p.HandoffID, "path": path, "recovery_status": eval.Status, "reasons": eval.Reasons}, "", "  ")
+		gate, _ := handoff.Gate(*dir)
+		b, _ := json.MarshalIndent(map[string]any{"handoff_id": p.HandoffID, "path": path, "recovery_status": eval.Status,
+			"reasons": eval.Reasons, "acked": gate.Progress.Acked, "verified": gate.Progress.Verified, "pending": gate.Pending}, "", "  ")
 		fmt.Println(string(b))
 	default:
 		usage()
@@ -917,6 +1045,23 @@ func cmdDoctor(args []string) {
 		eval = handoff.Evaluate(*dir, *repo, &p)
 	}
 	checks = append(checks, map[string]any{"check": "recovery", "status": eval.Status, "reasons": eval.Reasons, "handoff_id": eval.PacketID})
+	gate, gateErr := handoff.Gate(*dir)
+	handoffStatus := "ok"
+	var handoffDetail any
+	if gateErr != nil {
+		handoffStatus = "fail"
+		handoffDetail = gateErr.Error()
+	} else if gate.Pending {
+		handoffStatus = "warn"
+		handoffDetail = map[string]any{"handoff_id": gate.HandoffID, "acked": gate.Progress.Acked, "verified": gate.Progress.Verified}
+	} else if gate.HandoffID != "" {
+		handoffDetail = map[string]any{"handoff_id": gate.HandoffID, "acked": gate.Progress.Acked, "verified": gate.Progress.Verified}
+	}
+	check := map[string]any{"check": "handoff", "status": handoffStatus}
+	if handoffDetail != nil {
+		check["detail"] = handoffDetail
+	}
+	checks = append(checks, check)
 	out := map[string]any{"checks": checks, "workspace_dir": stateDir, "projection_status": r.RecoveryStatus, "recovery_status": eval.Status, "recovery_is_not_implied_by_projection": true}
 	if *asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
