@@ -134,8 +134,9 @@ Architect review findings and point-by-point dispositions are in `docs/08-design
   (`design/baseline-mainline`) with the verified repository init commit
   `39b6fffdb35511859a82632d174b97ca304e26f5` as its ancestor.
 - Repository existence/visibility/default branch/init SHA were verified
-  read-only; no push, PR, default-branch write, branch creation on the remote,
-  product implementation, or live integration has been performed.
+  read-only. The independent design branch was pushed and draft PR #1 created
+  with direct user approval; no main push, force-push, merge, or repo rebuild
+  was performed. No product implementation or live integration was performed.
 - User skipped D-SYNC/D-BYTES. Design defaults: dedicated private state repo
   (never auto-created) and automatic artifact byte upload off unless explicitly
   configured. Both remain configurable; missing bytes are `incomplete`.

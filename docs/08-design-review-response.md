@@ -71,5 +71,6 @@ defaults do not authorize creating a remote repository or uploading bytes.
   integrations.
 - `acceptance/matrix.yaml` regenerated from the revised baseline; requirement
   IDs and matrix IDs cross-checked for exact set equality.
-- Local commit created on `design/baseline`; no remote configured, no push, no
-  PR, no default-branch write.
+- Local commits created on `design/baseline-mainline`; the independent branch
+  was pushed and draft PR #1 created with direct user approval. No main push,
+  force-push, merge, default-branch write, or repo rebuild.

@@ -19,9 +19,9 @@ configuration and secret *references* only.
 > The design documents in `docs/` are the review artifact for the architect and
 > the user. No application code has been written yet. The private repository
 > `JingxuanC/anchor` exists and was verified at initialization commit
-> `39b6fffdb35511859a82632d174b97ca304e26f5`; no push, PR, or further
-> default-branch write is authorized in this chat (see
-> `docs/07-repo-bootstrap.md`).
+> `39b6fffdb35511859a82632d174b97ca304e26f5`. A draft PR for the design
+> branch exists; no main push, force-push, merge, or further default-branch
+> write was performed (see `docs/07-repo-bootstrap.md`).
 
 ## What Anchor will deliver
 

@@ -77,14 +77,19 @@ repository or byte upload.
 | Common ancestor | `39b6fffdb35511859a82632d174b97ca304e26f5` (verified init commit) |
 | Remote configured | none (fetched by URL; no `origin` added) |
 | Working trees | clean at the time of report |
-| Remote writes | none |
+| Remote writes | independent branch `design/baseline-mainline` pushed; draft PR <https://github.com/JingxuanC/anchor/pull/1>; `main` unchanged |
 | Product code | none; design baseline only |
 | Tests | none claimed; acceptance matrix is planned, not executed |
 
-## 5. What will be reported after push approval
+## 5. Publication record
 
-1. Exact pushed branch and remote head SHA.
-2. Draft PR URL (base `main`, head `design/baseline-mainline`).
-3. Exact files in the PR.
-4. CI result for the documentation-only PR (no product tests claimed).
-5. Any conflict or deviation observed during push.
+1. Pushed branch: `design/baseline-mainline`, remote head
+   `b3820e1c837c5e821d2d0e763d1b7a862fd5f7c3` at first publication.
+2. Draft PR: <https://github.com/JingxuanC/anchor/pull/1> (base `main`, head
+   `design/baseline-mainline`, draft).
+3. Contents: README + `docs/00`–`docs/08` + `acceptance/matrix.yaml`; no product
+   code or product tests.
+4. CI: no product-test claim; any repository workflow result must be reported
+   as observed, not fabricated.
+5. `main` remained at the initialization SHA
+   `39b6fffdb35511859a82632d174b97ca304e26f5`; no force-push or merge.
