@@ -72,6 +72,7 @@ type EvidencePayload struct {
 	NodeID     string `json:"node_id"`
 	Kind       string `json:"kind"`
 	SHA256     string `json:"sha256"`
+	Size       int64  `json:"size"`
 }
 
 type OwnershipPayload struct {

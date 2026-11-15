@@ -229,7 +229,10 @@ func Prepare(dir, repo string) (Packet, string, error) {
 		return Packet{}, "", err
 	}
 	events := report.Events
-	replay := core.Replay(events)
+	replay, err := store.LoadReplay()
+	if err != nil {
+		return Packet{}, "", err
+	}
 	cs, err := codeState(repo)
 	if err != nil {
 		return Packet{}, "", err
@@ -332,7 +335,11 @@ func Evaluate(dir, repo string, p *Packet) Evaluation {
 		ev.Reasons = append(ev.Reasons, "some event files are quarantined; recovery is incomplete")
 		return ev
 	}
-	replay := core.Replay(report.Events)
+	replay, err := store.LoadReplay()
+	if err != nil {
+		ev.Reasons = append(ev.Reasons, "cannot replay events: "+err.Error())
+		return ev
+	}
 	if replay.RecoveryStatus != "complete" {
 		ev.Reasons = append(ev.Reasons, "projection is incomplete (pending/conflicts)")
 	}

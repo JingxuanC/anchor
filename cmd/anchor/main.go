@@ -62,7 +62,7 @@ func usage() {
   anchor node tombstone --dir DIR --id ID
   anchor node transition --dir DIR --id ID --to STATUS
   anchor note set --dir DIR --id ID --text TEXT
-  anchor evidence add --dir DIR --id EVID --node NODE --kind KIND --sha256 HEX64
+  anchor evidence add --dir DIR --id EVID --node NODE --kind KIND --file PATH [--sha256 HEX64]
   anchor ownership takeover --dir DIR --id ID --owner NAME
   anchor handoff prepare --dir DIR --repo REPO
   anchor handoff restore --dir DIR --repo REPO --packet PACKET.json
@@ -165,11 +165,11 @@ func replayDir(dir string) core.ReplayResult {
 	if err != nil {
 		die(err)
 	}
-	events, err := s.Load()
+	r, err := s.LoadReplay()
 	if err != nil {
 		die(err)
 	}
-	return core.Replay(events)
+	return r
 }
 
 func cmdEvent(args []string) {
@@ -357,14 +357,20 @@ func cmdEvidence(args []string) {
 	id := fs.String("id", "", "evidence id")
 	node := fs.String("node", "", "node id")
 	kind := fs.String("kind", "test", "evidence kind")
-	sha := fs.String("sha256", "", "64 hex SHA-256")
+	file := fs.String("file", "", "artifact file (explicit local path)")
+	sha := fs.String("sha256", "", "expected 64 hex SHA-256")
 	_ = fs.Parse(args[1:])
-	if *id == "" || *node == "" || *sha == "" {
-		die(fmt.Errorf("--id, --node and --sha256 are required"))
+	if *id == "" || *node == "" || *file == "" {
+		die(fmt.Errorf("--id, --node and --file are required"))
+	}
+	store := openStore(*dir)
+	artifact, err := store.PutEvidenceFile(*file, *sha, []string{*id, *node, *kind})
+	if err != nil {
+		die(err)
 	}
 	var out core.Event
-	_, err := openStore(*dir).Transact(func(tx *core.Tx) error {
-		pb, _ := json.Marshal(core.EvidencePayload{EvidenceID: *id, NodeID: *node, Kind: *kind, SHA256: *sha})
+	_, err = store.Transact(func(tx *core.Tx) error {
+		pb, _ := json.Marshal(core.EvidencePayload{EvidenceID: *id, NodeID: *node, Kind: *kind, SHA256: artifact.SHA256, Size: artifact.Size})
 		e, err := localEvent(*dir, core.Event{Type: core.EvEvidenceAdded, Payload: pb})
 		if err != nil {
 			return err
@@ -375,7 +381,7 @@ func cmdEvidence(args []string) {
 	if err != nil {
 		die(err)
 	}
-	fmt.Printf("evidence %s added (%s)\n", *id, out.EventID)
+	fmt.Printf("evidence %s added sha256=%s size=%d (%s)\n", *id, artifact.SHA256, artifact.Size, out.EventID)
 }
 
 func cmdStatus(args []string) {

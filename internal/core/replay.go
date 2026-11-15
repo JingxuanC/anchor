@@ -31,7 +31,19 @@ func sortedIDs(m map[string]bool) []string {
 	return out
 }
 
-func Replay(events []Event) ReplayResult {
+// EvidenceVerifier checks that a registered evidence entry still exists,
+// re-hashes to its declared digest/size, belongs to the workspace, and contains
+// no rejected secret material. A nil verifier is the structural-only replay
+// used by isolated unit tests; production write/read paths always pass one.
+type EvidenceVerifier func(EvidenceEntry) error
+
+func Replay(events []Event) ReplayResult { return ReplayVerified(events, nil) }
+
+func ReplayVerified(events []Event, verify EvidenceVerifier) ReplayResult {
+	return replay(events, verify)
+}
+
+func replay(events []Event, verify EvidenceVerifier) ReplayResult {
 	byID := make(map[string]Event, len(events))
 	for _, e := range events {
 		byID[e.EventID] = e
@@ -246,14 +258,14 @@ func Replay(events []Event) ReplayResult {
 					processed[id] = false
 				} else if e.LeaseID != latest.LeaseID || e.FencingToken != latest.FencingToken {
 					conflicts = append(conflicts, Conflict{EventID: id, NodeID: nodeID, Reason: "lease/fencing token does not match latest causal ownership", Other: latest.EventID})
-				} else if err := applyMutation(tree, e, nodeID); err != nil {
+				} else if err := applyMutation(tree, e, nodeID, verify); err != nil {
 					conflicts = append(conflicts, Conflict{EventID: id, NodeID: nodeID, Reason: err.Error()})
 				} else {
 					applied[id] = true
 				}
 			}
 		} else {
-			if err := applyNonMutation(tree, e); err != nil {
+			if err := applyNonMutation(tree, e, verify); err != nil {
 				conflicts = append(conflicts, Conflict{EventID: id, Reason: err.Error()})
 			} else {
 				applied[id] = true
@@ -357,7 +369,7 @@ func ownershipFor(all []Event, mutationID string, isAncestor func(a, b string) b
 	return nil, nil
 }
 
-func applyNonMutation(tree *Tree, e Event) error {
+func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 	if e.Type == EvEvidenceAdded {
 		var p EvidencePayload
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
@@ -366,9 +378,15 @@ func applyNonMutation(tree *Tree, e Event) error {
 		if p.EvidenceID == "" || p.NodeID == "" || p.Kind == "" {
 			return fmt.Errorf("evidence_id, node_id and kind are required")
 		}
+		if p.Size < 0 {
+			return fmt.Errorf("evidence size must be non-negative")
+		}
 		b, err := hex.DecodeString(p.SHA256)
 		if err != nil || len(b) != 32 {
 			return fmt.Errorf("evidence sha256 must be 64 hex characters")
+		}
+		if err := scanEvidenceMetadata(p.EvidenceID, p.NodeID, p.Kind); err != nil {
+			return err
 		}
 		if _, ok := tree.Nodes[p.NodeID]; !ok {
 			return fmt.Errorf("evidence node %s not found", p.NodeID)
@@ -376,7 +394,13 @@ func applyNonMutation(tree *Tree, e Event) error {
 		if _, exists := tree.Evidence[p.EvidenceID]; exists {
 			return fmt.Errorf("evidence %s already exists", p.EvidenceID)
 		}
-		tree.Evidence[p.EvidenceID] = EvidenceEntry{EvidenceID: p.EvidenceID, NodeID: p.NodeID, Kind: p.Kind, SHA256: p.SHA256}
+		entry := EvidenceEntry{EvidenceID: p.EvidenceID, NodeID: p.NodeID, Kind: p.Kind, SHA256: p.SHA256, Size: p.Size}
+		if verify != nil {
+			if err := verify(entry); err != nil {
+				return fmt.Errorf("evidence artifact verification failed: %w", err)
+			}
+		}
+		tree.Evidence[p.EvidenceID] = entry
 		return nil
 	}
 	if e.Type.IsOwnership() {
@@ -435,7 +459,7 @@ func containsString(ss []string, want string) bool {
 	return false
 }
 
-func applyMutation(tree *Tree, e Event, nodeID string) error {
+func applyMutation(tree *Tree, e Event, nodeID string, verify EvidenceVerifier) error {
 	n, ok := tree.Nodes[nodeID]
 	if !ok {
 		return fmt.Errorf("node %s not found", nodeID)
@@ -467,6 +491,9 @@ func applyMutation(tree *Tree, e Event, nodeID string) error {
 			return fmt.Errorf("illegal transition %s: %s -> %s", n.Type, n.Status, to)
 		}
 		if to == StatusDone {
+			// The gate proves referenced artifact bytes are present, bound to
+			// this node, and unchanged. It is not a causal proof that the goal
+			// was actually achieved.
 			if p.UserOverride {
 				return fmt.Errorf("user_override is disabled: no trusted local attestation mechanism is available")
 			}
@@ -474,8 +501,17 @@ func applyMutation(tree *Tree, e Event, nodeID string) error {
 				return fmt.Errorf("done requires evidence_ids")
 			}
 			for _, evidenceID := range p.EvidenceIDs {
-				if _, ok := tree.Evidence[evidenceID]; !ok {
+				entry, ok := tree.Evidence[evidenceID]
+				if !ok {
 					return fmt.Errorf("done references unknown evidence %q", evidenceID)
+				}
+				if entry.NodeID != nodeID {
+					return fmt.Errorf("evidence %q belongs to node %s, not %s", evidenceID, entry.NodeID, nodeID)
+				}
+				if verify != nil {
+					if err := verify(entry); err != nil {
+						return fmt.Errorf("evidence %q artifact verification failed: %w", evidenceID, err)
+					}
 				}
 			}
 		}

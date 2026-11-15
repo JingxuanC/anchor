@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -74,21 +75,39 @@ func (s *Store) LoadReport() (LoadResult, error) {
 			bad = append(bad, Quarantine{File: entry.Name(), Reason: err.Error()})
 			continue
 		}
-		var e Event
-		if err := json.Unmarshal(b, &e); err != nil {
-			bad = append(bad, Quarantine{File: entry.Name(), Reason: "parse: " + err.Error()})
+		var batch []Event
+		trimmed := bytes.TrimSpace(b)
+		if len(trimmed) > 0 && trimmed[0] == '[' {
+			if err := json.Unmarshal(trimmed, &batch); err != nil {
+				bad = append(bad, Quarantine{File: entry.Name(), Reason: "batch parse: " + err.Error()})
+				continue
+			}
+		} else {
+			var e Event
+			if err := json.Unmarshal(trimmed, &e); err != nil {
+				bad = append(bad, Quarantine{File: entry.Name(), Reason: "parse: " + err.Error()})
+				continue
+			}
+			batch = []Event{e}
+		}
+		// A batch is all-or-nothing: one bad event quarantines the whole file.
+		badReason := ""
+		for _, e := range batch {
+			h, err := e.Hash()
+			if err != nil {
+				badReason = "hash: " + err.Error()
+				break
+			}
+			if e.EventHash == "" || e.EventHash != h {
+				badReason = "hash mismatch"
+				break
+			}
+		}
+		if badReason != "" {
+			bad = append(bad, Quarantine{File: entry.Name(), Reason: badReason})
 			continue
 		}
-		h, err := e.Hash()
-		if err != nil {
-			bad = append(bad, Quarantine{File: entry.Name(), Reason: "hash: " + err.Error()})
-			continue
-		}
-		if e.EventHash != "" && e.EventHash != h {
-			bad = append(bad, Quarantine{File: entry.Name(), Reason: "hash mismatch"})
-			continue
-		}
-		out = append(out, e)
+		out = append(out, batch...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].EventID < out[j].EventID })
 	return LoadResult{Events: out, Quarantined: bad}, nil

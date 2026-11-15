@@ -196,7 +196,9 @@ func TestDoneRequiresEvidenceOrAttestedUserOverride(t *testing.T) {
 	if !found {
 		t.Fatal("agent self-reported user override accepted")
 	}
-	// A registered, hash-bearing evidence reference is accepted; override stays disabled.
+	// Structural replay only: production write/read paths use ReplayVerified to
+	// re-hash persisted bytes. This assertion covers the state-machine wiring and
+	// does not claim artifact authenticity.
 	evPayload := json.RawMessage(`{"evidence_id":"ev1","node_id":"n1","kind":"test","sha256":"` + strings.Repeat("a", 64) + `"}`)
 	ev := Event{EventID: "0evidence", DeviceID: "d1", DeviceSeq: 5, Type: EvEvidenceAdded, CausalParents: []string{"created"}, Payload: evPayload}
 	okDone := doneNoEvidence
@@ -321,5 +323,45 @@ func TestExplicitMutationChainAcrossDevicesReversedIDs(t *testing.T) {
 	r := Replay([]Event{gc, ge, c, created, m1, ev, m2})
 	if r.Tree.Nodes["n1"].Status != StatusDone || len(r.Conflicts) != 0 || len(r.Pending) != 0 {
 		t.Fatalf("multi-device reversed-ID chain failed: %+v", r)
+	}
+}
+
+// A transaction batch is all-or-nothing. One bad member must quarantine the
+// whole file, and a truncated/uncommitted batch must never contribute events.
+func TestTransactionBatchIsAllOrNothing(t *testing.T) {
+	ws := t.TempDir()
+	s, err := Open(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1 := withID(rawOwn("n1", "l1", "a", 1), "batch-a", "d1", 1)
+	if err := e1.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	e2 := withID(rawOwn("n2", "l2", "a", 1), "batch-b", "d1", 2)
+	if err := e2.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	e2.EventHash = "sha256:" + strings.Repeat("0", 64)
+	b, _ := json.Marshal([]Event{e1, e2})
+	if err := os.WriteFile(filepath.Join(ws, "events", "batch-bad.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Events) != 0 || len(r.Quarantined) != 1 {
+		t.Fatalf("bad batch was partially applied: events=%d quarantined=%+v", len(r.Events), r.Quarantined)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "events", "batch-partial.json"), []byte(`[{"event_id":"x"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Events) != 0 || len(r.Quarantined) != 2 {
+		t.Fatalf("truncated batch contributed events: events=%d quarantined=%+v", len(r.Events), r.Quarantined)
 	}
 }

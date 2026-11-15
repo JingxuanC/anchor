@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"strings"
 	"time"
 )
 
@@ -20,11 +20,12 @@ type Tx struct {
 	nextSeq   map[string]uint64
 	byID      map[string]Event
 	idem      map[string]Event
+	verify    EvidenceVerifier
 	committed bool
 }
 
-func newTx(events []Event) *Tx {
-	tx := &Tx{events: append([]Event(nil), events...), nextSeq: map[string]uint64{}, byID: map[string]Event{}, idem: map[string]Event{}}
+func newTx(events []Event, verify EvidenceVerifier) *Tx {
+	tx := &Tx{events: append([]Event(nil), events...), nextSeq: map[string]uint64{}, byID: map[string]Event{}, idem: map[string]Event{}, verify: verify}
 	for _, e := range events {
 		tx.byID[e.EventID] = e
 		if e.DeviceSeq > tx.nextSeq[e.DeviceID] {
@@ -34,7 +35,7 @@ func newTx(events []Event) *Tx {
 			tx.idem[e.IdempotencyKey] = e
 		}
 	}
-	tx.result = Replay(tx.events)
+	tx.result = ReplayVerified(tx.events, tx.verify)
 	return tx
 }
 
@@ -120,7 +121,7 @@ func (tx *Tx) Add(e Event) (Event, error) {
 	if err := e.Seal(); err != nil {
 		return Event{}, err
 	}
-	r := Replay(append(append([]Event(nil), tx.events...), e))
+	r := ReplayVerified(append(append([]Event(nil), tx.events...), e), tx.verify)
 	if reason := rejectionReason(r, e.EventID); reason != "" {
 		return Event{}, fmt.Errorf("event %s rejected: %s", e.EventID, reason)
 	}
@@ -145,6 +146,9 @@ func (s *Store) Transact(fn func(*Tx) error) ([]Event, error) {
 		return nil, err
 	}
 	defer release()
+	if err := s.cleanupStaleTemps(); err != nil {
+		return nil, err
+	}
 	report, err := s.LoadReport()
 	if err != nil {
 		return nil, err
@@ -152,7 +156,7 @@ func (s *Store) Transact(fn func(*Tx) error) ([]Event, error) {
 	if len(report.Quarantined) > 0 {
 		return nil, fmt.Errorf("workspace has quarantined event files; refusing to write until recovery is complete")
 	}
-	tx := newTx(report.Events)
+	tx := newTx(report.Events, s.VerifyEvidence)
 	if err := fn(tx); err != nil {
 		return nil, err
 	}
@@ -169,60 +173,97 @@ func (s *Store) Transact(fn func(*Tx) error) ([]Event, error) {
 	return tx.staged, nil
 }
 
-type pendingWrite struct {
-	tmp  string
-	path string
+func (s *Store) cleanupStaleTemps() error {
+	entries, err := os.ReadDir(s.eventsDir())
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		if !strings.HasPrefix(name, ".txn-") && !strings.HasPrefix(name, ".event-") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.eventsDir(), name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
+// writeEvents commits a transaction as one JSON array file. The temp file is
+// ignored by readers; a single rename publishes the entire batch. A crash
+// before that rename leaves no effective events, and a corrupt/incomplete
+// batch file is quarantined as a whole rather than partially applied.
 func (s *Store) writeEvents(events []Event) error {
-	var pending []pendingWrite
-	cleanup := func() {
-		for _, p := range pending {
-			_ = os.Remove(p.tmp)
-		}
+	if len(events) == 0 {
+		return nil
 	}
-	for _, e := range events {
-		b, err := json.MarshalIndent(e, "", "  ")
+	f, err := os.CreateTemp(s.eventsDir(), ".txn-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err := f.WriteString("[\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	for i, e := range events {
+		if i > 0 {
+			if _, err := f.WriteString(",\n"); err != nil {
+				_ = f.Close()
+				return err
+			}
+		}
+		b, err := json.Marshal(e)
 		if err != nil {
-			cleanup()
+			_ = f.Close()
 			return err
 		}
-		f, err := os.CreateTemp(s.eventsDir(), ".event-*.tmp")
-		if err != nil {
-			cleanup()
-			return err
-		}
-		tmp := f.Name()
-		pending = append(pending, pendingWrite{tmp: tmp, path: filepath.Join(s.eventsDir(), e.EventID+".json")})
 		if _, err := f.Write(b); err != nil {
 			_ = f.Close()
-			cleanup()
 			return err
 		}
-		if err := f.Sync(); err != nil {
-			_ = f.Close()
-			cleanup()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			cleanup()
-			return err
+		if i == 0 && len(events) > 1 {
+			maybePauseTxnAfterFirstEvent()
 		}
 	}
-	sort.Slice(pending, func(i, j int) bool { return pending[i].path < pending[j].path })
-	for i, p := range pending {
-		if err := os.Rename(p.tmp, p.path); err != nil {
-			for _, rest := range pending[i:] {
-				_ = os.Remove(rest.tmp)
-			}
-			return err
-		}
+	if _, err := f.WriteString("\n]\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	final := filepath.Join(s.eventsDir(), newID("batch")+".json")
+	if err := os.Rename(tmp, final); err != nil {
+		return err
 	}
 	if d, err := os.Open(s.eventsDir()); err == nil {
 		_ = d.Sync()
 		_ = d.Close()
 	}
 	return nil
+}
+
+// Test-only fault injection used by the cross-process crash regression. It
+// pauses after the first event of a multi-event temp batch, before the final
+// newline/rename that would commit the batch.
+func maybePauseTxnAfterFirstEvent() {
+	if os.Getenv("ANCHOR_TEST_TXN_STOP_AFTER_EVENT") != "1" {
+		return
+	}
+	if ready := os.Getenv("ANCHOR_TEST_TXN_READY"); ready != "" {
+		_ = os.WriteFile(ready, []byte("paused"), 0o600)
+	}
+	time.Sleep(30 * time.Second)
 }
 
 // Append keeps the original one-event API but now routes it through the same

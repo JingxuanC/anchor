@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -180,8 +182,8 @@ func TestCLIConsecutiveTransitions(t *testing.T) {
 	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T"); code != 0 {
 		t.Fatalf("%s %s", out, errText)
 	}
-	sha := strings.Repeat("a", 64)
-	if out, errText, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev1", "--node", "task1", "--kind", "test", "--sha256", sha); code != 0 {
+	evFile := writeFixture(t, filepath.Join(root, "evidence.txt"), "clean test fixture\n")
+	if out, errText, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev1", "--node", "task1", "--kind", "test", "--file", evFile); code != 0 {
 		t.Fatalf("evidence add: %s %s", out, errText)
 	}
 	for _, to := range []string{"in_progress", "done"} {
@@ -217,8 +219,8 @@ func TestCLIDoneRequiresEvidenceOrLocalOverride(t *testing.T) {
 	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "done", "--user-override"); code == 0 {
 		t.Fatal("user_override must fail closed")
 	}
-	sha := strings.Repeat("b", 64)
-	if _, _, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev1", "--node", "task1", "--kind", "test", "--sha256", sha); code != 0 {
+	evFile := writeFixture(t, filepath.Join(root, "evidence.txt"), "clean test fixture\n")
+	if _, _, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev1", "--node", "task1", "--kind", "test", "--file", evFile); code != 0 {
 		t.Fatal("evidence add failed")
 	}
 	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "done", "--evidence", "ev1"); code != 0 {
@@ -314,28 +316,25 @@ func raceCLI(t *testing.T, dir string, specs ...[]string) []*cliProc {
 	return procs
 }
 
-func eventFiles(t *testing.T, ws string) []map[string]any {
+func eventFiles(t *testing.T, ws string) []core.Event {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(ws, "events"))
+	s, err := core.Open(ws)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []map[string]any
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(ws, "events", e.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var m map[string]any
-		if err := json.Unmarshal(b, &m); err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, m)
+	r, err := s.LoadReport()
+	if err != nil {
+		t.Fatal(err)
 	}
-	return out
+	return r.Events
+}
+
+func writeFixture(t *testing.T, path, content string) string {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestCLIConcurrentSameNodeOneWins(t *testing.T) {
@@ -395,7 +394,7 @@ func TestCLIConcurrentSameNodeOneWins(t *testing.T) {
 	}
 	statusEvents := 0
 	for _, e := range events {
-		if e["type"] == "status_changed" {
+		if e.Type == core.EvStatusChanged {
 			statusEvents++
 		}
 	}
@@ -437,20 +436,19 @@ func TestCLIConcurrentIndependentNodesBothWin(t *testing.T) {
 	if len(events) != before+2 {
 		t.Fatalf("expected two new events, before=%d after=%d", before, len(events))
 	}
-	seqs := map[float64]bool{}
+	seqs := map[uint64]bool{}
 	statusEvents := 0
 	for _, e := range events {
-		if e["type"] == "status_changed" {
+		if e.Type == core.EvStatusChanged {
 			statusEvents++
 		}
-		seq, ok := e["device_seq"].(float64)
-		if !ok {
+		if e.DeviceSeq == 0 {
 			t.Fatalf("missing device_seq: %+v", e)
 		}
-		if seqs[seq] {
-			t.Fatalf("duplicate device_seq %v after concurrent independent writes", seq)
+		if seqs[e.DeviceSeq] {
+			t.Fatalf("duplicate device_seq %d after concurrent independent writes", e.DeviceSeq)
 		}
-		seqs[seq] = true
+		seqs[e.DeviceSeq] = true
 	}
 	if statusEvents != 2 {
 		t.Fatalf("expected two status_changed events, got %d", statusEvents)
@@ -514,5 +512,130 @@ func TestCLIRawAppendCannotBypassTransactionValidation(t *testing.T) {
 	}
 	if len(eventFiles(t, ws)) != before {
 		t.Fatal("zero expected_revision append wrote an event")
+	}
+}
+
+func TestCLITransactionCrashBetweenEventsNotVisible(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	ready := filepath.Join(root, "txn-ready")
+	cmd := exec.Command(anchorBin, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "ANCHOR_TEST_TXN_STOP_AFTER_EVENT=1", "ANCHOR_TEST_TXN_READY="+ready)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+			t.Fatalf("transaction did not pause after first event: %s%s", stdout.String(), stderr.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cmd.Process.Wait()
+
+	if events := eventFiles(t, ws); len(events) != 0 {
+		t.Fatalf("incomplete transaction became visible: %d events", len(events))
+	}
+	tmps, err := filepath.Glob(filepath.Join(ws, "events", ".txn-*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tmps) == 0 {
+		t.Fatal("expected an uncommitted temp batch after the kill")
+	}
+	// Recovery: a fresh transaction sees only committed batches and succeeds.
+	if out, errText, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G"); code != 0 {
+		t.Fatalf("recovery create failed: %s %s", out, errText)
+	}
+	if events := eventFiles(t, ws); len(events) != 2 {
+		t.Fatalf("recovered transaction should commit both events, got %d", len(events))
+	}
+	if tmps, _ := filepath.Glob(filepath.Join(ws, "events", ".txn-*.tmp")); len(tmps) != 0 {
+		t.Fatalf("stale transaction temp was not cleaned during recovery: %v", tmps)
+	}
+	out, _, code := runCLI(t, root, "status", "--dir", ws, "--json")
+	if code != 0 || !strings.Contains(out, `"projection_status": "complete"`) || !strings.Contains(out, `"goal1"`) {
+		t.Fatalf("recovery projection invalid: %s", out)
+	}
+}
+
+func TestCLIEvidenceArtifactSecurityAndDoneGate(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	data := "verified local fixture\n"
+	file := writeFixture(t, filepath.Join(root, "artifact.txt"), data)
+	sum := sha256.Sum256([]byte(data))
+	digest := hex.EncodeToString(sum[:])
+	if out, errText, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev1", "--node", "task1", "--kind", "test", "--file", file, "--sha256", digest); code != 0 {
+		t.Fatalf("evidence add failed: %s %s", out, errText)
+	}
+	blob := filepath.Join(ws, "evidence", "blobs", digest)
+	info, err := os.Stat(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("artifact mode = %o, want 600", info.Mode().Perm())
+	}
+	before := len(eventFiles(t, ws))
+	if _, _, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev-bad", "--node", "task1", "--file", file, "--sha256", strings.Repeat("0", 64)); code == 0 {
+		t.Fatal("wrong expected sha256 accepted")
+	}
+	secret := writeFixture(t, filepath.Join(root, "secret.txt"), "token=ghp_1234567890abcdefghijklmnopqrstuvwx\n")
+	if _, _, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev-secret", "--node", "task1", "--file", secret); code == 0 {
+		t.Fatal("secret content accepted")
+	}
+	secretName := writeFixture(t, filepath.Join(root, "AKIAIOSFODNN7EXAMPLE.txt"), "clean\n")
+	if _, _, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev-name", "--node", "task1", "--file", secretName); code == 0 {
+		t.Fatal("secret filename accepted")
+	}
+	if _, _, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev-meta", "--node", "task1", "--kind", "password = hunter2hunter2", "--file", file); code == 0 {
+		t.Fatal("secret metadata accepted")
+	}
+	link := filepath.Join(root, "artifact-link.txt")
+	if err := os.Symlink(file, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev-link", "--node", "task1", "--file", link); code == 0 {
+		t.Fatal("symlink artifact accepted")
+	}
+	if len(eventFiles(t, ws)) != before {
+		t.Fatal("rejected evidence add wrote an event")
+	}
+	// Secret bytes must not have been stored under a guessed digest.
+	if _, err := os.Stat(filepath.Join(ws, "evidence", "blobs", "not-a-digest")); err == nil {
+		t.Fatal("unexpected artifact path")
+	}
+	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "in_progress"); code != 0 {
+		t.Fatal("in_progress failed")
+	}
+	if out, errText, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "done", "--evidence", "ev1"); code != 0 {
+		t.Fatalf("done with persisted evidence failed: %s %s", out, errText)
+	}
+	if err := os.Remove(blob); err != nil {
+		t.Fatal(err)
+	}
+	out, _, code := runCLI(t, root, "status", "--dir", ws, "--json")
+	if code != 0 {
+		t.Fatalf("status failed: %s", out)
+	}
+	if !strings.Contains(out, `"projection_status": "incomplete"`) || !strings.Contains(out, "missing") {
+		t.Fatalf("missing artifact did not invalidate projection: %s", out)
 	}
 }

@@ -1,0 +1,233 @@
+package core
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const MaxEvidenceBytes = 64 << 20
+
+type EvidenceArtifact struct {
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+func validSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	b, err := hex.DecodeString(s)
+	return err == nil && len(b) == 32
+}
+
+func (s *Store) evidenceRoot() string  { return filepath.Join(s.Dir, "evidence") }
+func (s *Store) evidenceBlobs() string { return filepath.Join(s.evidenceRoot(), "blobs") }
+
+func ensureEvidenceDir(root string) error {
+	for _, p := range []string{root, filepath.Join(root, "blobs")} {
+		info, err := os.Lstat(p)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("evidence directory %s must be a real directory, not a symlink", p)
+			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Mkdir(p, 0o700); err != nil {
+			return err
+		}
+		info, err = os.Lstat(p)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("evidence directory %s must be a real directory, not a symlink", p)
+		}
+	}
+	return nil
+}
+
+func readEvidenceFile(path string, limit int64) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("evidence file must not be a symlink")
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("evidence file must be a regular file")
+	}
+	if info.Size() > limit {
+		return nil, fmt.Errorf("evidence file exceeds %d bytes", limit)
+	}
+	f, err := openEvidenceRead(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("evidence file exceeds %d bytes", limit)
+	}
+	return b, nil
+}
+
+// PutEvidenceFile is the explicit artifact ingestion boundary. It rejects
+// symlinks, oversize input, recognizable secrets in the filename/metadata/bytes,
+// and stores bytes at evidence/blobs/<sha256>. The source file is never scanned
+// or collected automatically; the caller must name it explicitly.
+func (s *Store) PutEvidenceFile(src, expectedSHA256 string, metadata []string) (EvidenceArtifact, error) {
+	if strings.TrimSpace(src) == "" {
+		return EvidenceArtifact{}, fmt.Errorf("evidence --file is required")
+	}
+	if strings.ContainsRune(src, '\x00') {
+		return EvidenceArtifact{}, fmt.Errorf("invalid evidence file path")
+	}
+	if expectedSHA256 != "" {
+		expectedSHA256 = strings.ToLower(expectedSHA256)
+		if !validSHA256(expectedSHA256) {
+			return EvidenceArtifact{}, fmt.Errorf("expected sha256 must be 64 hex characters")
+		}
+	}
+	if err := scanEvidenceMetadata(append([]string{src}, metadata...)...); err != nil {
+		return EvidenceArtifact{}, err
+	}
+	data, err := readEvidenceFile(src, MaxEvidenceBytes)
+	if err != nil {
+		return EvidenceArtifact{}, err
+	}
+	if err := ScanSecrets(data); err != nil {
+		return EvidenceArtifact{}, fmt.Errorf("evidence artifact rejected: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	digest := hex.EncodeToString(sum[:])
+	if expectedSHA256 != "" && expectedSHA256 != digest {
+		return EvidenceArtifact{}, fmt.Errorf("evidence sha256 mismatch: file is %s", digest)
+	}
+	artifact := EvidenceArtifact{SHA256: digest, Size: int64(len(data))}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := acquireWorkspaceLock(s.Dir)
+	if err != nil {
+		return EvidenceArtifact{}, err
+	}
+	defer release()
+	if err := ensureEvidenceDir(s.evidenceRoot()); err != nil {
+		return EvidenceArtifact{}, err
+	}
+	dst := filepath.Join(s.evidenceBlobs(), digest)
+	if _, err := os.Lstat(dst); err == nil {
+		if err := VerifyEvidenceArtifact(s.Dir, EvidenceEntry{SHA256: digest, Size: artifact.Size}); err != nil {
+			return EvidenceArtifact{}, fmt.Errorf("existing evidence artifact is invalid: %w", err)
+		}
+		return artifact, nil
+	} else if !os.IsNotExist(err) {
+		return EvidenceArtifact{}, err
+	}
+	f, err := os.CreateTemp(s.evidenceBlobs(), ".evidence-*.tmp")
+	if err != nil {
+		return EvidenceArtifact{}, err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return EvidenceArtifact{}, err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return EvidenceArtifact{}, err
+	}
+	if err := f.Close(); err != nil {
+		return EvidenceArtifact{}, err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return EvidenceArtifact{}, err
+	}
+	if d, err := os.Open(s.evidenceBlobs()); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return artifact, nil
+}
+
+// VerifyEvidenceArtifact re-reads the content-addressed bytes and checks
+// existence, regular-file/symlink status, size, digest, metadata, and secret
+// material. It never mutates the artifact.
+func VerifyEvidenceArtifact(workspace string, entry EvidenceEntry) error {
+	digest := strings.ToLower(entry.SHA256)
+	if !validSHA256(digest) {
+		return fmt.Errorf("artifact sha256 must be 64 hex characters")
+	}
+	if entry.Size < 0 {
+		return fmt.Errorf("artifact size must be non-negative")
+	}
+	if err := scanEvidenceMetadata(entry.EvidenceID, entry.NodeID, entry.Kind); err != nil {
+		return err
+	}
+	root := filepath.Join(workspace, "evidence")
+	for _, p := range []string{root, filepath.Join(root, "blobs")} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return fmt.Errorf("evidence artifact store is missing")
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("evidence artifact store must be a real directory")
+		}
+	}
+	path := filepath.Join(root, "blobs", digest)
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("evidence artifact %s is missing", digest)
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("evidence artifact must not be a symlink")
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("evidence artifact must be a regular file")
+	}
+	if entry.Size != info.Size() {
+		return fmt.Errorf("evidence artifact size mismatch: recorded %d, actual %d", entry.Size, info.Size())
+	}
+	data, err := readEvidenceFile(path, MaxEvidenceBytes)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != digest {
+		return fmt.Errorf("evidence artifact digest mismatch")
+	}
+	if err := ScanSecrets(data); err != nil {
+		return fmt.Errorf("evidence artifact rejected: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) VerifyEvidence(entry EvidenceEntry) error {
+	return VerifyEvidenceArtifact(s.Dir, entry)
+}
+
+// LoadReplay verifies artifact bytes as part of replay. CLI status, handoff,
+// and every write transaction use this path.
+func (s *Store) LoadReplay() (ReplayResult, error) {
+	events, err := s.Load()
+	if err != nil {
+		return ReplayResult{}, err
+	}
+	return ReplayVerified(events, s.VerifyEvidence), nil
+}
