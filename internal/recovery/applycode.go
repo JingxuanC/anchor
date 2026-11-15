@@ -85,14 +85,20 @@ func ApplyCode(pkg, repo string, dryRun, force bool) (CodeReport, error) {
 	if out, err := git(repo, "rev-parse", "HEAD"); err == nil {
 		r.RepoHead = strings.TrimSpace(string(out))
 	}
+	dirty := false
 	if out, err := git(repo, "status", "--porcelain"); err != nil {
 		return CodeReport{}, fmt.Errorf("cannot read the target working tree: %w", err)
 	} else if strings.TrimSpace(string(out)) != "" {
+		dirty = true
 		if force {
 			r.Actions = append(r.Actions, "stash local changes as an anchor backup before checking out")
 		} else {
 			r.Blockers = append(r.Blockers, "target working tree is dirty; --force is required (local changes are stashed and a backup ref is created)")
 		}
+	}
+	if dirty && r.RepoHead == "" {
+		// Nothing to stash onto: fail closed with an actionable message.
+		r.Blockers = append(r.Blockers, "target repository has no commits yet, so local changes cannot be stashed; commit or remove them first")
 	}
 
 	if _, err := git(repo, "bundle", "verify", bundlePath); err != nil {
@@ -107,11 +113,13 @@ func ApplyCode(pkg, repo string, dryRun, force bool) (CodeReport, error) {
 		return CodeReport{}, fmt.Errorf("code bundle does not contain the prepared commit %s", r.PacketHead)
 	}
 
-	// Untracked bytes must not silently overwrite local files.
+	// Untracked bytes must not silently overwrite local files. With --force the
+	// conflicting local files are stashed first (including untracked ones), so the
+	// paths are free by the time they are written.
 	untracked := untrackedPayloads(v.manifest.Packet)
 	for _, u := range untracked {
-		if _, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(u.Path))); err == nil {
-			r.Blockers = append(r.Blockers, "untracked path already exists in the target: "+u.Path)
+		if _, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(u.Path))); err == nil && !force {
+			r.Blockers = append(r.Blockers, "untracked path already exists in the target: "+u.Path+" (--force stashes it first)")
 		}
 	}
 	sort.Strings(r.Actions)

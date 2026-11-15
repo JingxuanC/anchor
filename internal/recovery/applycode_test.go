@@ -230,6 +230,27 @@ func TestApplyCodeUntrackedConflictBlocks(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(repoB, "notes.txt")); string(b) != "local copy\n" {
 		t.Fatalf("local file was touched: %q", b)
 	}
+	// Give the target an initial commit (the untracked file stays untracked) so a
+	// forced apply can stash it; then the packaged bytes are written.
+	if err := os.WriteFile(filepath.Join(repoB, ".keep"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutR(t, repoB, "add", ".keep")
+	gitOutR(t, repoB, "commit", "-qm", "keep")
+	applied, err := ApplyCode(pkg, repoB, false, true)
+	if err != nil {
+		t.Fatalf("forced apply with an untracked conflict: %v", err)
+	}
+	if !applied.Stashed || applied.UntrackedWritten != 1 {
+		t.Fatalf("forced apply did not stash/write: %+v", applied)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repoB, "notes.txt")); string(b) != "from source\n" {
+		t.Fatalf("packaged untracked bytes not written: %q", b)
+	}
+	stash, err := exec.Command("git", "-C", repoB, "stash", "list").Output()
+	if err != nil || !strings.Contains(string(stash), "anchor pre-apply backup") {
+		t.Fatalf("local file not recoverable from the stash: %s %v", stash, err)
+	}
 }
 
 func TestApplyCodeDetachedHeadPacket(t *testing.T) {
