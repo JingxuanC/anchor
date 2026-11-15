@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 type Conflict struct {
@@ -369,7 +370,20 @@ func ownershipFor(all []Event, mutationID string, isAncestor func(a, b string) b
 	return nil, nil
 }
 
+// rejectUnverifiableAttestation keeps a self-declared attestation from being
+// mistaken for a verified one: this build cannot verify any attestation, so any
+// non-empty value is refused.
+func rejectUnverifiableAttestation(e Event) error {
+	if e.ActorAttestation != "" {
+		return fmt.Errorf("event %s carries actor_attestation %q, but this build cannot verify attestations", e.EventID, e.ActorAttestation)
+	}
+	return nil
+}
+
 func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
+	if err := rejectUnverifiableAttestation(e); err != nil {
+		return err
+	}
 	if e.Type == EvEvidenceAdded {
 		var p EvidencePayload
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
@@ -524,7 +538,7 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 				return fmt.Errorf("parent %s not found", p.ParentID)
 			}
 		}
-		if err := validateNodeDetailFields(t, p, e.ActorAttestation); err != nil {
+		if err := validateNodeDetailFields(t, p); err != nil {
 			return err
 		}
 		n := &Node{ID: p.NodeID, Type: t, Title: p.Title, ParentID: p.ParentID, Status: InitialStatus(t), Revision: 1, Owner: p.Owner, LeaseID: e.LeaseID, FencingToken: e.FencingToken, LastEventID: e.EventID,
@@ -539,7 +553,11 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 
 // validateNodeDetailFields enforces the goal/decision/provenance rules of the
 // node payload before it can enter the projection.
-func validateNodeDetailFields(t NodeType, p NodePayload, attestation string) error {
+//
+// user_confirmed is rejected unconditionally: this build has no verifiable local
+// attestation mechanism, and accepting a self-declared attestation would let an
+// agent label its own inference as user-confirmed (REQ-ST-013).
+func validateNodeDetailFields(t NodeType, p NodePayload) error {
 	hasGoal := p.NorthStar != "" || len(p.Must) > 0 || len(p.MustNot) > 0 || len(p.SuccessCriteria) > 0
 	if hasGoal && t != NodeGoal {
 		return fmt.Errorf("goal fields require a goal node")
@@ -551,11 +569,18 @@ func validateNodeDetailFields(t NodeType, p NodePayload, attestation string) err
 	if !ValidProvenance(p.Provenance) {
 		return fmt.Errorf("invalid provenance %q", p.Provenance)
 	}
-	if p.Provenance == string(ProvenanceUserConfirmed) && attestation == "" {
-		return fmt.Errorf("user_confirmed provenance requires a local user attestation")
+	if p.Provenance == string(ProvenanceUserConfirmed) {
+		return fmt.Errorf("user_confirmed provenance requires a verified local user attestation, which this build does not implement; record agent_inferred or imported")
 	}
 	if p.Confidence != nil && (*p.Confidence < 0 || *p.Confidence > 1) {
 		return fmt.Errorf("confidence must be between 0 and 1")
+	}
+	for _, list := range [][]string{p.Must, p.MustNot, p.SuccessCriteria, p.Alternatives, p.Consequences} {
+		for _, item := range list {
+			if strings.TrimSpace(item) == "" {
+				return fmt.Errorf("constraint and trade-off entries must not be empty")
+			}
+		}
 	}
 	return nil
 }
@@ -570,6 +595,9 @@ func containsString(ss []string, want string) bool {
 }
 
 func applyMutation(tree *Tree, e Event, nodeID string, verify EvidenceVerifier) error {
+	if err := rejectUnverifiableAttestation(e); err != nil {
+		return err
+	}
 	n, ok := tree.Nodes[nodeID]
 	if !ok {
 		return fmt.Errorf("node %s not found", nodeID)
@@ -627,7 +655,7 @@ func applyMutation(tree *Tree, e Event, nodeID string, verify EvidenceVerifier) 
 		}
 		n.Status = to
 	case EvNodeUpdated:
-		if err := validateNodeDetailFields(n.Type, p, e.ActorAttestation); err != nil {
+		if err := validateNodeDetailFields(n.Type, p); err != nil {
 			return err
 		}
 		if p.Title != "" {

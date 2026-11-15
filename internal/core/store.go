@@ -36,13 +36,15 @@ type Store struct {
 
 // StateDir resolves the Anchor state root for a caller-supplied directory.
 // `anchor init --attach` stores state in <project>/.anchor; plain `anchor init`
-// uses the given directory itself. Resolution is read-only and prefers the
-// attached layout when <dir>/.anchor/manifest.json exists.
-// isWorkspaceRoot reports whether dir itself holds workspace state (a manifest
-// plus an event directory). A directory like that is always treated as a
-// workspace root, never as a project with attached state.
+// uses the given directory itself. A directory that is itself an Anchor
+// workspace always wins; otherwise attached state under <dir>/.anchor is used.
+// isWorkspaceRoot reports whether dir itself holds Anchor workspace state: an
+// Anchor-shaped manifest plus an event directory. Merely having some
+// manifest.json (common in web projects) or an events/ directory is not enough,
+// otherwise a normal project would be mistaken for a workspace.
 func isWorkspaceRoot(dir string) bool {
-	info, err := os.Lstat(filepath.Join(dir, "manifest.json"))
+	manifestPath := filepath.Join(dir, "manifest.json")
+	info, err := os.Lstat(manifestPath)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return false
 	}
@@ -50,7 +52,21 @@ func isWorkspaceRoot(dir string) bool {
 	if err != nil || events.Mode()&os.ModeSymlink != 0 || !events.IsDir() {
 		return false
 	}
-	return true
+	if info.Size() > 64<<10 {
+		return false
+	}
+	b, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return false
+	}
+	var m struct {
+		WorkspaceID     string `json:"workspace_id"`
+		EventLogVersion *int   `json:"event_log_version"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return false
+	}
+	return m.WorkspaceID != "" && m.EventLogVersion != nil
 }
 
 func StateDir(dir string) (string, error) {
@@ -127,12 +143,19 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	var m struct {
-		EventLogVersion int `json:"event_log_version"`
+		WorkspaceID     string `json:"workspace_id"`
+		EventLogVersion *int   `json:"event_log_version"`
 	}
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("invalid workspace manifest: %w", err)
 	}
-	version := m.EventLogVersion
+	// Require an Anchor-shaped manifest: a project that merely happens to have a
+	// manifest.json and an events/ directory must not be opened (and then written
+	// to) as if it were a workspace.
+	if m.EventLogVersion == nil || m.WorkspaceID == "" {
+		return nil, fmt.Errorf("invalid workspace manifest: not an Anchor workspace manifest (workspace_id and event_log_version are required)")
+	}
+	version := *m.EventLogVersion
 	if version < 0 || version > CurrentEventLogVersion {
 		return nil, fmt.Errorf("unsupported workspace event_log_version %d (supported up to %d)", version, CurrentEventLogVersion)
 	}
@@ -216,8 +239,9 @@ func InitWorkspace(dir, workspaceID, deviceID string) (*Store, error) {
 	return Open(canonical)
 }
 
-// InitAttached adopts an existing project directory without modifying user
-// files: state is created in <project>/.anchor. It refuses projects that
+// InitAttached adopts an existing project directory: state is created in
+// <project>/.anchor and user files are left alone (the CLI may additionally add a
+// managed `.anchor/` line to the project .gitignore). It refuses projects that
 // already hold Anchor state instead of silently re-initializing them.
 func InitAttached(projectDir, workspaceID, deviceID string) (*Store, string, error) {
 	project, err := pathguard.ValidateExistingDir(projectDir)
@@ -242,12 +266,26 @@ func InitAttached(projectDir, workspaceID, deviceID string) (*Store, string, err
 	} else if !os.IsNotExist(err) {
 		return nil, "", err
 	}
-	if err := os.MkdirAll(state, 0o700); err != nil {
+	// os.Mkdir (not MkdirAll) refuses to follow a symlink swapped in after the
+	// check above, and refuses to create anything but the final component.
+	if err := os.Mkdir(state, 0o700); err != nil && !os.IsExist(err) {
 		return nil, "", err
+	}
+	if info, err := os.Lstat(state); err != nil {
+		return nil, "", err
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, "", fmt.Errorf("state path %s is not a real directory", state)
 	}
 	store, err := InitWorkspace(state, workspaceID, deviceID)
 	if err != nil {
 		return nil, "", err
+	}
+	resolvedState, err := pathguard.Canonical(state)
+	if err != nil {
+		return nil, "", err
+	}
+	if store.Dir != resolvedState {
+		return nil, "", fmt.Errorf("state directory resolved to %s instead of %s; refusing to attach", store.Dir, resolvedState)
 	}
 	return store, store.Dir, nil
 }

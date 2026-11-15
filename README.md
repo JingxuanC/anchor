@@ -64,7 +64,7 @@ configuration and secret *references* only.
 | `docs/06-decisions-and-open-questions.md` | Confirmed decisions vs proposals vs blockers |
 | `docs/07-repo-bootstrap.md` | GitHub verification result and required approvals |
 | `docs/08-design-review-response.md` | Architect P0/P1 review findings and point-by-point disposition |
-| `docs/09-implementation-status.md` | Audited requirement-by-requirement implementation status (18/62/59/1) |
+| `docs/09-implementation-status.md` | Audited requirement-by-requirement implementation status (24/59/56/1) |
 | `acceptance/matrix.yaml` | Machine-readable requirement/test coverage plan (all rows still `planned`) |
 
 ## Provenance

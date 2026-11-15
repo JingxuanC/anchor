@@ -180,6 +180,11 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 	if err != nil {
 		return Manifest{}, "", err
 	}
+	if _, err := os.Lstat(out); err == nil {
+		return Manifest{}, "", fmt.Errorf("refusing to overwrite existing export target %s", out)
+	} else if !os.IsNotExist(err) {
+		return Manifest{}, "", err
+	}
 	canonical, err := pathguard.ValidateCreateDir(out)
 	if err != nil {
 		return Manifest{}, "", err
@@ -234,7 +239,9 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 	}
 
 	if len(p.Quarantined) > 0 {
-		markIncomplete("some event batches are quarantined and were not exported")
+		// Quarantined batches are transported verbatim; recovery stays incomplete
+		// because their events cannot be replayed or trusted.
+		markIncomplete("some event batches are quarantined; recovery is incomplete")
 	}
 	if p.Tree.ProjectionStatus != "complete" {
 		markIncomplete("projection has pending or conflicting events")
@@ -249,6 +256,7 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 	if includeBytes {
 		m.ArtifactAvailability = "partial"
 		var evidenceOK, untrackedOK bool = true, true
+		writtenEvidence := map[string]bool{}
 		for _, ev := range p.Tree.Evidence {
 			if err := core.VerifyEvidenceArtifact(store.Dir, ev); err != nil {
 				m.Warnings = append(m.Warnings, "evidence "+ev.EvidenceID+" unavailable: "+err.Error())
@@ -266,10 +274,15 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 				evidenceOK = false
 				continue
 			}
-			if err := writePackageFile(staging, "payload/evidence/"+ev.SHA256, "evidence", data, &files); err != nil {
-				return Manifest{}, "", err
+			// Evidence is content-addressed: several evidence ids can share one blob.
+			// Write each blob once instead of failing on the duplicate path.
+			if !writtenEvidence[ev.SHA256] {
+				if err := writePackageFile(staging, "payload/evidence/"+ev.SHA256, "evidence", data, &files); err != nil {
+					return Manifest{}, "", err
+				}
+				writtenEvidence[ev.SHA256] = true
+				m.EvidenceBytesIncluded++
 			}
-			m.EvidenceBytesIncluded++
 		}
 		for _, f := range p.CodeState.Untracked {
 			if f.SHA256 == "" || f.Skipped {
@@ -505,10 +518,17 @@ func assessImport(v verifiedPackage, plan importPlan) (string, []string) {
 	if v.manifest.Packet.Tree.ProjectionStatus != "complete" {
 		reasons = append(reasons, "exported projection is not complete")
 	}
+	if len(v.manifest.Packet.Quarantined) > 0 {
+		reasons = append(reasons, "package contains quarantined event batches; recovery is incomplete")
+	}
 	if v.manifest.Packet.CodeState.Dirty {
 		reasons = append(reasons, "uncommitted code was not transported; code apply is disabled")
 	}
-	if len(plan.evidence) < len(v.manifest.Packet.Tree.Evidence) {
+	uniqueEvidence := map[string]bool{}
+	for _, ev := range v.manifest.Packet.Tree.Evidence {
+		uniqueEvidence[ev.SHA256] = true
+	}
+	if len(plan.evidence) < len(uniqueEvidence) {
 		reasons = append(reasons, "evidence bytes are missing; evidence cannot be verified after import")
 	}
 	if len(reasons) > 0 {
@@ -548,6 +568,9 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	if info, err := os.Lstat(target); err == nil && !info.IsDir() {
+		return Report{}, fmt.Errorf("import target is not a directory")
+	}
 	canonical, err := pathguard.ValidateCreateDir(target)
 	if err != nil {
 		return Report{}, err
@@ -566,6 +589,12 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 	} else if !os.IsNotExist(err) {
 		return Report{}, err
 	}
+	// The target parent must exist for both dry-run and apply, matching export, so
+	// a dry run never predicts success for a target that cannot be created.
+	parent := filepath.Dir(canonical)
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		return Report{}, fmt.Errorf("import target parent directory does not exist")
+	}
 	plan := importPlanOf(v)
 	status, reasons := assessImport(v, plan)
 	r := Report{DryRun: dryRun, PackageDir: pkg, Target: canonical, WorkspaceID: v.manifest.WorkspaceID, DeviceID: v.manifest.DeviceID,
@@ -579,10 +608,6 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 	// Build the import in a staging directory next to the target and rename it
 	// into place only after verification passes. A failed import therefore never
 	// leaves a half-built workspace that a retry would refuse to touch.
-	parent := filepath.Dir(canonical)
-	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
-		return Report{}, fmt.Errorf("import target parent directory does not exist")
-	}
 	staging, err := os.MkdirTemp(parent, ".anchor-import-*")
 	if err != nil {
 		return Report{}, err
@@ -599,10 +624,11 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 			r.FilesWritten++
 		}
 		r.Writes = r.FilesWritten
-		if _, err := writeImportReport(staging, r); err != nil {
+		report, err := writeImportReport(staging, r)
+		if err != nil {
 			return Report{}, err
 		}
-		return commitImport(staging, canonical, r)
+		return commitImport(staging, canonical, report)
 	}
 
 	if err := writeExclusive(filepath.Join(staging, "manifest.json"), plan.workspaceManifest); err != nil {
@@ -695,10 +721,11 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 		r.RecoveryStatus = handoff.StatusIncomplete
 	}
 	r.Writes = r.FilesWritten
-	if _, err := writeImportReport(staging, r); err != nil {
+	report, err := writeImportReport(staging, r)
+	if err != nil {
 		return Report{}, err
 	}
-	return commitImport(staging, canonical, r)
+	return commitImport(staging, canonical, report)
 }
 
 // commitImport moves a verified staging directory into the requested target.
@@ -718,6 +745,9 @@ func commitImport(staging, canonical string, r Report) (Report, error) {
 }
 
 func writeImportReport(canonical string, r Report) (Report, error) {
+	// Count the report write before marshalling so the persisted report and the
+	// returned report agree (review finding: the on-disk copy was one too low).
+	r.Writes++
 	rb, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return Report{}, err
@@ -725,7 +755,6 @@ func writeImportReport(canonical string, r Report) (Report, error) {
 	if err := writeExclusive(filepath.Join(canonical, "anchor-import.json"), append(rb, '\n')); err != nil {
 		return Report{}, err
 	}
-	r.Writes++
 	return r, nil
 }
 

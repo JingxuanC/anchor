@@ -82,8 +82,9 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    constraints and success criteria; decision nodes carry decision, rationale,
    alternatives and consequences; every node can carry provenance + confidence,
    with replay rejecting goal fields on non-goals, decision fields on
-   non-decisions, unknown provenance, out-of-range confidence, and any
-   `user_confirmed` claim without a local attestation (`internal/core`).
+   non-decisions, unknown provenance, out-of-range confidence, empty constraint
+   entries, any `user_confirmed` claim, and any event carrying a self-declared
+   `actor_attestation` (`internal/core`).
 8. **Restorable packages** — export always transports the workspace manifest and
    event log; import rebuilds the workspace in a fresh empty target, replays it,
    verifies evidence blobs and reports an honest `complete`/`incomplete` status.
@@ -118,7 +119,7 @@ authoritative.
 | ST-002 | implemented | `internal/core/tree.go`, replay validation; `TestDecisionDetailFieldsAreProjected` | Decision fields recorded, validated, projected and carried in the packet. |
 | ST-003 | implemented | `internal/core/tree.go:20,102`; `TestLegalAndIllegalTransitions`, `TestCLIConsecutiveTransitions` | — |
 | ST-004 | partial | `internal/core/tree.go:136` | Fork parent may be any node type; no hypothesis field; no merge command or event. |
-| ST-005 | implemented | `core.Provenance`, `Node.Provenance/Confidence`, replay validation; `TestProvenanceAndConfidenceAreValidated` | Values are recorded and enforced; `user_confirmed` still needs an attestation mechanism (ST-013), so that path is currently unreachable. |
+| ST-005 | implemented | `core.Provenance`, `Node.Provenance/Confidence`, replay validation; `TestProvenanceAndConfidenceAreValidated`, `TestSelfDeclaredAttestationCannotGrantUserConfirmation` | Values are recorded and enforced. `user_confirmed` is rejected unconditionally and events carrying an unverifiable `actor_attestation` are rejected, because no attestation mechanism exists yet (ST-013). |
 | ST-006 | partial | `internal/core/event.go:46,56,81` | `ActorKind` never set by any command; nodes store no actor/agent/session/time; no agent version field. |
 | ST-007 | implemented | `internal/core/event.go:40`, `transaction.go:83,46`; `TestCLIConcurrentSameNodeOneWins` | CLI node mutations generate no idempotency key (only adapter ingest does). |
 | ST-008 | partial | `internal/core/replay.go:548,609`; `TestP1TombstoneIsTerminal` | Edit-vs-delete relies on the generic same-base-revision rule; no dedicated conflict class or test. |
@@ -126,7 +127,7 @@ authoritative.
 | ST-010 | missing | grep `drift|constraint` → 0 | No drift checks, no advisory/block distinction. |
 | ST-011 | partial | `cmd/anchor/main.go:529,542,554` | No merge, no reparent; "agent cannot self-confirm" is vacuous without provenance. |
 | ST-012 | missing | no summary event type (`event.go:15`) | No summary storage or source-pointer rule. |
-| ST-013 | missing | `ActorAttestation` never read (`event.go:57`); `user_override` rejected (`replay.go:578`, `main.go:315`) | No attestation mechanism; requirement dodged by disabling the feature. |
+| ST-013 | missing | `user_override` rejected (`replay.go`, `main.go`); `actor_attestation` rejected in replay; `TestSelfDeclaredAttestationCannotGrantUserConfirmation` | No verified local attestation mechanism, so user confirmation is refused rather than faked. A TTY/UI/signature token still needs designing. |
 
 ### 3.3 CAP — Capture
 
@@ -151,11 +152,11 @@ authoritative.
 | RST-003 | partial | `handoff.go:323`; `TestEvaluateDetectsStaleCodeWithoutOverwriting` | No `handoff_acked`/`handoff_verified` events; no gate before editing. |
 | RST-004 | implemented | `handoff.go:248`, `main.go:484`; `TestCLIWorkflowRecoveryAndRestoreBoundary` | Partially vacuous: no summary object exists. |
 | RST-005 | missing | one static packet format only | No per-adapter cross-agent handoff. |
-| RST-006 | missing | export carries no events (`recovery.go:163`) | No cross-device handoff. |
+| RST-006 | missing | export/import now transports the workspace (`recovery.go`); no Git sync | Handoff across devices works only by manually moving a package; the requirement's Git-sync path does not exist. |
 | RST-007 | partial | `handoff.go:34,116`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | No bundle/patch artifact, no restore instructions, no base commit. |
 | RST-008 | partial | restore always evaluates, `apply: disabled` (`main.go:644`) | No apply path, so "explicit confirmation" is unimplemented. |
 | RST-009 | partial | `handoff.go:358`, `recovery.go:203` | Does not enumerate missing artifacts/unreachable evidence; returns a status only. |
-| RST-010 | implemented | `Node.Provenance` + packet blocks; `TestPrepareCarriesTaskStructure` | Provenance is labeled per goal/decision/next step/question and summarized; `user_confirmed` requires attestation. |
+| RST-010 | implemented | `Node.Provenance` + packet blocks; `TestPrepareCarriesTaskStructure` | Provenance is labeled per goal/decision/next step/question and summarized; `user_confirmed` is refused until a verified attestation exists. |
 | RST-011 | implemented | `handoff.go:103`, `recovery.go:433`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | Code apply disabled, so "unrecovered" is always true; no per-artifact list. |
 
 ### 3.5 AD — Adapters
@@ -202,7 +203,7 @@ matches only capability strings.
 | SY-009 | partial | `docs/06` §3 O-001 | Documented default only; no config key or code boundary to choose topology. |
 | SY-010 | partial | `replay.go:156`, `main.go:595`; `TestP0ConcurrentTakeoversConflict` | No lease expiry, no stale-owner detection, no audit query. |
 | SY-011 | partial | `event.go:127`, `handoff.go:266`, `recovery.go:287` | No remote verification path; no signatures. |
-| SY-012 | implemented | `recovery.go:194,433`; `TestCLIHandoffExportImportDryRunAndBytes` | Over-conservative: `complete` is unreachable even when all bytes verify. |
+| SY-012 | implemented | `recovery.go`; `TestCLIExportImportRebuildsWorkspace` | `complete` is reachable only when the rebuilt workspace replays cleanly and all referenced evidence verifies; imported code bytes are staged, never applied. |
 
 ### 3.8 CFG — Config / rules / skills
 
@@ -555,6 +556,27 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 | OPS-007 | implemented | by-absence: satisfied only by absence of payments/network code |
 | OPS-008 | partial |  |
 
+## 5b. Test coverage
+
+Measured with `go test ./... -cover`. `cmd/anchor` reports 0% because its tests
+drive the compiled binary out of process; its flows are covered by 60+
+end-to-end CLI tests instead (exit codes, JSON contracts, attach mode, error
+matrices, full successor flow). The recovery package has a deliberately slow
+sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
+
+| Package | Before this pass | Now | Notes |
+|---|---:|---:|---|
+| `internal/pathguard` | 0.0% | 91.7% | Uncovered lines are unreachable defensive branches (root loop, non-ENOENT ancestor error). |
+| `internal/core` | 69.4% | 92.8% | Remaining gaps are OS-error paths (rename/sync failures) and the test-only tx hook shim. |
+| `internal/adapter` | 75.8% | 93.2% | Remaining gaps are `json.Marshal`/`Write` error branches. |
+| `internal/handoff` | 78.1% | 95.9% | Goal ranking, packet blocks, stale/detached eval covered. |
+| `internal/recovery` | 51.9% | 90.3% | Export/import branches, staging atomicity, limits, legacy packages covered. |
+| `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
+
+Test suite: 311 top-level test functions / ~900 run entries, ~14,900 test lines.
+`go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
+deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
+
 ## 6. Accuracy caveats
 
 - **`by-absence` rows** (CAP-007, NFR-003, RT-002, OPS-007, plus NFR-004 partly) are
@@ -570,8 +592,10 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
   verified bytes but never report a rebuilt workspace.
 - **Secret scanning covers canonical state too.** Export scans event batches, so
   a note or title containing a credential-shaped string (for example
-  `password=...`) blocks export until it is redacted. This is fail-closed on
-  purpose (SEC-003), and the diagnostic names the rejected batch.
+  `password=...`) blocks export. This is fail-closed on purpose (SEC-003) and the
+  diagnostic names the rejected batch, but events are immutable and there is no
+  redaction tool yet: the only remedies today are rebuilding the workspace or
+  deleting the offending batch.
 - **Package limits are symmetric.** Export refuses a workspace that would exceed
   the import limits (1000 files / 256 MiB), so an export can never produce a
   package that import rejects.

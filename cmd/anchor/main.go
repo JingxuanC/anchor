@@ -88,6 +88,7 @@ func usage() {
   anchor handoff restore --dir DIR --repo REPO --packet PACKET.json
   anchor handoff export --dir WS --repo REPO --out DIR [--include-bytes] [--json]
   anchor handoff import --package DIR --target DIR [--apply] [--json]
+  anchor handoff status --dir DIR --repo REPO
   anchor adapter capabilities [--json]
   anchor adapter render --adapter ID (--target DIR | --print)
   anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print)
@@ -134,11 +135,27 @@ func cmdInit(args []string) {
 	fmt.Printf("initialized %s (workspace %s, device %s)\n", *dir, *ws, *dev)
 }
 
+// insideGitWorkTree reports whether dir is inside a Git work tree, including a
+// subdirectory of a monorepo where dir has no .git of its own.
+func insideGitWorkTree(dir string) bool {
+	cur := filepath.Clean(dir)
+	for {
+		if _, err := os.Lstat(filepath.Join(cur, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return false
+		}
+		cur = parent
+	}
+}
+
 // ensureProjectIgnore keeps attached state out of the project repository. It
 // only ever appends a marked block to .gitignore and does nothing when the
 // project is not a Git work tree.
 func ensureProjectIgnore(project string) (bool, error) {
-	if _, err := os.Stat(filepath.Join(project, ".git")); err != nil {
+	if !insideGitWorkTree(project) {
 		return false, nil
 	}
 	path := filepath.Join(project, ".gitignore")
@@ -557,6 +574,7 @@ func cmdStatus(args []string) {
 	if err != nil {
 		die(err)
 	}
+	manifestInfo, _ := readManifest(*dir)
 	r := replayDir(*dir)
 	var packet *handoff.Packet
 	if p, _, err := handoff.Latest(*dir); err == nil {
@@ -575,7 +593,7 @@ func cmdStatus(args []string) {
 	}
 	if *asJSON {
 		out := map[string]any{
-			"workspace_dir":     stateDir,
+			"workspace_dir": stateDir, "workspace_id": manifestInfo.WorkspaceID, "device_id": manifestInfo.DeviceID,
 			"projection_status": r.RecoveryStatus, "recovery_status": eval.Status,
 			"recovery_reasons": eval.Reasons, "handoff_id": eval.PacketID, "quarantined": quarantined,
 			"tree": r.Tree, "applied": r.Applied, "pending": r.Pending, "conflicts": r.Conflicts,
@@ -862,7 +880,11 @@ func cmdDoctor(args []string) {
 	checks := []map[string]any{}
 	hardFail := false
 	checks = append(checks, map[string]any{"check": "manifest", "status": "ok"})
-	stateDir, stateErr := core.StateDir(*dir)
+	stateDir := *dir
+	resolvedDir, stateErr := core.StateDir(*dir)
+	if stateErr == nil {
+		stateDir = resolvedDir
+	}
 	if stateErr != nil {
 		checks[len(checks)-1] = map[string]any{"check": "manifest", "status": "fail", "detail": stateErr.Error()}
 		hardFail = true

@@ -124,7 +124,7 @@ func TestUserConfirmedProvenanceRequiresAttestation(t *testing.T) {
 	b, _ := json.Marshal(p)
 	if _, _, err := s.Append(Event{Type: EvNodeCreated, CausalParents: []string{claim.EventID}, LeaseID: "lg", FencingToken: 1, Payload: b}); err == nil {
 		t.Fatal("agent self-reported user_confirmed provenance was accepted")
-	} else if !strings.Contains(err.Error(), "local user attestation") {
+	} else if !strings.Contains(err.Error(), "user attestation") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -168,5 +168,39 @@ func TestNodeUpdateCarriesDetailFields(t *testing.T) {
 	n := replay.Tree.Nodes["g1"]
 	if n.NorthStar != "north star v2" || len(n.Must) != 1 || n.Revision != 2 {
 		t.Fatalf("update did not apply detail fields: %+v", n)
+	}
+}
+
+// TestSelfDeclaredAttestationCannotGrantUserConfirmation covers the bypass found
+// in review: a raw event with a made-up actor_attestation must not be able to
+// record user_confirmed provenance.
+func TestSelfDeclaredAttestationCannotGrantUserConfirmation(t *testing.T) {
+	s := initTest(t)
+	claim := mustAppend(t, s, own("g1", "lg", "agent", 1))
+	p := NodePayload{NodeID: "g1", Type: "goal", Title: "Self-confirmed", Provenance: string(ProvenanceUserConfirmed)}
+	b, _ := json.Marshal(p)
+	_, _, err := s.Append(Event{Type: EvNodeCreated, CausalParents: []string{claim.EventID}, LeaseID: "lg", FencingToken: 1, ActorAttestation: "x", Payload: b})
+	if err == nil {
+		t.Fatal("event with self-declared attestation was accepted")
+	}
+	if !strings.Contains(err.Error(), "actor_attestation") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Even with a valid-looking attestation string the provenance alone must fail.
+	_, _, err = s.Append(Event{Type: EvNodeCreated, CausalParents: []string{claim.EventID}, LeaseID: "lg", FencingToken: 1, Payload: b})
+	if err == nil || !strings.Contains(err.Error(), "user_confirmed") {
+		t.Fatalf("user_confirmed without attestation accepted: %v", err)
+	}
+}
+
+func TestEmptyConstraintEntriesAreRejected(t *testing.T) {
+	s := initTest(t)
+	claim := mustAppend(t, s, own("g1", "lg", "agent", 1))
+	for _, list := range [][]string{{""}, {"  "}, {"valid", ""}} {
+		p := NodePayload{NodeID: "g1", Type: "goal", Title: "G", Must: list}
+		b, _ := json.Marshal(p)
+		if _, _, err := s.Append(Event{Type: EvNodeCreated, CausalParents: []string{claim.EventID}, LeaseID: "lg", FencingToken: 1, Payload: b}); err == nil {
+			t.Fatalf("empty constraint entry accepted: %q", list)
+		}
 	}
 }

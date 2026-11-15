@@ -208,3 +208,60 @@ func TestStateDirPrefersWorkspaceRootOverNestedAnchor(t *testing.T) {
 		t.Fatalf("StateDir(project) = %q, %v", got, err)
 	}
 }
+
+func TestWorkspaceRootRequiresAnchorShapedManifest(t *testing.T) {
+	// A project with an unrelated manifest.json and an events/ directory must not
+	// be mistaken for a workspace (regression: attach refused normal projects).
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(project, "events"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "manifest.json"), []byte(`{"name":"webapp","version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := InitAttached(project, "ws1", "dev1"); err != nil {
+		t.Fatalf("attach refused a normal project with manifest.json + events/: %v", err)
+	}
+	if got, err := StateDir(project); err != nil || got != filepath.Join(canonicalPath(t, project), ".anchor") {
+		t.Fatalf("StateDir = %q, %v; want attached state", got, err)
+	}
+
+	// Conversely, an Anchor-shaped manifest means the directory is a workspace.
+	ws := t.TempDir()
+	if _, err := InitWorkspace(ws, "outer", "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := InitAttached(ws, "nested", "dev2"); err == nil {
+		t.Fatal("attach inside a real workspace was accepted")
+	}
+}
+
+// TestOpenRejectsNonAnchorProject covers the review observation that Open fell
+// back to a version-0 workspace for a project with an unrelated manifest.json and
+// an events/ directory, which would then write Anchor state into that project.
+func TestOpenRejectsNonAnchorProject(t *testing.T) {
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, "events"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "manifest.json"), []byte(`{"name":"webapp","version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(project); err == nil {
+		t.Fatal("Open accepted a non-Anchor project as a workspace")
+	} else if !strings.Contains(err.Error(), "not an Anchor workspace manifest") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// And no state may be written into the project by a write command.
+	if _, err := os.Stat(filepath.Join(project, ".anchor.lock")); err == nil {
+		t.Fatal("failed open left a lock file in the project")
+	}
+	// A real workspace with a supported version still opens.
+	ws := t.TempDir()
+	if _, err := InitWorkspace(ws, "ws", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(ws); err != nil {
+		t.Fatalf("real workspace rejected: %v", err)
+	}
+}

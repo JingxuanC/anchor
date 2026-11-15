@@ -282,6 +282,17 @@ func treeSummary(events []core.Event, result core.ReplayResult) TreeSummary {
 	return ts
 }
 
+func goalRankOf(g *GoalSummary) int {
+	switch core.Status(g.Status) {
+	case core.StatusInProgress, core.StatusActive:
+		return 0
+	case core.StatusAbandoned:
+		return 2
+	default:
+		return 1
+	}
+}
+
 func provenanceOf(n *core.Node) string {
 	if n.Provenance == "" {
 		return "unspecified"
@@ -300,17 +311,29 @@ func detailSummary(tree *core.Tree) (*GoalSummary, []DecisionRef, []NextStep, []
 	var ownership []OwnershipRef
 	prov := map[string]int{}
 	statusRank := map[core.Status]int{core.StatusInProgress: 0, core.StatusBlocked: 1, core.StatusTodo: 2}
+	goalRank := func(n *core.Node) int {
+		switch n.Status {
+		case core.StatusInProgress, core.StatusActive:
+			return 0
+		case core.StatusAbandoned:
+			return 2
+		default:
+			return 1
+		}
+	}
 	for _, n := range tree.SortedNodes() {
-		prov[provenanceOf(n)]++
 		if n.Deleted {
 			continue
 		}
+		prov[provenanceOf(n)]++
 		if n.Owner != "" {
 			ownership = append(ownership, OwnershipRef{NodeID: n.ID, Owner: n.Owner, LeaseID: n.LeaseID, FencingToken: n.FencingToken})
 		}
 		switch n.Type {
 		case core.NodeGoal:
-			if goal == nil {
+			// The packet carries the goal a successor should work towards: an
+			// active goal beats a pending one, and an abandoned goal is last.
+			if goal == nil || goalRank(n) < goalRankOf(goal) {
 				goal = &GoalSummary{ID: n.ID, Title: n.Title, NorthStar: n.NorthStar, Must: n.Must, MustNot: n.MustNot,
 					SuccessCriteria: n.SuccessCriteria, Status: string(n.Status), Provenance: provenanceOf(n)}
 			}

@@ -61,6 +61,11 @@ func IsSharedAgentConfig(path string) (bool, error) {
 	}
 	for _, rel := range sharedAgentConfig {
 		shared := filepath.Join(hc, rel)
+		// Resolve the shared path too: a symlinked ~/.claude (common with
+		// dotfile repositories) must still be recognised as shared config.
+		if resolved, err := Canonical(shared); err == nil {
+			shared = resolved
+		}
 		if target == shared || strings.HasPrefix(target, shared+string(os.PathSeparator)) {
 			return true, nil
 		}
@@ -89,6 +94,18 @@ func ValidateExistingDir(path string) (string, error) {
 }
 
 func ValidateCreateDir(path string) (string, error) {
+	// Refuse a symlinked target before canonicalization resolves it away: writing
+	// through a symlink can escape the intended workspace (docs/04 T-02). Parent
+	// symlinks are still resolved, because platform temp roots are symlinked.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if info, err := os.Lstat(abs); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("workspace path must not be a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
 	canonical, err := Canonical(path)
 	if err != nil {
 		return "", err
