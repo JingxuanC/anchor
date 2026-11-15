@@ -1564,3 +1564,149 @@ func TestCLIConcurrentInitOneIdentity(t *testing.T) {
 		t.Fatalf("initialized workspace is not openable: %s", out)
 	}
 }
+
+func TestCLIHandoffExportImportDryRunAndBytes(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	evFile := writeFixture(t, filepath.Join(root, "evidence.txt"), "exported evidence fixture\n")
+	runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev1", "--node", "task1", "--kind", "test", "--file", evFile)
+	sessionEvent := writeFixture(t, filepath.Join(root, "session.json"), `{"hook_event_name":"PostToolUse","session_id":"export-session","source_event_id":"export-source","source_seq":1}`)
+	if out, errText, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", sessionEvent, "--source", "fixture"); code != 0 {
+		t.Fatalf("session ingest failed: %s%s", out, errText)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("dirty tracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("untracked notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "must-not-execute")
+	script := fmt.Sprintf("#!/bin/sh\ntouch %s\n", marker)
+	if err := os.WriteFile(filepath.Join(repo, "run.sh"), []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(root, "export-pkg")
+	out, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", pkg, "--include-bytes", "--json")
+	if code != 0 {
+		t.Fatalf("export failed: %s%s", out, stderr)
+	}
+	var summary map[string]any
+	if err := json.Unmarshal([]byte(out), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary["workspace_id"] != "ws1" || summary["device_id"] != "dev1" || summary["recovery_status"] != "incomplete" || summary["artifact_availability"] != "partial" || summary["code_commit_included"] != false || summary["code_apply"] != "disabled" || summary["adapter_native_recovery"] != "unverified" {
+		t.Fatalf("export summary wrong: %s", out)
+	}
+	mb, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		WorkspaceID string `json:"workspace_id"`
+		DeviceID    string `json:"device_id"`
+		Packet      struct {
+			Tree struct {
+				Nodes    []map[string]any `json:"nodes"`
+				Sessions []map[string]any `json:"sessions"`
+				Evidence []map[string]any `json:"evidence"`
+			} `json:"tree"`
+			CodeState struct {
+				Head  string `json:"head"`
+				Dirty bool   `json:"dirty"`
+			} `json:"code_state"`
+		} `json:"packet"`
+		Files []struct {
+			Path string `json:"path"`
+			Kind string `json:"kind"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(mb, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	taskFound := false
+	for _, n := range manifest.Packet.Tree.Nodes {
+		if n["id"] == "task1" {
+			taskFound = true
+		}
+	}
+	if manifest.WorkspaceID != "ws1" || manifest.DeviceID != "dev1" || !taskFound || len(manifest.Packet.Tree.Sessions) != 1 || len(manifest.Packet.Tree.Evidence) != 1 || manifest.Packet.CodeState.Head == "" || !manifest.Packet.CodeState.Dirty {
+		t.Fatalf("manifest missing recovery data: %s", mb)
+	}
+	kinds := map[string]int{}
+	for _, f := range manifest.Files {
+		kinds[f.Kind]++
+	}
+	if kinds["evidence"] == 0 || kinds["untracked"] < 2 || kinds["git_diff"] == 0 {
+		t.Fatalf("selected bytes missing: %+v", kinds)
+	}
+	target := filepath.Join(root, "import-target")
+	dryOut, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", target, "--json")
+	if code != 0 {
+		t.Fatalf("import dry-run failed: %s%s", dryOut, stderr)
+	}
+	var dry map[string]any
+	if err := json.Unmarshal([]byte(dryOut), &dry); err != nil {
+		t.Fatal(err)
+	}
+	if dry["dry_run"] != true || dry["writes"] != float64(0) || dry["recovery_status"] != "incomplete" || dry["code_apply"] != "disabled" || dry["adapter_native_recovery"] != "unverified" || dry["does_not_execute"] != true {
+		t.Fatalf("dry-run report wrong: %s", dryOut)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("dry-run created target")
+	}
+	if out, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", target, "--apply", "--json"); code != 0 {
+		t.Fatalf("actual import failed: %s%s", out, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(target, "payload", "untracked", "notes.txt")); err != nil {
+		t.Fatal("untracked bytes not imported")
+	}
+	if _, err := os.Stat(filepath.Join(target, "anchor-import.json")); err != nil {
+		t.Fatal("import report missing")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("import executed package content")
+	}
+	if _, _, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", target, "--apply"); code == 0 {
+		t.Fatal("second import overwrote non-empty target")
+	}
+	// Tampered package bytes are rejected before a new target is created.
+	tamperPath := filepath.Join(pkg, "payload", "untracked", "notes.txt")
+	if err := os.WriteFile(tamperPath, []byte("tampered\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target2 := filepath.Join(root, "import-target-tampered")
+	if _, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", target2, "--json"); code == 0 {
+		t.Fatalf("tampered package accepted: %s", stderr)
+	}
+	if _, err := os.Stat(target2); !os.IsNotExist(err) {
+		t.Fatal("tampered import created target")
+	}
+	// Metadata-only export is explicit and cannot be called complete.
+	metaPkg := filepath.Join(root, "metadata-pkg")
+	out, stderr, code = runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", metaPkg, "--json")
+	if code != 0 {
+		t.Fatalf("metadata export failed: %s%s", out, stderr)
+	}
+	if !strings.Contains(out, `"artifact_availability": "metadata_only"`) || !strings.Contains(out, `"files": 0`) || !strings.Contains(out, `"recovery_status": "incomplete"`) {
+		t.Fatalf("metadata-only export overclaimed: %s", out)
+	}
+	metaTarget := filepath.Join(root, "metadata-target")
+	if _, _, code := runCLI(t, root, "handoff", "import", "--package", metaPkg, "--target", metaTarget, "--json"); code != 0 {
+		t.Fatal("metadata package dry-run failed")
+	}
+	// Secret-bearing untracked bytes abort export and leave no package.
+	if err := os.WriteFile(filepath.Join(repo, "secret.txt"), []byte("AKIAIOSFODNN7EXAMPLE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secretPkg := filepath.Join(root, "secret-pkg")
+	if _, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", secretPkg, "--include-bytes", "--json"); code == 0 {
+		t.Fatalf("secret-bearing export accepted: %s", stderr)
+	}
+	if _, err := os.Stat(secretPkg); !os.IsNotExist(err) {
+		t.Fatal("secret export left a package")
+	}
+}

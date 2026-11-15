@@ -46,14 +46,15 @@ type CodeState struct {
 }
 
 type TreeSummary struct {
-	WorkspaceID      string          `json:"workspace_id"`
-	GoalIDs          []string        `json:"goal_ids,omitempty"`
-	ActiveNodeID     string          `json:"active_node_id,omitempty"`
-	Nodes            []core.Node     `json:"nodes"`
-	Sessions         []core.Session  `json:"sessions,omitempty"`
-	Pending          []string        `json:"pending,omitempty"`
-	Conflicts        []core.Conflict `json:"conflicts,omitempty"`
-	ProjectionStatus string          `json:"projection_status"`
+	WorkspaceID      string               `json:"workspace_id"`
+	GoalIDs          []string             `json:"goal_ids,omitempty"`
+	ActiveNodeID     string               `json:"active_node_id,omitempty"`
+	Nodes            []core.Node          `json:"nodes"`
+	Sessions         []core.Session       `json:"sessions,omitempty"`
+	Evidence         []core.EvidenceEntry `json:"evidence,omitempty"`
+	Pending          []string             `json:"pending,omitempty"`
+	Conflicts        []core.Conflict      `json:"conflicts,omitempty"`
+	ProjectionStatus string               `json:"projection_status"`
 }
 
 type Packet struct {
@@ -209,6 +210,10 @@ func treeSummary(events []core.Event, result core.ReplayResult) TreeSummary {
 		ts.WorkspaceID = events[0].WorkspaceID
 	}
 	ts.Sessions = result.Tree.SortedSessions()
+	for _, e := range result.Tree.Evidence {
+		ts.Evidence = append(ts.Evidence, e)
+	}
+	sort.Slice(ts.Evidence, func(i, j int) bool { return ts.Evidence[i].EvidenceID < ts.Evidence[j].EvidenceID })
 	for _, n := range result.Tree.SortedNodes() {
 		ts.Nodes = append(ts.Nodes, *n)
 		if n.Type == core.NodeGoal && !n.Deleted {

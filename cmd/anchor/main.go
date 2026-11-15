@@ -11,6 +11,7 @@ import (
 
 	"github.com/JingxuanC/anchor/internal/core"
 	"github.com/JingxuanC/anchor/internal/handoff"
+	"github.com/JingxuanC/anchor/internal/recovery"
 )
 
 type manifest struct {
@@ -71,6 +72,8 @@ func usage() {
   anchor ownership takeover --dir DIR --id ID --owner NAME
   anchor handoff prepare --dir DIR --repo REPO
   anchor handoff restore --dir DIR --repo REPO --packet PACKET.json
+  anchor handoff export --dir WS --repo REPO --out DIR [--include-bytes] [--json]
+  anchor handoff import --package DIR --target DIR [--apply] [--json]
   anchor adapter capabilities [--json]
   anchor adapter render --adapter ID (--target DIR | --print)
   anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print)
@@ -643,6 +646,48 @@ func cmdHandoff(args []string) {
 		if eval.Status != handoff.StatusComplete {
 			os.Exit(1)
 		}
+	case "export":
+		fs := flag.NewFlagSet("handoff export", flag.ExitOnError)
+		dir := fs.String("dir", ".", "workspace directory")
+		repo := fs.String("repo", ".", "git working tree")
+		out := fs.String("out", "", "explicit new export package directory")
+		includeBytes := fs.Bool("include-bytes", false, "explicitly include selected local bytes")
+		asJSON := fs.Bool("json", false, "JSON output")
+		_ = fs.Parse(args[1:])
+		if *out == "" {
+			die(fmt.Errorf("--out is required"))
+		}
+		m, path, err := recovery.Export(*dir, *repo, *out, *includeBytes)
+		if err != nil {
+			die(err)
+		}
+		summary := map[string]any{"export_id": m.ExportID, "path": path, "workspace_id": m.WorkspaceID, "device_id": m.DeviceID, "artifact_availability": m.ArtifactAvailability, "recovery_status": m.RecoveryStatus, "code_apply": m.CodeApply, "adapter_native_recovery": m.AdapterNativeRecovery, "code_commit_included": m.CodeCommitIncluded, "files": len(m.Files), "evidence_bytes": m.EvidenceBytesIncluded, "untracked_bytes": m.UntrackedBytesIncluded, "auto_install": false, "upload": false, "warnings": m.Warnings}
+		if *asJSON {
+			b, _ := json.MarshalIndent(summary, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+		fmt.Printf("exported %s to %s (recovery=%s artifacts=%s files=%d)\n", m.ExportID, path, m.RecoveryStatus, m.ArtifactAvailability, len(m.Files))
+	case "import":
+		fs := flag.NewFlagSet("handoff import", flag.ExitOnError)
+		pkg := fs.String("package", "", "export package directory")
+		target := fs.String("target", "", "explicit new/empty target directory")
+		apply := fs.Bool("apply", false, "write verified bytes; default is dry-run")
+		asJSON := fs.Bool("json", false, "JSON output")
+		_ = fs.Parse(args[1:])
+		if *pkg == "" || *target == "" {
+			die(fmt.Errorf("--package and --target are required"))
+		}
+		r, err := recovery.Import(*pkg, *target, !*apply)
+		if err != nil {
+			die(err)
+		}
+		if *asJSON {
+			b, _ := json.MarshalIndent(r, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+		fmt.Printf("import dry_run=%v target=%s verified_files=%d recovery=%s code_apply=%s writes=%d\n", r.DryRun, r.Target, r.FilesVerified, r.RecoveryStatus, r.CodeApply, r.Writes)
 	case "status":
 		fs := flag.NewFlagSet("handoff status", flag.ExitOnError)
 		dir := fs.String("dir", ".", "workspace directory")
