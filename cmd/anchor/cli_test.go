@@ -2157,3 +2157,79 @@ func TestCLIAttachKeepsHandoffInsideState(t *testing.T) {
 		t.Fatalf("export from attached workspace failed: %s %s", out, stderr)
 	}
 }
+
+// TestCLIAttachRefusesExistingWorkspace keeps a directory from silently hosting
+// two workspaces: attaching where a workspace already lives must fail closed.
+func TestCLIAttachRefusesExistingWorkspace(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	if _, stderr, code := runCLI(t, root, "init", "--dir", ws, "--workspace", "outer", "--device", "dev1"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "Outer")
+	if _, stderr, code := runCLI(t, root, "init", "--attach", "--dir", ws, "--workspace", "nested", "--device", "dev2"); code == 0 {
+		t.Fatal("attach inside an existing workspace was accepted")
+	} else if !strings.Contains(stderr, "already an Anchor workspace") {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".anchor")); !os.IsNotExist(err) {
+		t.Fatal("refused attach created a nested state directory")
+	}
+	out, _, code := runCLI(t, root, "status", "--dir", ws, "--json")
+	if code != 0 {
+		t.Fatalf("status failed: %s", out)
+	}
+	if !strings.Contains(out, `"goal1"`) {
+		t.Fatalf("outer workspace is no longer addressable: %s", out)
+	}
+}
+
+// TestCLIAttachDoesNotFollowGitignoreSymlink ensures attach never writes outside
+// the project tree through a symlinked .gitignore.
+func TestCLIAttachDoesNotFollowGitignoreSymlink(t *testing.T) {
+	project := initRepo(t)
+	outside := filepath.Join(t.TempDir(), "outside-ignore")
+	original := "node_modules/\n"
+	if err := os.WriteFile(outside, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(project, ".gitignore")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, stderr, code := runCLI(t, project, "init", "--attach", "--dir", project, "--workspace", "ws1", "--device", "dev1"); code != 0 {
+		t.Fatalf("attach failed: %s", stderr)
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Fatalf("attach wrote through the .gitignore symlink: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".anchor", "manifest.json")); err != nil {
+		t.Fatalf("attach state missing: %v", err)
+	}
+}
+
+// TestCLIDoctorUninitializedWorkspace covers the doctor failure path after the
+// state-directory resolution change.
+func TestCLIDoctorUninitializedWorkspace(t *testing.T) {
+	empty := t.TempDir()
+	out, stderr, code := runCLI(t, empty, "doctor", "--dir", empty, "--json")
+	if code != 1 {
+		t.Fatalf("doctor on an uninitialized workspace: code=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	var doc struct {
+		WorkspaceDir string `json:"workspace_dir"`
+		Checks       []struct {
+			Check  string `json:"check"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("doctor JSON invalid: %v: %s", err, out)
+	}
+	if doc.WorkspaceDir == "" || len(doc.Checks) == 0 || doc.Checks[0].Check != "manifest" || doc.Checks[0].Status != "fail" {
+		t.Fatalf("doctor failure report wrong: %s", out)
+	}
+}

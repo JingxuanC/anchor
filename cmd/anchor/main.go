@@ -124,7 +124,7 @@ func cmdInit(args []string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "anchor: warning: could not update the project .gitignore: %v\n", err)
 		} else if changed {
-			fmt.Println("ignored .anchor/ in the project .gitignore")
+			fmt.Println("ignored .anchor/ in the project .gitignore (commit it to keep the working tree clean)")
 		}
 		return
 	}
@@ -142,6 +142,15 @@ func ensureProjectIgnore(project string) (bool, error) {
 		return false, nil
 	}
 	path := filepath.Join(project, ".gitignore")
+	if info, err := os.Lstat(path); err == nil {
+		// Never write through a symlink or into something that is not a regular
+		// file: attach must not touch anything outside the project tree.
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return false, fmt.Errorf("refusing to modify %s: not a regular file", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return false, err

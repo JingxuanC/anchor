@@ -158,3 +158,53 @@ func canonicalPath(t *testing.T, path string) string {
 	}
 	return resolved
 }
+
+func TestInitAttachedRefusesExistingWorkspaceRoot(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := InitWorkspace(dir, "outer", "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := InitAttached(dir, "nested", "dev2"); err == nil {
+		t.Fatal("attach inside an existing workspace was accepted")
+	} else if !strings.Contains(err.Error(), "already an Anchor workspace") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".anchor")); !os.IsNotExist(err) {
+		t.Fatal("refused attach still created a nested state directory")
+	}
+}
+
+func TestStateDirPrefersWorkspaceRootOverNestedAnchor(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := InitWorkspace(dir, "outer", "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a hand-built nested workspace: the root workspace must win so a
+	// directory can never silently switch workspaces.
+	nested := filepath.Join(dir, ".anchor")
+	if err := os.MkdirAll(filepath.Join(nested, "events"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "manifest.json"), []byte(`{"workspace_id":"nested"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := StateDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != canonicalPath(t, dir) {
+		t.Fatalf("StateDir = %q, want the root workspace %q", got, canonicalPath(t, dir))
+	}
+	// A project that merely has an unrelated manifest.json but no events dir is
+	// still a project: attached state resolves normally.
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "manifest.json"), []byte(`{"name":"webapp"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := InitAttached(project, "ws2", "dev2"); err != nil {
+		t.Fatalf("attach to a project with an unrelated manifest.json failed: %v", err)
+	}
+	if got, err := StateDir(project); err != nil || got != filepath.Join(canonicalPath(t, project), ".anchor") {
+		t.Fatalf("StateDir(project) = %q, %v", got, err)
+	}
+}

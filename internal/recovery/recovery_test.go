@@ -2,10 +2,14 @@ package recovery
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/JingxuanC/anchor/internal/core"
 )
 
 func sealManifest(t *testing.T, m Manifest) []byte {
@@ -169,5 +173,123 @@ func TestImportLegacyPackageMirrorsBytesWithoutRebuilding(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, "manifest.json")); !os.IsNotExist(err) {
 		t.Fatal("legacy import fabricated a workspace manifest")
+	}
+}
+
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"}, {"config", "user.email", "t@example.invalid"}, {"config", "user.name", "T"},
+		{"commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	return repo
+}
+
+// TestImportFailureLeavesNoPartialTarget covers import atomicity: a package that
+// passes all hash checks but fails verification after writing must not leave a
+// half-built workspace behind (a retry would refuse a non-empty target).
+func TestImportFailureLeavesNoPartialTarget(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := core.InitWorkspace(dir, "ws1", "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	repo := initGitRepo(t)
+	pkg := filepath.Join(t.TempDir(), "pkg")
+	if _, _, err := Export(dir, repo, pkg, false); err != nil {
+		t.Fatal(err)
+	}
+	// Doctor the payload into a workspace this build cannot open, rebinding the
+	// hashes so the package still passes inspectPackage.
+	wp := filepath.Join(pkg, "payload", "workspace", "manifest.json")
+	raw, err := os.ReadFile(wp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w map[string]any
+	if err := json.Unmarshal(raw, &w); err != nil {
+		t.Fatal(err)
+	}
+	w["event_log_version"] = 99
+	nb, err := json.MarshalIndent(w, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nb = append(nb, '\n')
+	if err := os.WriteFile(wp, nb, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mb, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(mb, &m); err != nil {
+		t.Fatal(err)
+	}
+	for i := range m.Files {
+		if m.Files[i].Path == "payload/workspace/manifest.json" {
+			m.Files[i].SHA256 = hashBytes(nb)
+			m.Files[i].Size = int64(len(nb))
+		}
+	}
+	clone := m
+	clone.ContentHash = ""
+	body, err := json.Marshal(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ContentHash = hashBytes(body)
+	sealed, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "manifest.json"), append(sealed, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(t.TempDir(), "restored")
+	if _, err := Import(pkg, target, false); err == nil {
+		t.Fatal("doctored package was imported")
+	} else if !strings.Contains(err.Error(), "not openable") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("failed import left a partial target: %v", err)
+	}
+	// A failed import must not prevent a retry into the same target.
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("target should not exist after failure")
+	}
+}
+
+// TestExportRefusesWorkspaceAbovePackageLimits keeps export and import limits in
+// sync: export must not build a package that import will reject.
+func TestExportRefusesWorkspaceAbovePackageLimits(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := core.InitWorkspace(dir, "ws1", "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	events := filepath.Join(dir, "events")
+	for i := 0; i < MaxFiles; i++ {
+		name := filepath.Join(events, fmt.Sprintf("batch_%04d.json", i))
+		if err := os.WriteFile(name, []byte("[]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := initGitRepo(t)
+	out := filepath.Join(t.TempDir(), "pkg")
+	if _, _, err := Export(dir, repo, out, false); err == nil {
+		t.Fatal("export accepted a workspace above the package file limit")
+	} else if !strings.Contains(err.Error(), "package limit") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("failed export left a package directory behind")
 	}
 }

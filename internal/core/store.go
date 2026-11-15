@@ -38,10 +38,30 @@ type Store struct {
 // `anchor init --attach` stores state in <project>/.anchor; plain `anchor init`
 // uses the given directory itself. Resolution is read-only and prefers the
 // attached layout when <dir>/.anchor/manifest.json exists.
+// isWorkspaceRoot reports whether dir itself holds workspace state (a manifest
+// plus an event directory). A directory like that is always treated as a
+// workspace root, never as a project with attached state.
+func isWorkspaceRoot(dir string) bool {
+	info, err := os.Lstat(filepath.Join(dir, "manifest.json"))
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false
+	}
+	events, err := os.Lstat(filepath.Join(dir, "events"))
+	if err != nil || events.Mode()&os.ModeSymlink != 0 || !events.IsDir() {
+		return false
+	}
+	return true
+}
+
 func StateDir(dir string) (string, error) {
 	canonical, err := pathguard.ValidateExistingDir(dir)
 	if err != nil {
 		return "", err
+	}
+	// Precedence: a real workspace at the root always wins over a nested
+	// <dir>/.anchor, so a directory can never silently switch workspaces.
+	if isWorkspaceRoot(canonical) {
+		return canonical, nil
 	}
 	attached := filepath.Join(canonical, ".anchor")
 	info, err := os.Lstat(attached)
@@ -203,6 +223,9 @@ func InitAttached(projectDir, workspaceID, deviceID string) (*Store, string, err
 	project, err := pathguard.ValidateExistingDir(projectDir)
 	if err != nil {
 		return nil, "", err
+	}
+	if isWorkspaceRoot(project) {
+		return nil, "", fmt.Errorf("project %s is already an Anchor workspace; open it with --dir %s instead of attaching", project, project)
 	}
 	state := filepath.Join(project, ".anchor")
 	if info, err := os.Lstat(state); err == nil {

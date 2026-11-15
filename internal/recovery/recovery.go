@@ -329,6 +329,18 @@ func Export(dir, repo, out string, includeBytes bool) (Manifest, string, error) 
 	m.Warnings = append(m.Warnings, "git commit bytes are not included; the successor must check out the recorded commit and code apply stays disabled")
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	m.Files = files
+	// Import enforces these same limits; fail here instead of producing a package
+	// that cannot be imported.
+	var packageBytes int64
+	for _, f := range files {
+		packageBytes += f.Size
+	}
+	if len(files) > MaxFiles {
+		return Manifest{}, "", fmt.Errorf("workspace needs %d package files, above the %d-file package limit", len(files), MaxFiles)
+	}
+	if packageBytes > MaxTotalBytes {
+		return Manifest{}, "", fmt.Errorf("workspace needs %d bytes, above the %d-byte package limit", packageBytes, MaxTotalBytes)
+	}
 	if len(m.Warnings) == 0 {
 		m.Warnings = nil
 	}
@@ -564,37 +576,47 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 	if dryRun {
 		return r, nil
 	}
-	if _, err := os.Stat(canonical); os.IsNotExist(err) {
-		if err := os.MkdirAll(canonical, 0o700); err != nil {
-			return Report{}, err
-		}
+	// Build the import in a staging directory next to the target and rename it
+	// into place only after verification passes. A failed import therefore never
+	// leaves a half-built workspace that a retry would refuse to touch.
+	parent := filepath.Dir(canonical)
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		return Report{}, fmt.Errorf("import target parent directory does not exist")
 	}
+	staging, err := os.MkdirTemp(parent, ".anchor-import-*")
+	if err != nil {
+		return Report{}, err
+	}
+	defer os.RemoveAll(staging)
 
 	if !plan.hasWorkspace {
 		// Legacy package: mirror the verified payload bytes and report honestly
 		// that no workspace was rebuilt.
 		for path, data := range v.data {
-			if err := writeExclusive(filepath.Join(canonical, filepath.FromSlash(path)), data); err != nil {
+			if err := writeExclusive(filepath.Join(staging, filepath.FromSlash(path)), data); err != nil {
 				return Report{}, err
 			}
 			r.FilesWritten++
 		}
 		r.Writes = r.FilesWritten
-		return writeImportReport(canonical, r)
+		if _, err := writeImportReport(staging, r); err != nil {
+			return Report{}, err
+		}
+		return commitImport(staging, canonical, r)
 	}
 
-	if err := writeExclusive(filepath.Join(canonical, "manifest.json"), plan.workspaceManifest); err != nil {
+	if err := writeExclusive(filepath.Join(staging, "manifest.json"), plan.workspaceManifest); err != nil {
 		return Report{}, err
 	}
 	r.FilesWritten++
-	if err := os.MkdirAll(filepath.Join(canonical, "events"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(staging, "events"), 0o700); err != nil {
 		return Report{}, err
 	}
 	for name, data := range plan.events {
 		if err := safePackageBase(name); err != nil {
 			return Report{}, err
 		}
-		if err := writeExclusive(filepath.Join(canonical, "events", name), data); err != nil {
+		if err := writeExclusive(filepath.Join(staging, "events", name), data); err != nil {
 			return Report{}, err
 		}
 		r.FilesWritten++
@@ -603,7 +625,7 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 		if err := safePackageBase(sha); err != nil {
 			return Report{}, err
 		}
-		if err := writeExclusive(filepath.Join(canonical, "evidence", "blobs", sha), data); err != nil {
+		if err := writeExclusive(filepath.Join(staging, "evidence", "blobs", sha), data); err != nil {
 			return Report{}, err
 		}
 		r.FilesWritten++
@@ -615,21 +637,21 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 		// Imported code bytes are device-local staging, not canonical workspace
 		// state: keep them under local/ so they are never synced or mistaken for
 		// applied code.
-		if err := writeExclusive(filepath.Join(canonical, "local", "imported", filepath.FromSlash(rel)), data); err != nil {
+		if err := writeExclusive(filepath.Join(staging, "local", "imported", filepath.FromSlash(rel)), data); err != nil {
 			return Report{}, err
 		}
 		r.FilesWritten++
 	}
 
 	// Verify the rebuilt workspace instead of trusting the package labels.
-	wsID, _, _, err := workspaceIdentity(canonical)
+	wsID, _, _, err := workspaceIdentity(staging)
 	if err != nil {
 		return Report{}, fmt.Errorf("rebuilt workspace manifest unreadable: %w", err)
 	}
 	if v.manifest.WorkspaceID != "" && wsID != v.manifest.WorkspaceID {
 		return Report{}, fmt.Errorf("rebuilt workspace identity %q does not match the package workspace %q", wsID, v.manifest.WorkspaceID)
 	}
-	store, err := core.Open(canonical)
+	store, err := core.Open(staging)
 	if err != nil {
 		return Report{}, fmt.Errorf("rebuilt workspace is not openable: %w", err)
 	}
@@ -643,7 +665,7 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 	}
 	missingEvidence := 0
 	for _, ev := range replay.Tree.Evidence {
-		if err := core.VerifyEvidenceArtifact(canonical, ev); err != nil {
+		if err := core.VerifyEvidenceArtifact(staging, ev); err != nil {
 			missingEvidence++
 		}
 	}
@@ -673,7 +695,26 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 		r.RecoveryStatus = handoff.StatusIncomplete
 	}
 	r.Writes = r.FilesWritten
-	return writeImportReport(canonical, r)
+	if _, err := writeImportReport(staging, r); err != nil {
+		return Report{}, err
+	}
+	return commitImport(staging, canonical, r)
+}
+
+// commitImport moves a verified staging directory into the requested target.
+func commitImport(staging, canonical string, r Report) (Report, error) {
+	if err := os.Rename(staging, canonical); err != nil {
+		// The target may already exist as an empty directory.
+		if entries, rerr := os.ReadDir(canonical); rerr == nil && len(entries) == 0 {
+			if rerr := os.Remove(canonical); rerr == nil {
+				err = os.Rename(staging, canonical)
+			}
+		}
+		if err != nil {
+			return Report{}, err
+		}
+	}
+	return r, nil
 }
 
 func writeImportReport(canonical string, r Report) (Report, error) {
