@@ -20,10 +20,29 @@ type Store struct {
 }
 
 func Open(dir string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Join(dir, "events"), 0o700); err != nil {
+	eventsDir := filepath.Join(dir, "events")
+	if info, err := os.Lstat(eventsDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("events directory must not be a symlink")
+	}
+	if err := os.MkdirAll(eventsDir, 0o700); err != nil {
 		return nil, err
 	}
 	return &Store{Dir: dir}, nil
+}
+
+func validateEventID(id string) error {
+	if id == "" || id == "." || id == ".." || strings.HasPrefix(id, ".") || filepath.Base(id) != id {
+		return fmt.Errorf("invalid event_id %q", id)
+	}
+	if strings.ContainsAny(id, "/\\:\x00") {
+		return fmt.Errorf("invalid event_id %q", id)
+	}
+	for _, r := range id {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("invalid event_id %q", id)
+		}
+	}
+	return nil
 }
 
 func (s *Store) eventsDir() string { return filepath.Join(s.Dir, "events") }
@@ -82,6 +101,9 @@ func (s *Store) Append(e Event) (Event, bool, error) {
 	if e.EventID == "" {
 		e.EventID = newID("evt")
 	}
+	if err := validateEventID(e.EventID); err != nil {
+		return Event{}, false, err
+	}
 	if e.SchemaVersion == 0 {
 		e.SchemaVersion = SchemaVersion
 	}
@@ -113,8 +135,21 @@ func (s *Store) Append(e Event) (Event, bool, error) {
 		return Event{}, false, err
 	}
 	path := filepath.Join(s.eventsDir(), e.EventID+".json")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	tmpFile, err := os.CreateTemp(s.eventsDir(), ".event-*.tmp")
+	if err != nil {
+		return Event{}, false, err
+	}
+	tmp := tmpFile.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err := tmpFile.Write(b); err != nil {
+		_ = tmpFile.Close()
+		return Event{}, false, err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return Event{}, false, err
+	}
+	if err := tmpFile.Close(); err != nil {
 		return Event{}, false, err
 	}
 	if err := os.Rename(tmp, path); err != nil {

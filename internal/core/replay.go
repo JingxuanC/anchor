@@ -35,31 +35,38 @@ func Replay(events []Event) ReplayResult {
 	for _, e := range events {
 		byID[e.EventID] = e
 	}
-	// ancestor cache
+	// Ancestor lookup is iterative: a malformed causal cycle must never recurse
+	// to a stack overflow. Cycle nodes are isolated below.
 	ancCache := map[string]map[string]bool{}
-	var ancestors func(id string) map[string]bool
-	ancestors = func(id string) map[string]bool {
+	ancestorSet := func(id string) map[string]bool {
 		if a, ok := ancCache[id]; ok {
 			return a
 		}
 		out := map[string]bool{}
-		e, ok := byID[id]
-		if !ok {
-			return out
-		}
-		for _, p := range e.CausalParents {
-			if _, exists := byID[p]; !exists {
+		seen := map[string]bool{id: true}
+		stack := []string{id}
+		for len(stack) > 0 {
+			cur := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			e, ok := byID[cur]
+			if !ok {
 				continue
 			}
-			out[p] = true
-			for a := range ancestors(p) {
-				out[a] = true
+			for _, parent := range e.CausalParents {
+				if _, exists := byID[parent]; !exists {
+					continue
+				}
+				out[parent] = true
+				if !seen[parent] {
+					seen[parent] = true
+					stack = append(stack, parent)
+				}
 			}
 		}
 		ancCache[id] = out
 		return out
 	}
-	isAncestor := func(a, b string) bool { return ancestors(b)[a] }
+	isAncestor := func(a, b string) bool { return a != b && ancestorSet(b)[a] }
 
 	// Events with missing causal parents are staged; descendants are also
 	// unprocessable until the parent arrives.
@@ -75,6 +82,47 @@ func Replay(events []Event) ReplayResult {
 	// causally ordered isolate both; no first-event-wins.
 	conflictReason := map[string]string{}
 	conflictOther := map[string]string{}
+	// Kahn pass over events whose parents exist: anything left is in (or behind)
+	// a causal cycle and is isolated; missing-parent events stay pending instead.
+	cycleNodes := map[string]bool{}
+	{
+		indeg := map[string]int{}
+		children := map[string][]string{}
+		for _, e := range events {
+			if missing[e.EventID] {
+				continue
+			}
+			for _, p := range e.CausalParents {
+				if _, ok := byID[p]; ok {
+					indeg[e.EventID]++
+					children[p] = append(children[p], e.EventID)
+				}
+			}
+		}
+		q := []string{}
+		for _, e := range events {
+			if !missing[e.EventID] && indeg[e.EventID] == 0 {
+				q = append(q, e.EventID)
+			}
+		}
+		seen := map[string]bool{}
+		for len(q) > 0 {
+			id := q[0]
+			q = q[1:]
+			seen[id] = true
+			for _, c := range children[id] {
+				indeg[c]--
+				if indeg[c] == 0 {
+					q = append(q, c)
+				}
+			}
+		}
+		for _, e := range events {
+			if !missing[e.EventID] && !seen[e.EventID] {
+				cycleNodes[e.EventID] = true
+			}
+		}
+	}
 	mutationsByNode := map[string][]Event{}
 	ownershipByNode := map[string][]Event{}
 	for _, e := range events {
@@ -86,6 +134,23 @@ func Replay(events []Event) ReplayResult {
 		if e.Type.IsOwnership() {
 			if id, err := e.OwnershipNodeID(); err == nil {
 				ownershipByNode[id] = append(ownershipByNode[id], e)
+			}
+		}
+	}
+	// Concurrent ownership changes on the same node are a conflict. Do not let
+	// a later event overwrite the owner merely because it descends from the
+	// same base claim.
+	for _, list := range ownershipByNode {
+		for i := 0; i < len(list); i++ {
+			for j := i + 1; j < len(list); j++ {
+				a, b := list[i], list[j]
+				if isAncestor(a.EventID, b.EventID) || isAncestor(b.EventID, a.EventID) {
+					continue
+				}
+				conflictReason[a.EventID] = "concurrent ownership changes isolated"
+				conflictOther[a.EventID] = b.EventID
+				conflictReason[b.EventID] = "concurrent ownership changes isolated"
+				conflictOther[b.EventID] = a.EventID
 			}
 		}
 	}
@@ -224,6 +289,14 @@ func Replay(events []Event) ReplayResult {
 			pending[e.EventID] = true
 		}
 	}
+	for id := range cycleNodes {
+		nid := ""
+		if e, ok := byID[id]; ok {
+			nid, _ = e.NodeID()
+		}
+		conflicts = append(conflicts, Conflict{EventID: id, NodeID: nid, Reason: "causal cycle isolated"})
+		delete(pending, id)
+	}
 	pendingIDs := sortedIDs(pending)
 	appliedIDs := make([]string, 0, len(applied))
 	for id := range applied {
@@ -244,18 +317,40 @@ func Replay(events []Event) ReplayResult {
 }
 
 func ownershipFor(all []Event, mutationID string, isAncestor func(a, b string) bool) (*Event, *Event) {
-	var latest *Event
+	var candidates []*Event
 	for i := range all {
 		o := &all[i]
 		if isAncestor(o.EventID, mutationID) {
-			if latest == nil || o.DeviceSeq > latest.DeviceSeq || (o.DeviceSeq == latest.DeviceSeq && o.EventID > latest.EventID) {
-				latest = o
-			}
+			candidates = append(candidates, o)
 		} else if !isAncestor(mutationID, o.EventID) {
 			return nil, o
 		}
 	}
-	return latest, nil
+	// The latest ownership is the causal maximal element among ancestors, not
+	// the one with the highest device_seq (device counters are per-device).
+	var maxima []*Event
+	for i := range candidates {
+		maximal := true
+		for j := range candidates {
+			if i == j {
+				continue
+			}
+			if isAncestor(candidates[i].EventID, candidates[j].EventID) {
+				maximal = false
+				break
+			}
+		}
+		if maximal {
+			maxima = append(maxima, candidates[i])
+		}
+	}
+	if len(maxima) == 1 {
+		return maxima[0], nil
+	}
+	if len(maxima) > 1 {
+		return nil, maxima[0]
+	} // concurrent maxima are a conflict
+	return nil, nil
 }
 
 func applyNonMutation(tree *Tree, e Event) error {
@@ -288,6 +383,9 @@ func applyNonMutation(tree *Tree, e Event) error {
 		if p.NodeID == "" {
 			return fmt.Errorf("node_id is required")
 		}
+		if t != NodeGoal && p.ParentID == "" {
+			return fmt.Errorf("non-goal node %s requires a parent", p.NodeID)
+		}
 		if _, exists := tree.Nodes[p.NodeID]; exists {
 			return fmt.Errorf("node %s already exists", p.NodeID)
 		}
@@ -307,6 +405,9 @@ func applyMutation(tree *Tree, e Event, nodeID string) error {
 	n, ok := tree.Nodes[nodeID]
 	if !ok {
 		return fmt.Errorf("node %s not found", nodeID)
+	}
+	if n.Deleted {
+		return fmt.Errorf("node %s is tombstoned and cannot be mutated", nodeID)
 	}
 	if e.BaseRevision != n.Revision {
 		return fmt.Errorf("revision conflict: event base %d, node revision %d", e.BaseRevision, n.Revision)

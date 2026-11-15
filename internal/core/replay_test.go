@@ -40,8 +40,10 @@ func status(node string, to Status, base int, lease string, token uint64, parent
 }
 
 func seed(t *testing.T, s *Store) (claim Event, created Event) {
-	claim = mustAppend(t, s, own("n1", "l1", "agent", 1))
-	created = mustAppend(t, s, nodeCreate("n1", "task", "task", "", "l1", 1, claim.EventID))
+	goalClaim := mustAppend(t, s, own("g1", "lg", "agent", 1))
+	goalCreated := mustAppend(t, s, nodeCreate("g1", "goal", "goal", "", "lg", 1, goalClaim.EventID))
+	claim = mustAppend(t, s, own("n1", "l1", "agent", 1, goalCreated.EventID))
+	created = mustAppend(t, s, nodeCreate("n1", "task", "task", "g1", "l1", 1, claim.EventID))
 	return
 }
 
