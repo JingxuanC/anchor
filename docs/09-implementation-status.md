@@ -584,7 +584,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `internal/recovery` | 51.9% | 86.4% | Export/import branches, staging atomicity, limits, legacy packages covered. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 335 top-level test functions / ~950 run entries, ~15,700 test lines.
+Test suite: 334 top-level test functions / 915 run entries, ~15,700 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
