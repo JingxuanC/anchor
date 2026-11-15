@@ -189,7 +189,9 @@ implemented tests.
 | Projection sync default / O-013 | REQ-WS-002, REQ-SY-001 | `IT-PROJ-001` | `TREE.md`/`state.json` are local-only by default, not synced/committed; events/config/manifests are the synced set. O-013 no longer contradictory. |
 | Traceability covers new IDs | All new REQ-SEC/CONC/CFG/SY/RST/AD/CM/ST IDs | `CI-TRACE-001` | Traceability table + matrix cover every new ID; no dangling reference. |
 | CI mock vs real product validation | REQ-AD-001..013, REQ-OPS-004 | `CI-REAL-GATE-001`, `E2E-AD-REAL` | CI mocks never substitute for real adapter validation; release gate requires real adapter/final e2e or an explicit approved limitation. |
-| 07 repository status current | DEL-008 / repo bootstrap | `DOC-07-001` | 07 says repository/README init succeeded and verified; no stale “repo not created” instruction; push/PR still blocked. |
+| 07 repository status current | DEL-008 / repo bootstrap | `DOC-07-001` | 07 says repository/README init succeeded and verified; no stale “repo not created” instruction; push/PR permission recorded accurately. |
+| State-repo default, no auto-create | REQ-SY-001..012, O-001 | `IT-SY-DEFAULT-001` | Default config is a dedicated private state repo; no remote is created/uploaded automatically; another topology remains configurable. |
+| Byte upload off by default | REQ-SY-012, REQ-RST-007..011, O-014 | `IT-BYTE-DEFAULT-001..002` | Automatic artifact byte upload is off; explicit config authorizes it; missing bytes → `incomplete`; complete cross-device handoff works when bytes are available. |
 
 ## 5. Coverage enforcement
 

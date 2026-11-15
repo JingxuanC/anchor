@@ -11,7 +11,7 @@ default-branch write. No product code or product test was written or executed.
 |---|---|---|---|
 | P0-1 | Same-revision offline events, deterministic replay, conflict isolation and fencing-token conflicts were undefined; ULID ordering was treated as authority. | Added causal DAG replay (`device_seq`, `causal_parents`, `base_revision`, `event_hash`), deterministic topological order with event-ID tie-break, explicit same-revision sibling conflicts, and fencing rules where concurrent takeovers are conflicts, not highest-token wins. ULID is identity only. | `docs/01-architecture.md` §6; `docs/02-data-model.md` §3, §5; `docs/05-acceptance-mapping.md` §4.1 |
 | P0-2 | Mutable authorities (`manifest`, config, vault refs, sessions, handoff) had no merge strategy; event union is insufficient. | Declared canonical event sources and a merge/conflict matrix for each authority. Config uses key-level three-way merge; vault refs merge by name/provider/key; handoff/evidence are immutable; projections are regenerated. | `docs/01-architecture.md` §6.5; `docs/02-data-model.md` §5.4 |
-| P0-3 | Sync topology and artifact byte transport remain open; a manifest without bytes must not count as complete. | Kept O-001/O-004/O-007/O-014 open. Added `recovery_status` and `artifact_availability` (`bytes_present|metadata_only|missing`); missing bytes → `incomplete`. Presented options/tradeoffs; did **not** select an independent state repo. | `docs/02-data-model.md` §7, §14; `docs/00-requirements-baseline.md` O-014; `docs/06-decisions-and-open-questions.md` P-005 |
+| P0-3 | Sync topology and artifact byte transport; a manifest without bytes must not count as complete. | User skipped O-001/O-014. Adopted reversible conservative defaults: dedicated private state repo (configurable, never auto-created) and automatic byte upload off unless explicitly configured. Missing bytes → `incomplete`; complete cross-device handoff remains supported when bytes are present. | `docs/02-data-model.md` §7, §14; `docs/00-requirements-baseline.md` O-001/O-014; `docs/06` P-005 |
 | P0-4 | “Verify before write” conflicted with hook fail-open; adapters vary in blocking ability. | Split capture (fail-open, logged gap) from mutation policy (fail-closed only where the adapter can block; otherwise `advisory`/`unavailable`). Added capability descriptors and enforcement states. | `docs/01-architecture.md` §4.3, §7; `docs/03-adapter-matrix.md` §1.2; `docs/04-security-model.md` §2; `docs/05-acceptance-mapping.md` §4.1 |
 | P0-5 | SessionEnd could require large bundle/sync work and a timeout could be marked complete. | SessionEnd now writes only a lightweight local marker/checkpoint. Handoff preparation is explicit/observable with `pending|running|complete|failed|timed_out`; timeout never completes. | `docs/01-architecture.md` §5.0; `docs/02-data-model.md` §7; `docs/03-adapter-matrix.md`; `docs/05-acceptance-mapping.md` §4.1 |
 | P0-6 | Secret scanning covered commit/push only, not artifact generation/export/sync, bundle history or untracked files. | Added scanning points and a fail/abort policy for capture, handoff bundles/patches, untracked manifests, export, sync, restore/import; bundle reachable history must be scanned. Added fake-secret non-leak tests. | `docs/04-security-model.md` §4.1, §13; `docs/05-acceptance-mapping.md` §4.1 |
@@ -36,8 +36,8 @@ These are **options with recommendations**, not decisions made here:
 
 | ID | Decision | Options | Recommendation / tradeoff |
 |---|---|---|---|
-| D-SYNC | Workspace sync topology | (a) `.anchor/` in project repo; (b) dedicated state Git repo; (c) orphan branch in project repo | Recommend (b) for privacy and fewer code-repo conflicts; (a) is simplest onboarding but mixes agent state with code history; (c) keeps one remote but complicates worktrees. **Not selected.** |
-| D-BYTES | Uncommitted-code artifact bytes | (a) Git bundle committed in state repo; (b) Git LFS/external artifact store; (c) metadata-only with manual transfer | Recommend (a) for small repos + (b) for large/binary; metadata-only is explicitly incomplete for restore. **Not selected.** |
+| D-SYNC | Workspace sync topology | (a) `.anchor/` in project repo; (b) dedicated state Git repo; (c) orphan branch in project repo | User skipped. Adopted conservative default (b), configurable; Anchor never auto-creates the remote. |
+| D-BYTES | Uncommitted-code artifact bytes | (a) Git bundle in state repo; (b) Git LFS/external artifact store; (c) metadata-only with manual transfer | User skipped. Adopted conservative default: automatic upload off; explicit config only. Missing bytes = `incomplete`; complete handoff works when bytes exist. |
 | D-STACK | Core stack | Go core + TS web (P-001) vs Rust core + TS web vs TS-only | Recommend Go + TS for hook startup, cross-compilation and official MCP Go SDK; Rust remains viable behind the same interfaces. **Not user-approved.** |
 | D-WIN | Windows acceptance | Full release-blocking vs optional | Architect review says full acceptance is required; UI/platform scope still needs user confirmation of architecture matrix. |
 | D-CM | causal-memory test policy | Mock-only vs opt-in live test with dedicated token | Recommend mock in CI + opt-in live test with a revocable test token; no real user key. |
@@ -60,8 +60,10 @@ These are design revisions only; no product code or product test was added.
 
 Per the architect, Go core + TS Web, loopback-only web UI, and structured handoff
 + evidence pointers are adopted as **reversible design defaults**, not user
-approval for remote operations. D-SYNC topology and D-BYTES (whether artifact
-bytes leave the machine) remain open/configurable pending the user's answer.
+approval for remote operations. User skipped D-SYNC/D-BYTES; the design uses
+configurable conservative defaults (dedicated private state repo, never
+auto-created; automatic byte upload off unless explicitly configured). These
+defaults do not authorize creating a remote repository or uploading bytes.
 
 ## 5. Verification performed this round
 

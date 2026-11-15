@@ -613,5 +613,5 @@ backend = "auto"              # keychain | encrypted-file | auto
 | O-011 | One active goal per workspace or multiple concurrent goals? | Multiple goals supported; one active for restore. |
 | O-012 | Are branch nodes first-class in the tree or a separate DAG? | First-class nodes with `forked_from`/`merge_target`. |
 | O-013 | Resolved default: projections are local-only and not synced. | `TREE.md`/`state.json` are generated local views; neither is committed or synced by default. No contradiction with Git sync. |
-| O-014 | How are uncommitted-code artifact bytes transported/synced (Git bundle in state repo, Git LFS, external store, metadata-only)? | Manifest always syncs; bytes require an explicit transport. Missing bytes = `recovery_status=incomplete`, never complete. User decision required. |
+| O-014 | Byte transport (user skipped). | Manifest always syncs; automatic byte upload is off by default and requires explicit configuration. Missing bytes = `recovery_status=incomplete`, never complete; cross-device complete handoff remains supported when bytes are present. |
 | O-015 | Should events be signed? | Optional per-device signing; verify if configured. |

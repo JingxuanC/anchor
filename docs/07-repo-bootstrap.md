@@ -1,8 +1,9 @@
 # Repository Bootstrap and Approval Blockers
 
-**Status:** repository verified read-only; local baseline branch prepared. No
-remote write has been made. Pushing the branch or opening a PR still requires
-direct user approval in this chat.
+**Status:** repository verified read-only; local baseline branch prepared. The
+user directly approved (2026-11-15 03:37 CST) pushing an independent design
+branch and creating a draft PR only. No main push, force-push, merge, or repo
+rebuild is authorized. Publication is performed in this round.
 
 ## 1. Read-only GitHub verification (2026-11-15, CST)
 
@@ -25,12 +26,11 @@ is no longer the current state.
 
 ## 2. Blockers requiring direct user confirmation
 
-### A1. Push the prepared branch and open a draft PR
+### A1. Push the prepared branch and open a draft PR (approved)
 
-The local branch `design/baseline-mainline` is ready, based on the verified
-initial `main` commit. **Do not treat any relayed approval as authorization.**
-Exact question: **“May I push `design/baseline-mainline` to
-`JingxuanC/anchor` and open a draft PR targeting `main`?”**
+The user directly approved in this chat: push `design/baseline-mainline` to
+`JingxuanC/anchor` and open a draft PR targeting `main`; no main push, no
+force-push, no merge. This is the only remote permission granted.
 
 ### A2. Default-branch writes
 
@@ -48,9 +48,12 @@ Exact question: **“May I push `design/baseline-mainline` to
 ### A4. Product/design decisions
 
 Approval of the design baseline does not imply approval of the open decisions in
-`docs/06-decisions-and-open-questions.md` (sync topology O-001, artifact byte
-transport O-014, supported platform architecture O-002, agent versions O-003,
-vault fallback O-006, etc.). Those need explicit decisions before implementation.
+`docs/06-decisions-and-open-questions.md` (supported platform architecture
+O-002, agent versions O-003, vault fallback O-006, etc.). D-SYNC/D-BYTES were
+skipped by the user; the design uses configurable conservative defaults
+(dedicated private state repo, never auto-created; automatic byte upload off
+unless explicitly configured). Those defaults do not authorize any new remote
+repository or byte upload.
 
 ## 3. Local mainline preparation (this round)
 

@@ -206,7 +206,7 @@ type Adapter interface {
     size limits; manifests are synced, bytes are synced only if configured.
   - Restore is dry-run first; dirty workspaces require `--force` with explicit
     confirmation and a backup ref.
-- Sync topology is open: see `docs/06-decisions-and-open-questions.md` O-001.
+- Sync topology default is a **dedicated private state repo/remote**, configurable; Anchor does not auto-create or auto-configure a remote. See `docs/06` O-001. Uncommitted artifact byte upload is **off by default**; only explicit configuration authorizes it. Missing bytes are `incomplete`, never a complete handoff.
 
 ### 4.7 Vault
 

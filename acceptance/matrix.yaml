@@ -1059,3 +1059,11 @@ review_checks:
     item: "CI mocks do not replace real adapter validation/final e2e; repository status doc current."
     tests: ["CI-REAL-GATE-001", "E2E-AD-REAL", "DOC-07-001"]
     status: "planned"
+  - id: "RV2-006"
+    item: "Conservative configurable sync default: dedicated private state repo; no auto-create/upload."
+    tests: ["IT-SY-DEFAULT-001"]
+    status: "planned"
+  - id: "RV2-007"
+    item: "Automatic artifact byte upload off by default; explicit config only; missing bytes incomplete but complete cross-device handoff supported when bytes exist."
+    tests: ["IT-BYTE-DEFAULT-001", "IT-BYTE-DEFAULT-002"]
+    status: "planned"

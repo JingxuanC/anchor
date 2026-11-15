@@ -191,7 +191,7 @@ Every requirement below is in the **full release scope**. The phase column in
 | REQ-SY-006 | Sync is opt-in; credentials use Git credential helpers; secrets never enter remotes/logs. | `[I]` |
 | REQ-SY-007 | Offline changes queue and sync later with retry and visible status. | `[I]` |
 | REQ-SY-008 | Device identity and last-sync state are tracked; clock skew is tolerated. | `[I]` |
-| REQ-SY-009 | Sync topology (project repo vs dedicated state repo) is an open decision, not silently chosen. | `[?]` |
+| REQ-SY-009 | Sync topology has a configurable conservative default: a dedicated private state repo/remote. Anchor does not auto-create or auto-configure it; users can choose another topology. | `[I]` |
 | REQ-SY-010 | Active ownership leases are not merged; stale-owner takeover is fenced and audited. | `[U-R]` |
 | REQ-SY-011 | Remote integrity is verifiable (checksums; signed commits optional). | `[I]` |
 
@@ -313,7 +313,7 @@ Every requirement below is in the **full release scope**. The phase column in
 
 | ID | Question | Why it matters | Default proposal |
 |---|---|---|---|
-| O-001 | Should `.anchor/` sync in the project Git repo, or in a dedicated state Git repo/orphan branch? | Affects privacy, merge conflicts, uncommitted-code artifacts and onboarding. | Separate state repo recommended; requires user confirmation. |
+| O-001 | Sync topology (user skipped this question). | Affects privacy and onboarding. | Adopted reversible design default: dedicated private state repo, configurable; no automatic remote creation. Not a user approval for any remote repository. |
 | O-002 | Which architectures are release-blocking on macOS/Linux/Windows? | Packaging and keychain test matrix. | All three OSes are release-blocking full acceptance; architecture set still needs user confirmation. Windows e2e is required, not optional. |
 | O-003 | Which exact agent CLI versions are supported? | Hook/config formats change. | Runtime capability detection + latest stable at release; minimum versions from adapter spike. |
 | O-004 | Does the user want workspace state committed to the project repo at all? | Some users will not want agent state in code history. | Store in `.anchor/` ignored by project Git; dedicated sync repo. |
@@ -323,7 +323,7 @@ Every requirement below is in the **full release scope**. The phase column in
 | O-008 | How much of the full transcript should restore inject? | Token limits vs recovery completeness. | Pointers + structured summaries by default; full excerpts on explicit `--full`. |
 | O-009 | Is local web UI single-user only, or does it need LAN access? | Security model. | Loopback-only default; LAN requires explicit opt-in and auth. |
 | O-010 | What is the Roost integration contract in concrete terms? | Avoid speculative implementation. | Interface stub + docs only; no live calls. |
-| O-014 | How are uncommitted-code artifact bytes transported/synced (Git bundle in state repo, Git LFS, external store, or metadata-only)? | Restore cannot be complete without bytes; affects privacy and size. | Manifest always synced; bytes only via an explicit transport. Missing bytes are reported as incomplete. Decision required. |
+| O-014 | Byte transport for uncommitted-code artifacts (user skipped this question). | Restore cannot be complete without bytes; privacy/size tradeoff. | Adopted reversible default: automatic byte upload is off; explicit user/config authorization required. Missing bytes are always `incomplete`; cross-device complete handoff remains supported when bytes are available. |
 
 ## 8. Traceability to PRD pain points
 
