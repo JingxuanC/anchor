@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/JingxuanC/anchor/internal/core"
+	"github.com/JingxuanC/anchor/internal/handoff"
 )
 
 type manifest struct {
@@ -32,6 +33,14 @@ func main() {
 		cmdNode(os.Args[2:])
 	case "status", "replay":
 		cmdStatus(os.Args[2:])
+	case "doctor":
+		cmdDoctor(os.Args[2:])
+	case "ownership":
+		cmdOwnership(os.Args[2:])
+	case "note":
+		cmdNote(os.Args[2:])
+	case "handoff":
+		cmdHandoff(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -46,9 +55,15 @@ func usage() {
   anchor init --dir DIR --workspace ID --device ID
   anchor event append --dir DIR --file EVENT.json
   anchor node create --dir DIR --id ID --type goal|decision|task|branch|question|note --title T [--parent ID]
+  anchor node edit --dir DIR --id ID --title T
+  anchor node tombstone --dir DIR --id ID
   anchor node transition --dir DIR --id ID --to STATUS
-  anchor status --dir DIR [--json]
-  anchor replay --dir DIR [--json]`)
+  anchor note set --dir DIR --id ID --text TEXT
+  anchor ownership takeover --dir DIR --id ID --owner NAME
+  anchor handoff prepare --dir DIR --repo REPO
+  anchor handoff restore --dir DIR --repo REPO --packet PACKET.json
+  anchor status --dir DIR --repo REPO [--json]
+  anchor doctor --dir DIR --repo REPO [--json]`)
 }
 
 func die(err error) { fmt.Fprintln(os.Stderr, "anchor:", err); os.Exit(1) }
@@ -156,6 +171,10 @@ func cmdNode(args []string) {
 		nodeCreate(args[1:])
 	case "transition":
 		nodeTransition(args[1:])
+	case "edit":
+		nodeEdit(args[1:])
+	case "tombstone":
+		nodeTombstone(args[1:])
 	default:
 		usage()
 		os.Exit(2)
@@ -191,7 +210,7 @@ func nodeCreate(args []string) {
 	fencing := uint64(1)
 	op := core.OwnershipPayload{NodeID: *id, Owner: *owner, LeaseID: lease, FencingToken: fencing, ExpiresAt: time.Now().UTC().Add(time.Hour)}
 	pb, _ := json.Marshal(op)
-	claim, _ := appendEvent(*dir, core.Event{Type: core.EvOwnershipClaimed, CausalParents: []string{}, Payload: pb})
+	claim, _ := appendEvent(*dir, core.Event{Type: core.EvOwnershipClaimed, CausalParents: []string{}, LeaseID: lease, FencingToken: fencing, Payload: pb})
 	np := core.NodePayload{NodeID: *id, Type: string(nt), Title: *title, ParentID: *parent, Owner: *owner}
 	nb, _ := json.Marshal(np)
 	created, _ := appendEvent(*dir, core.Event{Type: core.EvNodeCreated, CausalParents: []string{claim.EventID}, LeaseID: lease, FencingToken: fencing, Payload: nb})
@@ -223,27 +242,40 @@ func nodeTransition(args []string) {
 	if lease == "" || n.LeaseEventID == "" {
 		die(fmt.Errorf("node %s has no ownership lease event", *id))
 	}
-	hp := core.OwnershipPayload{NodeID: *id, Owner: owner, LeaseID: lease, FencingToken: fencing, ExpiresAt: time.Now().UTC().Add(time.Hour)}
-	hb, _ := json.Marshal(hp)
-	heartbeat, _ := appendEvent(*dir, core.Event{Type: core.EvOwnershipHeartbeat, CausalParents: []string{n.LeaseEventID}, LeaseID: lease, FencingToken: fencing, Payload: hb})
+	_ = owner
 	sp := core.NodePayload{NodeID: *id, Status: string(status)}
 	sb, _ := json.Marshal(sp)
-	ev, _ := appendEvent(*dir, core.Event{Type: core.EvStatusChanged, CausalParents: []string{heartbeat.EventID}, BaseRevision: n.Revision, ExpectedRevision: n.Revision + 1, LeaseID: lease, FencingToken: fencing, Payload: sb})
+	ev, _ := appendEvent(*dir, core.Event{Type: core.EvStatusChanged, CausalParents: []string{n.LeaseEventID}, BaseRevision: n.Revision, ExpectedRevision: n.Revision + 1, LeaseID: lease, FencingToken: fencing, Payload: sb})
 	fmt.Printf("%s %s -> %s (%s)\n", *id, n.Status, status, ev.EventID)
 }
 
 func cmdStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	dir := fs.String("dir", ".", "workspace directory")
+	repo := fs.String("repo", ".", "git working tree for recovery evaluation")
 	asJSON := fs.Bool("json", false, "JSON output")
 	_ = fs.Parse(args)
 	r := replayDir(*dir)
+	var packet *handoff.Packet
+	if p, _, err := handoff.Latest(*dir); err == nil {
+		packet = &p
+	}
+	eval := handoff.Evaluate(*dir, *repo, packet)
 	if *asJSON {
-		b, _ := json.MarshalIndent(r, "", "  ")
+		out := map[string]any{
+			"projection_status": r.RecoveryStatus, "recovery_status": eval.Status,
+			"recovery_reasons": eval.Reasons, "handoff_id": eval.PacketID,
+			"tree": r.Tree, "applied": r.Applied, "pending": r.Pending, "conflicts": r.Conflicts,
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
 		return
 	}
-	fmt.Printf("recovery_status: %s\n", r.RecoveryStatus)
+	fmt.Printf("projection_status: %s\n", r.RecoveryStatus)
+	fmt.Printf("recovery_status: %s (a projection alone is not a complete recovery)\n", eval.Status)
+	for _, reason := range eval.Reasons {
+		fmt.Printf("  reason: %s\n", reason)
+	}
 	for _, n := range r.Tree.SortedNodes() {
 		fmt.Printf("%-24s %-9s %-12s owner=%s rev=%d\n", n.ID, n.Type, n.Status, n.Owner, n.Revision)
 	}
@@ -252,5 +284,182 @@ func cmdStatus(args []string) {
 	}
 	for _, p := range r.Pending {
 		fmt.Printf("pending %s (waiting for causal parent/ownership)\n", p)
+	}
+}
+
+func appendOwnedMutation(dir, id string, typ core.EventType, payload any) core.Event {
+	r := replayDir(dir)
+	n, ok := r.Tree.Nodes[id]
+	if !ok {
+		die(fmt.Errorf("node %s not found", id))
+	}
+	if n.LeaseID == "" || n.LeaseEventID == "" {
+		die(fmt.Errorf("node %s has no ownership lease event", id))
+	}
+	pb, _ := json.Marshal(payload)
+	ev, _ := appendEvent(dir, core.Event{Type: typ, CausalParents: []string{n.LeaseEventID}, BaseRevision: n.Revision, ExpectedRevision: n.Revision + 1, LeaseID: n.LeaseID, FencingToken: n.FencingToken, Payload: pb})
+	return ev
+}
+
+func nodeEdit(args []string) {
+	fs := flag.NewFlagSet("node edit", flag.ExitOnError)
+	dir := fs.String("dir", ".", "workspace directory")
+	id := fs.String("id", "", "node id")
+	title := fs.String("title", "", "new title")
+	_ = fs.Parse(args)
+	if *id == "" || *title == "" {
+		die(fmt.Errorf("--id and --title are required"))
+	}
+	ev := appendOwnedMutation(*dir, *id, core.EvNodeUpdated, core.NodePayload{NodeID: *id, Title: *title})
+	fmt.Printf("edited %s (%s)\n", *id, ev.EventID)
+}
+
+func nodeTombstone(args []string) {
+	fs := flag.NewFlagSet("node tombstone", flag.ExitOnError)
+	dir := fs.String("dir", ".", "workspace directory")
+	id := fs.String("id", "", "node id")
+	_ = fs.Parse(args)
+	if *id == "" {
+		die(fmt.Errorf("--id is required"))
+	}
+	ev := appendOwnedMutation(*dir, *id, core.EvNodeTombstoned, core.NodePayload{NodeID: *id})
+	fmt.Printf("tombstoned %s (%s)\n", *id, ev.EventID)
+}
+
+func cmdNote(args []string) {
+	if len(args) < 1 || args[0] != "set" {
+		usage()
+		os.Exit(2)
+	}
+	fs := flag.NewFlagSet("note set", flag.ExitOnError)
+	dir := fs.String("dir", ".", "workspace directory")
+	id := fs.String("id", "", "note id")
+	text := fs.String("text", "", "note text")
+	_ = fs.Parse(args[1:])
+	if *id == "" {
+		die(fmt.Errorf("--id is required"))
+	}
+	ev := appendOwnedMutation(*dir, *id, core.EvNoteUpdated, core.NodePayload{NodeID: *id, Note: *text})
+	fmt.Printf("note updated %s (%s)\n", *id, ev.EventID)
+}
+
+func cmdOwnership(args []string) {
+	if len(args) < 1 || args[0] != "takeover" {
+		usage()
+		os.Exit(2)
+	}
+	fs := flag.NewFlagSet("ownership takeover", flag.ExitOnError)
+	dir := fs.String("dir", ".", "workspace directory")
+	id := fs.String("id", "", "node id")
+	owner := fs.String("owner", "agent", "new owner")
+	_ = fs.Parse(args[1:])
+	if *id == "" {
+		die(fmt.Errorf("--id is required"))
+	}
+	r := replayDir(*dir)
+	n, ok := r.Tree.Nodes[*id]
+	if !ok {
+		die(fmt.Errorf("node %s not found", *id))
+	}
+	if n.LeaseEventID == "" {
+		die(fmt.Errorf("node %s has no ownership lease event", *id))
+	}
+	token := n.FencingToken + 1
+	lease := fmt.Sprintf("lease_%s_%d", *id, token)
+	hp := core.OwnershipPayload{NodeID: *id, Owner: *owner, LeaseID: lease, FencingToken: token, ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	hb, _ := json.Marshal(hp)
+	ev, _ := appendEvent(*dir, core.Event{Type: core.EvOwnershipTakenOver, CausalParents: []string{n.LeaseEventID}, LeaseID: lease, FencingToken: token, Payload: hb})
+	fmt.Printf("takeover %s owner=%s lease=%s token=%d (%s)\n", *id, *owner, lease, token, ev.EventID)
+}
+
+func cmdHandoff(args []string) {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "prepare":
+		fs := flag.NewFlagSet("handoff prepare", flag.ExitOnError)
+		dir := fs.String("dir", ".", "workspace directory")
+		repo := fs.String("repo", ".", "git working tree")
+		_ = fs.Parse(args[1:])
+		p, path, err := handoff.Prepare(*dir, *repo)
+		if err != nil {
+			die(err)
+		}
+		out := map[string]any{"handoff_id": p.HandoffID, "path": path, "recovery_status": p.RecoveryStatus, "artifact_availability": p.ArtifactAvailability, "warnings": p.Warnings, "content_hash": p.ContentHash}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+	case "restore":
+		fs := flag.NewFlagSet("handoff restore", flag.ExitOnError)
+		dir := fs.String("dir", ".", "workspace directory")
+		repo := fs.String("repo", ".", "git working tree")
+		packet := fs.String("packet", "", "handoff packet path")
+		_ = fs.Parse(args[1:])
+		if *packet == "" {
+			die(fmt.Errorf("--packet is required"))
+		}
+		p, err := handoff.Load(*packet)
+		if err != nil {
+			die(err)
+		}
+		eval := handoff.Evaluate(*dir, *repo, &p)
+		b, _ := json.MarshalIndent(map[string]any{"handoff_id": p.HandoffID, "recovery_status": eval.Status, "reasons": eval.Reasons, "apply": "disabled: restore never overwrites code or executes commands"}, "", "  ")
+		fmt.Println(string(b))
+		if eval.Status != handoff.StatusComplete {
+			os.Exit(1)
+		}
+	case "status":
+		fs := flag.NewFlagSet("handoff status", flag.ExitOnError)
+		dir := fs.String("dir", ".", "workspace directory")
+		repo := fs.String("repo", ".", "git working tree")
+		_ = fs.Parse(args[1:])
+		p, path, err := handoff.Latest(*dir)
+		if err != nil {
+			fmt.Printf("recovery_status: incomplete\n  reason: no prepared handoff\n")
+			return
+		}
+		eval := handoff.Evaluate(*dir, *repo, &p)
+		b, _ := json.MarshalIndent(map[string]any{"handoff_id": p.HandoffID, "path": path, "recovery_status": eval.Status, "reasons": eval.Reasons}, "", "  ")
+		fmt.Println(string(b))
+	default:
+		usage()
+		os.Exit(2)
+	}
+}
+
+func cmdDoctor(args []string) {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	dir := fs.String("dir", ".", "workspace directory")
+	repo := fs.String("repo", ".", "git working tree")
+	asJSON := fs.Bool("json", false, "JSON output")
+	_ = fs.Parse(args)
+	checks := []map[string]any{}
+	hardFail := false
+	checks = append(checks, map[string]any{"check": "manifest", "status": "ok"})
+	if _, err := os.Stat(filepath.Join(*dir, "manifest.json")); err != nil {
+		checks[len(checks)-1] = map[string]any{"check": "manifest", "status": "fail", "detail": err.Error()}
+		hardFail = true
+	}
+	r := replayDir(*dir)
+	checks = append(checks, map[string]any{"check": "events", "status": "ok", "applied": len(r.Applied), "pending": len(r.Pending), "conflicts": len(r.Conflicts)})
+	p, _, err := handoff.Latest(*dir)
+	eval := handoff.Evaluation{Status: handoff.StatusIncomplete, Reasons: []string{"no prepared handoff"}}
+	if err == nil {
+		eval = handoff.Evaluate(*dir, *repo, &p)
+	}
+	checks = append(checks, map[string]any{"check": "recovery", "status": eval.Status, "reasons": eval.Reasons, "handoff_id": eval.PacketID})
+	out := map[string]any{"checks": checks, "projection_status": r.RecoveryStatus, "recovery_status": eval.Status, "recovery_is_not_implied_by_projection": true}
+	if *asJSON {
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+	} else {
+		fmt.Printf("projection_status: %s\nrecovery_status: %s\n", r.RecoveryStatus, eval.Status)
+		for _, c := range checks {
+			fmt.Printf("%v\n", c)
+		}
+	}
+	if hardFail {
+		os.Exit(1)
 	}
 }
