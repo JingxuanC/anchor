@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/JingxuanC/anchor/internal/pathguard"
 )
 
 type RenderOutput struct {
@@ -90,21 +92,6 @@ func Render(id string) (RenderOutput, []RenderedFile, error) {
 	return out, files, nil
 }
 
-func isSharedConfigTarget(target string) (bool, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return false, err
-	}
-	target = filepath.Clean(target)
-	for _, rel := range []string{".claude", ".codex", ".gemini", filepath.Join(".config", "claude"), filepath.Join(".config", "codex"), filepath.Join(".config", "gemini")} {
-		shared := filepath.Clean(filepath.Join(home, rel))
-		if target == shared || strings.HasPrefix(target, shared+string(os.PathSeparator)) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 // Write renders into an explicit target directory. It refuses known shared
 // user-config directories and never overwrites an existing file.
 func Write(id, target string) (RenderOutput, []string, error) {
@@ -125,7 +112,10 @@ func Write(id, target string) (RenderOutput, []string, error) {
 	} else if parent, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
 		resolved = filepath.Join(parent, filepath.Base(abs))
 	}
-	if shared, err := isSharedConfigTarget(resolved); err != nil {
+	// pathguard canonicalizes both the target and $HOME before comparing, so a
+	// HOME reached through a symlink (e.g. /var -> /private/var on macOS) still
+	// matches. Do not re-implement this comparison locally.
+	if shared, err := pathguard.IsSharedAgentConfig(resolved); err != nil {
 		return RenderOutput{}, nil, err
 	} else if shared {
 		return RenderOutput{}, nil, fmt.Errorf("refusing to render into a shared user CLI config directory")

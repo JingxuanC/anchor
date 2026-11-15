@@ -107,6 +107,30 @@ func TestWriteRefusesSharedConfigAndOverwrite(t *testing.T) {
 	}
 }
 
+// HOME itself can be reached through a symlink (on macOS t.TempDir() is under
+// /var while EvalSymlinks reports /private/var). The shared-config guard must
+// canonicalize both sides, otherwise it silently accepts ~/.claude.
+func TestWriteRefusesSharedConfigThroughSymlinkedHome(t *testing.T) {
+	root := t.TempDir()
+	realHome := filepath.Join(root, "real-home")
+	if err := os.MkdirAll(realHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkHome := filepath.Join(root, "link-home")
+	if err := os.Symlink(realHome, linkHome); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("HOME", linkHome)
+	for _, rel := range []string{".claude", ".codex", ".gemini", filepath.Join(".config", "claude")} {
+		if _, _, err := Write("claude-code", filepath.Join(linkHome, rel)); err == nil {
+			t.Fatalf("write to shared %s through symlinked HOME accepted", rel)
+		}
+	}
+	if _, _, err := Write("claude-code", filepath.Join(realHome, "scratch")); err != nil {
+		t.Fatalf("safe target rejected: %v", err)
+	}
+}
+
 func TestCaptureSourceIdentityAndIdempotency(t *testing.T) {
 	base := `{"hook_event_name":"PostToolUse","session_id":"s","cwd":"/tmp/c","tool_name":"Bash","source_event_id":"%s","source_seq":7}`
 	a, err := Capture("claude-code", []byte(strings.Replace(base, "%s", "delivery-a", 1)))
