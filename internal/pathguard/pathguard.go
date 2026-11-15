@@ -73,17 +73,17 @@ func ValidateExistingDir(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if shared, err := IsSharedAgentConfig(canonical); err != nil {
+		return "", err
+	} else if shared {
+		return "", fmt.Errorf("refusing shared agent config directory")
+	}
 	info, err := os.Stat(canonical)
 	if err != nil {
 		return "", err
 	}
 	if !info.IsDir() {
 		return "", fmt.Errorf("workspace path is not a directory")
-	}
-	if shared, err := IsSharedAgentConfig(canonical); err != nil {
-		return "", err
-	} else if shared {
-		return "", fmt.Errorf("refusing shared agent config directory")
 	}
 	return canonical, nil
 }
