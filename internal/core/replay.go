@@ -277,7 +277,10 @@ func Replay(events []Event) ReplayResult {
 		if processed[id] {
 			for _, child := range children[id] {
 				indegree[child]--
-				if !pending[child] {
+				// A child may have several causal parents. It becomes ready only
+				// after every parent in this graph has been processed; otherwise
+				// event_id sorting could evaluate it before its explicit chain.
+				if !pending[child] && indegree[child] == 0 {
 					ready = append(ready, child)
 				}
 			}
@@ -423,6 +426,15 @@ func applyNonMutation(tree *Tree, e Event) error {
 	return fmt.Errorf("unsupported event type %s", e.Type)
 }
 
+func containsString(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func applyMutation(tree *Tree, e Event, nodeID string) error {
 	n, ok := tree.Nodes[nodeID]
 	if !ok {
@@ -431,10 +443,17 @@ func applyMutation(tree *Tree, e Event, nodeID string) error {
 	if n.Deleted {
 		return fmt.Errorf("node %s is tombstoned and cannot be mutated", nodeID)
 	}
+	// Mutations must explicitly name the latest node event as a causal parent.
+	// Sorting by event_id/device_seq is never enough for a trusted write.
+	if n.LastEventID != "" && !containsString(e.CausalParents, n.LastEventID) {
+		return fmt.Errorf("mutation must name latest node event %s as a causal parent", n.LastEventID)
+	}
 	if e.BaseRevision != n.Revision {
 		return fmt.Errorf("revision conflict: event base %d, node revision %d", e.BaseRevision, n.Revision)
 	}
-	if e.ExpectedRevision != 0 && e.ExpectedRevision != n.Revision+1 {
+	// expected_revision=0 is not a wildcard. Every mutation must state and match
+	// the exact next revision; otherwise an old writer can silently apply.
+	if e.ExpectedRevision != n.Revision+1 {
 		return fmt.Errorf("expected_revision conflict: event expects %d, next revision is %d", e.ExpectedRevision, n.Revision+1)
 	}
 	var p NodePayload

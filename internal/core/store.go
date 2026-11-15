@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,84 +106,4 @@ func newID(prefix string) string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("%s_%d_%s", prefix, time.Now().UnixNano(), hex.EncodeToString(b))
-}
-
-func (s *Store) Append(e Event) (Event, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	release, err := acquireWorkspaceLock(s.Dir)
-	if err != nil {
-		return Event{}, false, err
-	}
-	defer release()
-	report, err := s.LoadReport()
-	if err != nil {
-		return Event{}, false, err
-	}
-	events := report.Events
-	if e.IdempotencyKey != "" {
-		for _, existing := range events {
-			if existing.IdempotencyKey == e.IdempotencyKey {
-				return existing, false, nil
-			}
-		}
-	}
-	if e.EventID == "" {
-		e.EventID = newID("evt")
-	}
-	if err := validateEventID(e.EventID); err != nil {
-		return Event{}, false, err
-	}
-	if e.SchemaVersion == 0 {
-		e.SchemaVersion = SchemaVersion
-	}
-	if e.RecordedAt.IsZero() {
-		e.RecordedAt = time.Now().UTC()
-	}
-	var maxSeq uint64
-	for _, existing := range events {
-		if existing.DeviceID == e.DeviceID && existing.DeviceSeq > maxSeq {
-			maxSeq = existing.DeviceSeq
-		}
-	}
-	if e.DeviceSeq == 0 {
-		e.DeviceSeq = maxSeq + 1
-	}
-	if e.DeviceSeq != maxSeq+1 {
-		return Event{}, false, fmt.Errorf("device_seq must be %d for device %s", maxSeq+1, e.DeviceID)
-	}
-	for _, existing := range events {
-		if existing.EventID == e.EventID {
-			return Event{}, false, errors.New("duplicate event_id")
-		}
-	}
-	if err := e.Seal(); err != nil {
-		return Event{}, false, err
-	}
-	b, err := json.MarshalIndent(e, "", "  ")
-	if err != nil {
-		return Event{}, false, err
-	}
-	path := filepath.Join(s.eventsDir(), e.EventID+".json")
-	tmpFile, err := os.CreateTemp(s.eventsDir(), ".event-*.tmp")
-	if err != nil {
-		return Event{}, false, err
-	}
-	tmp := tmpFile.Name()
-	defer func() { _ = os.Remove(tmp) }()
-	if _, err := tmpFile.Write(b); err != nil {
-		_ = tmpFile.Close()
-		return Event{}, false, err
-	}
-	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
-		return Event{}, false, err
-	}
-	if err := tmpFile.Close(); err != nil {
-		return Event{}, false, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return Event{}, false, err
-	}
-	return e, true, nil
 }

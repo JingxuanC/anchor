@@ -92,7 +92,7 @@ func TestAppendHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := rawOwn("n1", "l1", "a", 1)
+	e := rawOwn("node_"+id, "lease_"+id, "a", 1)
 	e.EventID = id
 	if _, _, err := s.Append(e); err != nil {
 		t.Fatal(err)
@@ -135,5 +135,60 @@ func TestConcurrentAppenderAllocateUniqueSequence(t *testing.T) {
 			t.Fatalf("duplicate device_seq %d", e.DeviceSeq)
 		}
 		seqs[e.DeviceSeq] = true
+	}
+}
+
+func TestWorkspaceLockCrashHelper(t *testing.T) {
+	if os.Getenv("ANCHOR_LOCK_CRASH_HELPER") != "1" {
+		t.Skip("helper process only")
+	}
+	dir := os.Getenv("ANCHOR_LOCK_CRASH_DIR")
+	release, err := acquireWorkspaceLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = release // the parent kills this process without running cleanup
+	if err := os.WriteFile(filepath.Join(dir, "lock-ready"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Second)
+}
+
+func TestWorkspaceLockReleasedOnProcessCrash(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=TestWorkspaceLockCrashHelper")
+	cmd.Env = append(os.Environ(), "ANCHOR_LOCK_CRASH_HELPER=1", "ANCHOR_LOCK_CRASH_DIR="+dir)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(dir, "lock-ready")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+			t.Fatal("crash helper did not acquire the lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cmd.Process.Wait()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := rawOwn("n-after-crash", "l-after-crash", "a", 1)
+	e.EventID = "after-crash"
+	start := time.Now()
+	if _, _, err := s.Append(e); err != nil {
+		t.Fatalf("lock was not released by process crash: %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("post-crash append waited too long: %v", time.Since(start))
 	}
 }

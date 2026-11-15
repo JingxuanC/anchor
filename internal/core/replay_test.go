@@ -50,8 +50,8 @@ func seed(t *testing.T, s *Store) (claim Event, created Event) {
 func TestDeterministicReplayIndependentOfSliceOrder(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	claim, created := seed(t, s)
-	hb := mustAppend(t, s, ownType(EvOwnershipHeartbeat, "n1", "l1", "agent", 1))
-	mustAppend(t, s, status("n1", StatusInProgress, 1, "l1", 1, hb.EventID))
+	hb := mustAppend(t, s, ownType(EvOwnershipHeartbeat, "n1", "l1", "agent", 1, claim.EventID))
+	mustAppend(t, s, status("n1", StatusInProgress, 1, "l1", 1, created.EventID, hb.EventID))
 	events, err := s.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -71,33 +71,44 @@ func TestDeterministicReplayIndependentOfSliceOrder(t *testing.T) {
 
 func TestMissingParentStagesThenReplays(t *testing.T) {
 	s, _ := Open(t.TempDir())
-	claim, _ := seed(t, s)
-	mut := mustAppend(t, s, status("n1", StatusInProgress, 1, "l1", 1, "missing_ownership"))
-	r := Replay(eventsOrFail(t, s))
+	claim, created := seed(t, s)
+	mut := status("n1", StatusInProgress, 1, "l1", 1, created.EventID, "missing_ownership")
+	mut.EventID = "mut"
+	mut.DeviceID = "d1"
+	mut.DeviceSeq = 10
+	events := append(eventsOrFail(t, s), mut)
+	r := Replay(events)
 	if r.RecoveryStatus != "incomplete" || len(r.Pending) != 1 {
 		t.Fatalf("expected staged mutation, got %+v", r)
 	}
 	if r.Tree.Nodes["n1"].Status != StatusTodo {
 		t.Fatal("staged mutation must not apply")
 	}
-	// Parent arrives; the mutation now replays.
+	// Parent arrives; the mutation now replays from the explicit chain.
 	ownEvent := own("n1", "l1", "agent", 1, claim.EventID)
 	ownEvent.EventID = "missing_ownership"
-	mustAppend(t, s, ownEvent)
-	r = Replay(eventsOrFail(t, s))
+	ownEvent.DeviceID = "d1"
+	ownEvent.DeviceSeq = 11
+	events = append(events, ownEvent)
+	r = Replay(events)
 	if len(r.Pending) != 0 || r.Tree.Nodes["n1"].Status != StatusInProgress {
 		t.Fatalf("expected replay after parent arrival, got %+v", r)
 	}
-	_ = mut
 }
 
 func TestConcurrentOwnershipIsolatesWholeMutation(t *testing.T) {
 	s, _ := Open(t.TempDir())
-	claim, _ := seed(t, s)
-	mut := mustAppend(t, s, status("n1", StatusInProgress, 1, "l1", 1, claim.EventID))
-	// A second ownership event is concurrent with the mutation (neither is an ancestor).
-	mustAppend(t, s, ownType(EvOwnershipTakenOver, "n1", "l2", "other", 2))
-	r := Replay(eventsOrFail(t, s))
+	claim, created := seed(t, s)
+	events := eventsOrFail(t, s)
+	mut := status("n1", StatusInProgress, 1, "l1", 1, created.EventID)
+	mut.EventID = "mut"
+	mut.DeviceID = "d1"
+	mut.DeviceSeq = 10
+	to := ownType(EvOwnershipTakenOver, "n1", "l2", "other", 2, claim.EventID)
+	to.EventID = "takeover"
+	to.DeviceID = "d1"
+	to.DeviceSeq = 11
+	r := Replay(append(events, mut, to))
 	if len(r.Conflicts) == 0 {
 		t.Fatalf("expected conflict, got %+v", r)
 	}
@@ -117,10 +128,17 @@ func TestConcurrentOwnershipIsolatesWholeMutation(t *testing.T) {
 
 func TestSameRevisionConcurrentMutationsBothIsolate(t *testing.T) {
 	s, _ := Open(t.TempDir())
-	claim, _ := seed(t, s)
-	a := mustAppend(t, s, status("n1", StatusInProgress, 1, "l1", 1, claim.EventID))
-	b := mustAppend(t, s, status("n1", StatusBlocked, 1, "l1", 1, claim.EventID))
-	r := Replay(eventsOrFail(t, s))
+	_, created := seed(t, s)
+	events := eventsOrFail(t, s)
+	a := status("n1", StatusInProgress, 1, "l1", 1, created.EventID)
+	a.EventID = "mut-a"
+	a.DeviceID = "d1"
+	a.DeviceSeq = 10
+	b := status("n1", StatusBlocked, 1, "l1", 1, created.EventID)
+	b.EventID = "mut-b"
+	b.DeviceID = "d1"
+	b.DeviceSeq = 11
+	r := Replay(append(events, a, b))
 	seen := map[string]bool{}
 	for _, c := range r.Conflicts {
 		seen[c.EventID] = true

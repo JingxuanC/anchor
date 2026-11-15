@@ -95,7 +95,7 @@ func TestP0LatestOwnershipUsesCausalityNotDeviceSeq(t *testing.T) {
 	// A high device_seq ownership event on d1 is causally before the d2 takeover.
 	old := withID(rawOwn("n1", "l-old", "old", 2, "claim"), "old-claim", "d1", 10)
 	takeover := withID(rawOwn("n1", "l-new", "new", 3, "old-claim"), "takeover", "d2", 1)
-	mut := withID(rawStatus("n1", StatusInProgress, 1, "l-new", 3, "takeover"), "mut", "d2", 2)
+	mut := withID(rawStatus("n1", StatusInProgress, 1, "l-new", 3, "created", "takeover"), "mut", "d2", 2)
 	r := Replay([]Event{goalClaim, goalCreated, claim, created, old, takeover, mut})
 	if r.Tree.Nodes["n1"].Status != StatusInProgress {
 		t.Fatalf("mutation rejected due to device_seq ordering: %+v", r)
@@ -121,7 +121,7 @@ func TestP1TombstoneIsTerminal(t *testing.T) {
 	goalCreated := withID(rawCreated("g1", "goal", "", "lg", 1, "gclaim"), "gcreated", "d1", 2)
 	claim := withID(rawOwn("n1", "l1", "a", 1, "gcreated"), "claim", "d1", 3)
 	created := withID(rawCreated("n1", "task", "g1", "l1", 1, "claim"), "created", "d1", 4)
-	tomb := Event{EventID: "tomb", DeviceID: "d1", DeviceSeq: 5, Type: EvNodeTombstoned, CausalParents: []string{"claim"}, BaseRevision: 1, LeaseID: "l1", FencingToken: 1, Payload: json.RawMessage(`{"node_id":"n1"}`)}
+	tomb := Event{EventID: "tomb", DeviceID: "d1", DeviceSeq: 5, Type: EvNodeTombstoned, CausalParents: []string{"created"}, BaseRevision: 1, ExpectedRevision: 2, LeaseID: "l1", FencingToken: 1, Payload: json.RawMessage(`{"node_id":"n1"}`)}
 	after := withID(rawStatus("n1", StatusInProgress, 2, "l1", 1, "tomb"), "after", "d1", 6)
 	r := Replay([]Event{goalClaim, goalCreated, claim, created, tomb, after})
 	found := false
@@ -241,7 +241,7 @@ func TestExpectedRevisionMismatchIsConflict(t *testing.T) {
 	ge := withID(rawCreated("g1", "goal", "", "lg", 1, "gclaim"), "gcreated", "d1", 2)
 	c := withID(rawOwn("n1", "l1", "a", 1, "gcreated"), "claim", "d1", 3)
 	cr := withID(rawCreated("n1", "task", "g1", "l1", 1, "claim"), "created", "d1", 4)
-	m := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "claim"), "mut", "d1", 5)
+	m := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "created"), "mut", "d1", 5)
 	m.ExpectedRevision = 99
 	r := Replay([]Event{gc, ge, c, cr, m})
 	found := false
@@ -267,5 +267,59 @@ func TestExplicitMutationChainSurvivesReversedIDs(t *testing.T) {
 	r := Replay([]Event{gc, ge, c, created, m1, m2, ev})
 	if r.Tree.Nodes["n1"].Status != StatusDone || len(r.Conflicts) != 0 {
 		t.Fatalf("explicit chain failed with reversed IDs: %+v", r)
+	}
+}
+
+// Raw Append must not accept a mutation that omits the latest node event, nor a
+// zero expected_revision wildcard. Rejected input must not create a file.
+func TestRawAppendRejectsCausalBypassAndZeroExpectedRevision(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	goalClaim := mustAppend(t, s, withID(rawOwn("g1", "lg", "a", 1), "gclaim", "d1", 1))
+	goalCreated := mustAppend(t, s, withID(rawCreated("g1", "goal", "", "lg", 1, goalClaim.EventID), "gcreated", "d1", 2))
+	claim := mustAppend(t, s, withID(rawOwn("n1", "l1", "a", 1, goalCreated.EventID), "claim", "d1", 3))
+	mustAppend(t, s, withID(rawCreated("n1", "task", "g1", "l1", 1, claim.EventID), "created", "d1", 4))
+	before, err := s.LoadReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	noChain := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "claim"), "no-chain", "d1", 5)
+	if _, _, err := s.Append(noChain); err == nil {
+		t.Fatal("raw append accepted a mutation without the latest node event")
+	}
+	zeroExpected := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "created"), "zero-exp", "d1", 5)
+	zeroExpected.ExpectedRevision = 0
+	if _, _, err := s.Append(zeroExpected); err == nil {
+		t.Fatal("raw append accepted expected_revision=0")
+	}
+	after, err := s.LoadReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Events) != len(before.Events) || len(after.Quarantined) != 0 {
+		t.Fatalf("rejected append wrote an event: before=%d after=%d quarantined=%+v", len(before.Events), len(after.Events), after.Quarantined)
+	}
+	good := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "created"), "good", "d1", 5)
+	if _, _, err := s.Append(good); err != nil {
+		t.Fatalf("valid chained mutation rejected: %v", err)
+	}
+}
+
+// Multi-device causal chain with event IDs that sort in reverse order must
+// still apply through explicit parents, never through ID/device_seq ordering.
+func TestExplicitMutationChainAcrossDevicesReversedIDs(t *testing.T) {
+	gc := withID(rawOwn("g1", "lg", "a", 1), "gclaim", "d1", 1)
+	ge := withID(rawCreated("g1", "goal", "", "lg", 1, "gclaim"), "gcreated", "d1", 2)
+	c := withID(rawOwn("n1", "l1", "a", 1, "gcreated"), "claim", "d1", 3)
+	created := withID(rawCreated("n1", "task", "g1", "l1", 1, "claim"), "zz-created", "d1", 4)
+	m1 := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "zz-created"), "mm-mut", "d2", 1)
+	ev := Event{EventID: "0evidence", DeviceID: "d1", DeviceSeq: 5, Type: EvEvidenceAdded, CausalParents: []string{"zz-created"}, Payload: json.RawMessage(`{"evidence_id":"ev1","node_id":"n1","kind":"test","sha256":"` + strings.Repeat("a", 64) + `"}`)}
+	m2 := withID(rawStatus("n1", StatusDone, 2, "l1", 1, "mm-mut", "0evidence"), "aa-mut", "d2", 2)
+	m2.Payload = json.RawMessage(`{"node_id":"n1","status":"done","evidence_ids":["ev1"]}`)
+	r := Replay([]Event{gc, ge, c, created, m1, ev, m2})
+	if r.Tree.Nodes["n1"].Status != StatusDone || len(r.Conflicts) != 0 || len(r.Pending) != 0 {
+		t.Fatalf("multi-device reversed-ID chain failed: %+v", r)
 	}
 }
