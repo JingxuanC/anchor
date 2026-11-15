@@ -65,6 +65,7 @@ func TestCLIHelpListsEverySurface(t *testing.T) {
 		"anchor ownership takeover", "anchor handoff prepare", "anchor handoff restore",
 		"anchor handoff export", "anchor handoff import", "anchor handoff status",
 		"anchor adapter capabilities", "anchor adapter render", "anchor adapter capture", "anchor adapter ingest",
+		"anchor adapter detect", "anchor adapter install", "--capture-dir",
 		"anchor status", "anchor doctor",
 	}
 	for _, w := range want {
@@ -501,9 +502,9 @@ func TestCLIStatusDoctorJSONContract(t *testing.T) {
 	if err := json.Unmarshal([]byte(doctorOut), &doctor); err != nil {
 		t.Fatal(err)
 	}
-	if doctor.WorkspaceDir == "" || len(doctor.Checks) != 4 || doctor.Checks[0].Check != "manifest" ||
+	if doctor.WorkspaceDir == "" || len(doctor.Checks) != 5 || doctor.Checks[0].Check != "manifest" ||
 		doctor.Checks[1].Check != "events" || doctor.Checks[2].Check != "recovery" ||
-		doctor.Checks[3].Check != "handoff" || !doctor.RecoveryNotImplied {
+		doctor.Checks[3].Check != "handoff" || doctor.Checks[4].Check != "adapters" || !doctor.RecoveryNotImplied {
 		t.Fatalf("doctor JSON contract broken: %s", doctorOut)
 	}
 }
@@ -1477,5 +1478,189 @@ func TestCLIImportInheritsVerification(t *testing.T) {
 	}
 	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws2, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "inherited"); code != 0 {
 		t.Fatalf("imported workspace should be editable after inherited verification: %s", stderr)
+	}
+}
+
+// TestCLIAdapterDetectReportsRealVersions uses the real CLIs on PATH and pins the
+// honesty rules: a detected version never upgrades hook evidence.
+func TestCLIAdapterDetectReportsRealVersions(t *testing.T) {
+	root := t.TempDir()
+	out, stderr, code := runCLI(t, root, "adapter", "detect", "--json")
+	if code != 0 {
+		t.Fatalf("detect: %s%s", out, stderr)
+	}
+	var det struct {
+		Adapters []struct {
+			AdapterID        string `json:"adapter_id"`
+			Installed        bool   `json:"installed"`
+			Version          string `json:"version"`
+			NativeHookStatus string `json:"native_hook_status"`
+			EndToEndVerified bool   `json:"end_to_end_verified"`
+		} `json:"adapters"`
+	}
+	if err := json.Unmarshal([]byte(out), &det); err != nil {
+		t.Fatal(err)
+	}
+	if len(det.Adapters) != 3 {
+		t.Fatalf("expected three adapters, got %d", len(det.Adapters))
+	}
+	for _, a := range det.Adapters {
+		if a.NativeHookStatus != "unverified" || a.EndToEndVerified {
+			t.Fatalf("detection overclaimed hook evidence for %s: %+v", a.AdapterID, a)
+		}
+		if a.Installed && a.Version == "" {
+			t.Fatalf("installed adapter without a parsed version: %+v", a)
+		}
+	}
+}
+
+// TestCLIAdapterInstallContractE2E installs the hooks, executes the installed
+// hook command the way the agent would (stdin JSON), and uninstalls again. This
+// is contract evidence, not a real in-agent hook execution.
+func TestCLIAdapterInstallContractE2E(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+
+	// Plan by default: nothing written.
+	planOut, stderr, code := runCLI(t, root, "adapter", "install", "--adapter", "claude-code", "--dir", ws, "--repo", repo, "--json")
+	if code != 0 {
+		t.Fatalf("install plan: %s%s", planOut, stderr)
+	}
+	var plan struct {
+		Applied      bool     `json:"applied"`
+		SettingsPath string   `json:"settings_path"`
+		Operations   []string `json:"operations"`
+	}
+	if err := json.Unmarshal([]byte(planOut), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Applied || len(plan.Operations) == 0 {
+		t.Fatalf("dry run wrong: %s", planOut)
+	}
+	if _, err := os.Stat(plan.SettingsPath); !os.IsNotExist(err) {
+		t.Fatal("dry run wrote settings.json")
+	}
+
+	if out, stderr, code := runCLI(t, root, "adapter", "install", "--adapter", "claude-code", "--dir", ws, "--repo", repo, "--apply", "--json"); code != 0 {
+		t.Fatalf("install apply: %s%s", out, stderr)
+	}
+	settingsRaw, err := os.ReadFile(plan.SettingsPath)
+	if err != nil {
+		t.Fatalf("settings not written: %v", err)
+	}
+	var settings struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(settingsRaw, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Hooks["PostToolUse"]) == 0 || len(settings.Hooks["SessionEnd"]) == 0 {
+		t.Fatalf("managed hooks missing: %s", settingsRaw)
+	}
+	hookCommand := settings.Hooks["PostToolUse"][0].Hooks[0].Command
+
+	// Execute the installed command exactly like the agent would.
+	hookInput := `{"hook_event_name":"PostToolUse","session_id":"contract-session","cwd":"/tmp/project","tool_name":"Bash"}`
+	cmd := exec.Command("sh", "-c", hookCommand)
+	cmd.Stdin = strings.NewReader(hookInput)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("installed hook command failed: %v %s", err, out)
+	} else if len(strings.TrimSpace(string(out))) != 0 {
+		t.Fatalf("hook command must not write to stdout: %q", out)
+	}
+	captures, err := filepath.Glob(filepath.Join(ws, "local", "captures", "*.json"))
+	if err != nil || len(captures) != 1 {
+		t.Fatalf("hook capture missing: %v %v", captures, err)
+	}
+	if info, err := os.Stat(captures[0]); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("capture permissions wrong: %v %v", info, err)
+	}
+	var capture struct {
+		Adapter string `json:"adapter"`
+		Event   string `json:"event"`
+	}
+	if b, err := os.ReadFile(captures[0]); err != nil {
+		t.Fatal(err)
+	} else if err := json.Unmarshal(b, &capture); err != nil || capture.Adapter != "claude-code" || capture.Event != "PostToolUse" {
+		t.Fatalf("capture content wrong: %s", b)
+	}
+
+	// Idempotent re-install, then uninstall removes only what it added.
+	idemOut, _, code := runCLI(t, root, "adapter", "install", "--adapter", "claude-code", "--dir", ws, "--repo", repo, "--apply", "--json")
+	if code != 0 || !strings.Contains(idemOut, `"already_installed": true`) {
+		t.Fatalf("re-install was not idempotent: %s", idemOut)
+	}
+	unOut, stderr, code := runCLI(t, root, "adapter", "install", "--adapter", "claude-code", "--dir", ws, "--repo", repo, "--uninstall", "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("uninstall: %s%s", unOut, stderr)
+	}
+	var un struct {
+		Applied bool `json:"applied"`
+		Removed int  `json:"removed"`
+	}
+	if err := json.Unmarshal([]byte(unOut), &un); err != nil {
+		t.Fatal(err)
+	}
+	if !un.Applied || un.Removed != 2 {
+		t.Fatalf("uninstall wrong: %s", unOut)
+	}
+	remaining, err := os.ReadFile(plan.SettingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(remaining), "adapter capture") {
+		t.Fatalf("managed hooks left after uninstall: %s", remaining)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "adapters", "claude-code.json")); !os.IsNotExist(err) {
+		t.Fatal("install state was not removed")
+	}
+}
+
+// TestCLIAdapterInstallRequiresWorkspace keeps installation inside a workspace.
+func TestCLIAdapterInstallRequiresWorkspace(t *testing.T) {
+	root := t.TempDir()
+	if _, stderr, code := runCLI(t, root, "adapter", "install", "--adapter", "claude-code", "--dir", root); code != 1 {
+		t.Fatalf("install outside a workspace accepted: %s", stderr)
+	}
+}
+
+// TestCLIAdapterCaptureDirModes covers the hook-facing capture mode.
+func TestCLIAdapterCaptureDirModes(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	dir := filepath.Join(ws, "local", "captures")
+	hookJSON := `{"hook_event_name":"SessionEnd","session_id":"s-mode","cwd":"/tmp/x"}`
+	out, stderr, code := runCLIInput(t, root, hookJSON, "adapter", "capture", "--adapter", "claude-code", "--stdin", "--capture-dir", dir)
+	if code != 0 {
+		t.Fatalf("capture-dir mode: %s%s", out, stderr)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("capture-dir mode must stay silent for hooks: %q", out)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("capture file missing: %v %v", files, err)
+	}
+	// Mode flags are mutually exclusive.
+	if _, _, code := runCLIInput(t, root, hookJSON, "adapter", "capture", "--adapter", "claude-code", "--stdin", "--print", "--capture-dir", dir); code != 1 {
+		t.Fatal("capture accepted two output modes")
+	}
+	// Shared agent config paths stay refused.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runCLIInput(t, root, hookJSON, "adapter", "capture", "--adapter", "claude-code", "--stdin", "--capture-dir", filepath.Join(home, ".claude")); code != 1 {
+		t.Fatalf("capture into shared agent config accepted: %s", stderr)
 	}
 }

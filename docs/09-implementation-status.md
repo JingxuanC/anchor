@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 56 Go files / ~23,500 LOC, of which ~16,600 lines are tests
-(351 top-level test functions, 932 `=== RUN` entries).
+Current tree: 61 Go files / ~25,000 LOC, of which ~17,300 lines are tests
+(372 top-level test functions, 953 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -39,7 +39,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | ST | 5 | 5 | 3 | 0 | 13 |
 | CAP | 4 | 5 | 0 | 0 | 9 |
 | RST | 8 | 0 | 3 | 0 | 11 |
-| AD | 0 | 10 | 3 | 0 | 13 |
+| AD | 2 | 8 | 3 | 0 | 13 |
 | CM | 0 | 1 | 12 | 0 | 13 |
 | SY | 2 | 6 | 4 | 0 | 12 |
 | CFG | 0 | 0 | 8 | 0 | 8 |
@@ -51,7 +51,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | SEC | 0 | 4 | 3 | 0 | 7 |
 | NFR | 2 | 2 | 3 | 0 | 7 |
 | OPS | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **30** | **53** | **56** | **1** | **140** |
+| **Total** | **32** | **51** | **56** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -96,7 +96,16 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    code state exactly matches the packet can ack without `--force`; verification
    requires HEAD *and* the working tree to match. Restore itself never applies
    code: the plan states `code_apply: disabled`.
-9. **Code byte transport** — `handoff export --include-code` bundles the prepared
+9. **Adapter detection + Claude hook installation** — `adapter detect` probes the
+   real CLIs (`claude --version`, `codex --version`, …) with an argv-only,
+   timeout-bounded call and never upgrades hook evidence; `adapter install`
+   merges managed `PostToolUse`/`SessionEnd` capture hooks into Claude Code's
+   `settings.json` (project or explicit user scope) with a plan by default,
+   idempotent apply, backup, managed-state file and a drift-tolerant uninstall;
+   the installed command writes one metadata-only capture file per hook into the
+   workspace and prints nothing. Evidence remains contract-level: a real in-agent
+   run is impossible here because Claude Code is installed but not logged in.
+10. **Code byte transport** — `handoff export --include-code` bundles the prepared
    commit (verified with `git bundle list-heads`) and `handoff apply-code`
    restores it into a repository: fetch, backup ref, stash when forced, checkout,
    then applies the packaged staged/unstaged diffs and untracked bytes after
@@ -107,12 +116,12 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    an existing local branch is never reset, handoff ids and branch names are
    validated, and a failure rolls the worktree back to the pre-apply commit.
    Code is never applied unless `--apply` is explicit.
-10. **Restorable packages** — export always transports the workspace manifest and
+11. **Restorable packages** — export always transports the workspace manifest and
    event log; import rebuilds the workspace in a fresh empty target, replays it,
    verifies evidence blobs and reports an honest `complete`/`incomplete` status.
    Legacy artifact-only packages still import their bytes but are reported as not
    rebuilding a workspace.
-11. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
+12. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
 
@@ -185,12 +194,12 @@ authoritative.
 
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
-| AD-001 | partial | `internal/adapter/contract.go:27` | No CLI/version detection or probe; capability list hard-coded. |
+| AD-001 | implemented | `adapter.Detect`/`DetectAll`; `TestDetectRealClaudeWhenInstalled`, `TestCLIAdapterDetectReportsRealVersions` | Real, timeout-bounded `--version` detection; descriptors stay explicit and hook evidence stays `unverified`. |
 | AD-002 | partial | `render.go:38`; `TestRenderGolden` | Only a `PostToolUse` fragment: no MCP registration, CLAUDE.md/rules, install/uninstall. |
 | AD-003 | partial | `render.go:59`; `TestRenderGolden` | Fragment only: no AGENTS.md, MCP, install, trust handling. |
 | AD-004 | partial | `render.go:50`; `TestRenderGolden` | Fragment only: no GEMINI.md, extensions, MCP, install. |
 | AD-005 | partial | `cmd/anchor/adapter.go:124` | No `anchor wrap`; no restore path. |
-| AD-006 | partial | `render.go:97`; `TestWriteRefusesSharedConfigAndOverwrite` | No install/backup/managed merge; a second render errors instead of being idempotent. |
+| AD-006 | implemented (claude-code) | `adapter.Install`; `TestInstallPlanThenApplyThenUninstall`, `TestCLIAdapterInstallContractE2E` | Plan-first install, idempotent apply, backup, managed state, uninstall, drift tolerance. Codex/Gemini installs are not implemented. |
 | AD-007 | partial | `contract.go:13`, `render.go:35` | Descriptor has no version field; per-ID switch is a cross-agent assumption. |
 | AD-008 | partial | `contract.go:30`; `TestCLIAdapterDryRunCaptureAndNoSharedInstall` | Fixtures carry no `source`/retrieval-date field; no UI labels. |
 | AD-009 | partial | `render.go:31` (shell string, bare `anchor`) | No argv array, absolute exe, env allowlist, timeout, or process-group handling. |
@@ -424,12 +433,12 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 
 | Req | Status | Note |
 |---|---|---|
-| AD-001 | partial |  |
-| AD-002 | partial |  |
+| AD-001 | implemented | real CLI version detection |
+| AD-002 | partial | claude hooks install via merged settings; MCP/rules still missing |
 | AD-003 | partial |  |
 | AD-004 | partial |  |
 | AD-005 | partial |  |
-| AD-006 | partial |  |
+| AD-006 | implemented | claude-code hook install/uninstall (plan-first, backed up) |
 | AD-007 | partial |  |
 | AD-008 | partial |  |
 | AD-009 | partial |  |
@@ -591,12 +600,12 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 |---|---:|---:|---|
 | `internal/pathguard` | 0.0% | 91.7% | Uncovered lines are unreachable defensive branches (root loop, non-ENOENT ancestor error). |
 | `internal/core` | 69.4% | 92.9% | Remaining gaps are OS-error paths (rename/sync failures) and the test-only tx hook shim. |
-| `internal/adapter` | 75.8% | 93.2% | Remaining gaps are `json.Marshal`/`Write` error branches. |
-| `internal/handoff` | 78.1% | 95.3% | Goal ranking, packet blocks, stale/detached eval covered. |
+| `internal/adapter` | 75.8% | 82.6% | Remaining gaps are `json.Marshal`/`Write` error branches. |
+| `internal/handoff` | 78.1% | 93.3% | Goal ranking, packet blocks, stale/detached eval covered. |
 | `internal/recovery` | 51.9% | 85.4% | Export/import branches, staging atomicity, limits, legacy packages covered. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 351 top-level test functions / 932 run entries, ~16,600 test lines.
+Test suite: 372 top-level test functions / 953 run entries, ~17,300 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
@@ -614,6 +623,13 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   the explicit code step.
 - **Legacy artifact-only packages** (no workspace payload) still import their
   verified bytes but never report a rebuilt workspace.
+- **Adapter hooks stay contract evidence.** `adapter detect` runs the real CLIs,
+  but the installed Claude hook has only been exercised by feeding hook JSON to
+  the installed command (contract test), not inside a logged-in Claude Code
+  session, so the capability grade stays `D` and `end_to_end_verified` stays
+  false. Installation manages only Claude Code in this build, rewrites the
+  settings file (formatting changes, unknown keys preserved) and backs it up
+  first; the user scope requires an explicit `--scope user`.
 - **Secret scanning covers canonical state too.** Export scans event batches, so
   a note or title containing a credential-shaped string (for example
   `password=...`) blocks export. This is fail-closed on purpose (SEC-003) and the

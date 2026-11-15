@@ -278,3 +278,25 @@ func TestBuildPlanVerifyRequiresMatchingWorktree(t *testing.T) {
 		t.Fatalf("blocker should name the worktree drift: %+v", plan.VerifyBlockers)
 	}
 }
+
+func TestLatestPreparedAndCodeMatches(t *testing.T) {
+	dir, repo, p, path := preparePlanFixture(t)
+	got, gotPath, ok := LatestPrepared(dir)
+	if !ok || got.HandoffID != p.HandoffID || gotPath != path {
+		t.Fatalf("LatestPrepared = %+v, %q, %v", got, gotPath, ok)
+	}
+	if !CodeMatches(p, repo) {
+		t.Fatal("CodeMatches should accept the freshly prepared state")
+	}
+	// A changed worktree no longer matches.
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if CodeMatches(p, repo) {
+		t.Fatal("CodeMatches accepted a drifted worktree")
+	}
+	// An uninitialized workspace has no prepared packet.
+	if _, _, ok := LatestPrepared(t.TempDir()); ok {
+		t.Fatal("LatestPrepared reported a packet in an empty directory")
+	}
+}

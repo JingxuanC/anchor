@@ -8,8 +8,12 @@ import (
 	"os"
 	"strings"
 
+	"path/filepath"
+	"time"
+
 	"github.com/JingxuanC/anchor/internal/adapter"
 	"github.com/JingxuanC/anchor/internal/core"
+	"github.com/JingxuanC/anchor/internal/pathguard"
 )
 
 const maxCaptureInput = 1 << 20
@@ -28,6 +32,10 @@ func cmdAdapter(args []string) {
 		adapterCapture(args[1:])
 	case "ingest":
 		adapterIngest(args[1:])
+	case "detect":
+		adapterDetect(args[1:])
+	case "install":
+		adapterInstall(args[1:])
 	default:
 		adapterUsage()
 		os.Exit(2)
@@ -37,7 +45,10 @@ func cmdAdapter(args []string) {
 func adapterUsage() {
 	fmt.Fprintln(os.Stderr, `  anchor adapter capabilities [--json]
   anchor adapter render --adapter ID (--target DIR | --print)
-  anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print)
+  anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print | --capture-dir DIR)
+  anchor adapter detect [--json]
+  anchor adapter install --adapter claude-code --dir DIR [--repo PROJECT]
+      [--scope project|user] [--apply | --uninstall] [--anchor-path PATH] [--json]
   anchor adapter ingest --adapter ID --dir WS --node NODE (--event FILE | --stdin) [--source fixture|hook_unverified] [--json]`)
 }
 
@@ -254,6 +265,7 @@ func adapterCapture(args []string) {
 	stdin := fs.Bool("stdin", false, "read hook event JSON from stdin")
 	outFile := fs.String("out", "", "explicit output file")
 	printOut := fs.Bool("print", false, "print normalized capture")
+	captureDir := fs.String("capture-dir", "", "hook-friendly directory: write a timestamped capture file and print nothing")
 	_ = fs.Parse(args)
 	if *id == "" {
 		die(fmt.Errorf("--adapter is required"))
@@ -261,8 +273,14 @@ func adapterCapture(args []string) {
 	if (*eventFile == "") == !*stdin {
 		die(fmt.Errorf("exactly one of --event or --stdin is required"))
 	}
-	if (*outFile == "") == !*printOut {
-		die(fmt.Errorf("exactly one of --out or --print is required"))
+	modes := 0
+	for _, on := range []bool{*outFile != "", *printOut, *captureDir != ""} {
+		if on {
+			modes++
+		}
+	}
+	if modes != 1 {
+		die(fmt.Errorf("exactly one of --out, --print or --capture-dir is required"))
 	}
 	input, err := readCaptureInput(*eventFile, *stdin)
 	if err != nil {
@@ -274,6 +292,12 @@ func adapterCapture(args []string) {
 	}
 	b, _ := json.MarshalIndent(result, "", "  ")
 	b = append(b, '\n')
+	if *captureDir != "" {
+		if err := writeCaptureFile(*captureDir, *id, b); err != nil {
+			die(err)
+		}
+		return
+	}
 	if *printOut {
 		_, _ = os.Stdout.Write(b)
 		return
@@ -293,4 +317,119 @@ func adapterCapture(args []string) {
 		die(err)
 	}
 	fmt.Printf("capture metadata written to %s (no content captured)\n", *outFile)
+}
+
+func adapterDetect(args []string) {
+	fs := flag.NewFlagSet("adapter detect", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "JSON output")
+	_ = fs.Parse(args)
+	detections := adapter.DetectAll(0)
+	if *asJSON {
+		b, _ := json.MarshalIndent(map[string]any{"adapters": detections}, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	for _, d := range detections {
+		switch {
+		case d.Installed && d.Version != "":
+			fmt.Printf("%-12s installed version=%s (hooks: %s, end-to-end verified: false)\n", d.AdapterID, d.Version, d.NativeHookStatus)
+		case d.Installed:
+			fmt.Printf("%-12s installed (version unparsed: %s)\n", d.AdapterID, d.RawVersion)
+		default:
+			fmt.Printf("%-12s not installed (%s)\n", d.AdapterID, d.Error)
+		}
+	}
+}
+
+func adapterInstall(args []string) {
+	fs := flag.NewFlagSet("adapter install", flag.ExitOnError)
+	id := fs.String("adapter", "", "adapter id (claude-code)")
+	dir := fs.String("dir", ".", "workspace directory")
+	repo := fs.String("repo", "", "project directory for project-scope settings")
+	scope := fs.String("scope", "project", "project|user")
+	apply := fs.Bool("apply", false, "write the change (default is a plan)")
+	uninstall := fs.Bool("uninstall", false, "remove the managed hook entries")
+	anchorPath := fs.String("anchor-path", "", "override the anchor executable recorded in hook commands")
+	asJSON := fs.Bool("json", false, "JSON output")
+	_ = fs.Parse(args)
+	if *id == "" {
+		die(fmt.Errorf("--adapter is required"))
+	}
+	// Installation records state inside the workspace, so require an initialized one.
+	store := openStore(*dir)
+	stateDir := store.Dir
+	plan, err := adapter.Install(adapter.InstallOptions{
+		AdapterID: *id, StateDir: stateDir, RepoDir: *repo, Scope: *scope,
+		AnchorPath: *anchorPath, Apply: *apply, Uninstall: *uninstall,
+	})
+	if err != nil {
+		die(err)
+	}
+	if *asJSON {
+		b, _ := json.MarshalIndent(plan, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	verb := "install"
+	if plan.Uninstall {
+		verb = "uninstall"
+	}
+	fmt.Printf("%s %s (scope=%s settings=%s applied=%v)\n", verb, plan.AdapterID, plan.Scope, plan.SettingsPath, plan.Applied)
+	for _, op := range plan.Operations {
+		fmt.Printf("  plan: %s\n", op)
+	}
+	if plan.BackupPath != "" {
+		if plan.Applied {
+			fmt.Printf("  backup: %s\n", plan.BackupPath)
+		} else {
+			fmt.Printf("  backup (on apply): %s\n", plan.BackupPath)
+		}
+	}
+	if plan.AlreadyInstalled {
+		fmt.Println("  already installed; nothing to change")
+	}
+	if plan.Removed > 0 {
+		fmt.Printf("  removed %d managed entr(ies)\n", plan.Removed)
+	}
+	for _, w := range plan.Warnings {
+		fmt.Printf("  warning: %s\n", w)
+	}
+	if !plan.Applied && !plan.AlreadyInstalled {
+		fmt.Println("  (plan only; re-run with --apply to write)")
+	}
+}
+
+// writeCaptureFile writes one capture atomically into a hook-friendly directory.
+// It never prints, so a hook's stdout stays empty and cannot pollute context.
+func writeCaptureFile(dir, adapterID string, payload []byte) error {
+	canonical, err := pathguard.ValidateCreateDir(dir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(canonical, 0o700); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(canonical); err != nil {
+		return err
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("capture dir must be a real directory")
+	}
+	name := fmt.Sprintf("capture_%d_%s.json", time.Now().UTC().UnixNano(), adapterID)
+	tmp, err := os.CreateTemp(canonical, ".capture-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), filepath.Join(canonical, name))
 }

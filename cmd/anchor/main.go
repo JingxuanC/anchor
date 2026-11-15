@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JingxuanC/anchor/internal/adapter"
 	"github.com/JingxuanC/anchor/internal/core"
 	"github.com/JingxuanC/anchor/internal/handoff"
 	"github.com/JingxuanC/anchor/internal/recovery"
@@ -93,7 +94,10 @@ func usage() {
   anchor handoff status --dir DIR --repo REPO
   anchor adapter capabilities [--json]
   anchor adapter render --adapter ID (--target DIR | --print)
-  anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print)
+  anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print | --capture-dir DIR)
+  anchor adapter detect [--json]
+  anchor adapter install --adapter claude-code --dir DIR [--repo PROJECT]
+      [--scope project|user] [--apply | --uninstall] [--anchor-path PATH] [--json]
   anchor adapter ingest --adapter ID --dir WS --node NODE (--event FILE | --stdin) [--source fixture|hook_unverified] [--json]
   anchor status --dir DIR --repo REPO [--json]
   anchor doctor --dir DIR --repo REPO [--json]`)
@@ -1128,6 +1132,28 @@ func cmdDoctor(args []string) {
 		check["detail"] = handoffDetail
 	}
 	checks = append(checks, check)
+
+	// Adapter check: real version detection plus the recorded hook installation.
+	detections := adapter.DetectAll(0)
+	adapterDetail := map[string]any{}
+	anyInstalled := false
+	for _, d := range detections {
+		adapterDetail[d.AdapterID] = map[string]any{"installed": d.Installed, "version": d.Version, "hooks": d.NativeHookStatus, "end_to_end_verified": false}
+		if d.Installed {
+			anyInstalled = true
+		}
+	}
+	if st, err := adapter.LoadInstallState(stateDir, "claude-code"); err != nil {
+		adapterDetail["hook_install_error"] = err.Error()
+	} else if st != nil {
+		adapterDetail["installed_hooks"] = map[string]any{"adapter": st.AdapterID, "scope": st.Scope, "settings": st.SettingsPath, "applied_at": st.AppliedAt}
+	}
+	adapterStatus := "warn"
+	if anyInstalled {
+		adapterStatus = "ok"
+	}
+	checks = append(checks, map[string]any{"check": "adapters", "status": adapterStatus, "detail": adapterDetail})
+
 	out := map[string]any{"checks": checks, "workspace_dir": stateDir, "projection_status": r.RecoveryStatus, "recovery_status": eval.Status, "recovery_is_not_implied_by_projection": true}
 	if *asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
