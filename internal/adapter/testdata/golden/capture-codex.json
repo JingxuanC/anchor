@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "adapter": "codex",
+  "event": "post_tool_use",
+  "session_ref": "sha256:cd7f874b694905f24b63e46a33ee250b35519646de0dbeef4fe71161afb3b6c7",
+  "cwd_ref": "sha256:9da58e1e64dde56d55e63cad47e4449939a574001bfd2f3be4d12faa86413123",
+  "tool": "shell",
+  "timestamp": "2026-11-15T00:00:01Z",
+  "content_policy": "metadata_only: prompt/tool_input/transcript omitted",
+  "native_hook_verified": false,
+  "does_not_restore_or_block": true
+}

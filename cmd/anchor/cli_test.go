@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,7 +24,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	anchorBin = filepath.Join(dir, "anchor")
-	build := exec.Command("go", "build", "-o", anchorBin, ".")
+	build := exec.Command("go", "build", "-tags", "anchor_test_hooks", "-o", anchorBin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("build: %v: %s", err, out))
 	}
@@ -637,5 +638,149 @@ func TestCLIEvidenceArtifactSecurityAndDoneGate(t *testing.T) {
 	}
 	if !strings.Contains(out, `"projection_status": "incomplete"`) || !strings.Contains(out, "missing") {
 		t.Fatalf("missing artifact did not invalidate projection: %s", out)
+	}
+}
+
+func TestProductionBuildHasNoTestPauseHook(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "anchor-prod")
+	cmd := exec.Command("go", "build", "-o", bin, ".")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("production build failed: %v: %s", err, out)
+	}
+	b, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte("ANCHOR_TEST_TXN_STOP_AFTER_EVENT")) {
+		t.Fatal("production binary contains the test pause hook")
+	}
+}
+
+func TestCLIEvidenceCannotCrossNodeOrUseTamperedBytes(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	goalFile := writeFixture(t, filepath.Join(root, "goal-evidence.txt"), "goal fixture\n")
+	if out, errText, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev-goal", "--node", "goal1", "--kind", "test", "--file", goalFile); code != 0 {
+		t.Fatalf("goal evidence add failed: %s %s", out, errText)
+	}
+	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "in_progress"); code != 0 {
+		t.Fatal("in_progress failed")
+	}
+	beforeDone := len(eventFiles(t, ws))
+	if _, stderr, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "done", "--evidence", "ev-goal"); code == 0 {
+		t.Fatalf("cross-node evidence accepted: %s", stderr)
+	} else if !strings.Contains(stderr, "belongs to node goal1") {
+		t.Fatalf("cross-node failure lacked ownership diagnostic: %s", stderr)
+	}
+	if len(eventFiles(t, ws)) != beforeDone {
+		t.Fatal("cross-node done wrote an event")
+	}
+	taskFile := writeFixture(t, filepath.Join(root, "task-evidence.txt"), "task fixture\n")
+	if out, errText, code := runCLI(t, root, "evidence", "add", "--dir", ws, "--id", "ev-task", "--node", "task1", "--kind", "test", "--file", taskFile); code != 0 {
+		t.Fatalf("task evidence add failed: %s %s", out, errText)
+	}
+	sum := sha256.Sum256([]byte("task fixture\n"))
+	blob := filepath.Join(ws, "evidence", "blobs", hex.EncodeToString(sum[:]))
+	if err := os.WriteFile(blob, []byte("tampered local bytes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeTamper := len(eventFiles(t, ws))
+	if _, stderr, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "done", "--evidence", "ev-task"); code == 0 {
+		t.Fatalf("tampered evidence accepted: %s", stderr)
+	} else if !strings.Contains(stderr, "artifact failed verification") && !strings.Contains(stderr, "mismatch") {
+		t.Fatalf("tamper failure lacked diagnostic: %s", stderr)
+	}
+	if len(eventFiles(t, ws)) != beforeTamper {
+		t.Fatal("tampered done wrote an event")
+	}
+	out, _, _ := runCLI(t, root, "status", "--dir", ws, "--json")
+	if !strings.Contains(out, `"status": "in_progress"`) || !strings.Contains(out, `"projection_status": "incomplete"`) {
+		t.Fatalf("tampered evidence did not invalidate projection: %s", out)
+	}
+}
+
+func runCLIInput(t *testing.T, dir, input string, args ...string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command(anchorBin, args...)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(input)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			code = exit.ExitCode()
+		} else {
+			t.Fatalf("run %v: %v", args, err)
+		}
+	}
+	return stdout.String(), stderr.String(), code
+}
+
+func TestCLIAdapterDryRunCaptureAndNoSharedInstall(t *testing.T) {
+	root := t.TempDir()
+	out, stderr, code := runCLI(t, root, "adapter", "capabilities", "--json")
+	if code != 0 || !strings.Contains(out, `"claude-code"`) || !strings.Contains(out, `"verified_native_hooks": false`) {
+		t.Fatalf("capabilities failed: %s%s", out, stderr)
+	}
+	out, stderr, code = runCLI(t, root, "adapter", "render", "--adapter", "claude-code", "--print")
+	if code != 0 || !strings.Contains(out, `"dry_run": true`) || !strings.Contains(out, `"native_hook_status": "unverified"`) || !strings.Contains(out, `"installation": "manual_review_only"`) {
+		t.Fatalf("render print failed: %s%s", out, stderr)
+	}
+	target := filepath.Join(root, "render")
+	out, stderr, code = runCLI(t, root, "adapter", "render", "--adapter", "claude-code", "--target", target)
+	if code != 0 || !strings.Contains(out, `"installed": false`) {
+		t.Fatalf("render target failed: %s%s", out, stderr)
+	}
+	for _, p := range []string{"render/claude-code/anchor-adapter.json", "render/claude-code/settings.fragment.json"} {
+		if _, err := os.Stat(filepath.Join(root, p)); err != nil {
+			t.Fatalf("missing rendered file %s: %v", p, err)
+		}
+	}
+	if _, _, code := runCLI(t, root, "adapter", "render", "--adapter", "claude-code", "--target", target); code == 0 {
+		t.Fatal("second render overwrote existing target files")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if _, _, code := runCLI(t, root, "adapter", "render", "--adapter", "claude-code", "--target", filepath.Join(home, ".claude")); code == 0 {
+		t.Fatal("shared ~/.claude render accepted")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude")); err == nil {
+		t.Fatal("shared config path was created")
+	}
+
+	event := writeFixture(t, filepath.Join(root, "hook.json"), `{"hook_event_name":"PostToolUse","session_id":"raw-session-secret-id","cwd":"/tmp/fixture/project","tool_name":"Bash","timestamp":"2026-11-15T00:00:00Z","prompt":"must-not-be-copied","tool_input":{"command":"echo fixture"}}`)
+	out, stderr, code = runCLI(t, root, "adapter", "capture", "--adapter", "claude-code", "--event", event, "--print")
+	if code != 0 {
+		t.Fatalf("capture print failed: %s%s", out, stderr)
+	}
+	if !strings.Contains(out, `"session_ref": "sha256:`) || strings.Contains(out, "raw-session-secret-id") || strings.Contains(out, "must-not-be-copied") {
+		t.Fatalf("capture leaked or failed to hash metadata: %s", out)
+	}
+	if !strings.Contains(out, `"native_hook_verified": false`) || !strings.Contains(out, `"does_not_restore_or_block": true`) {
+		t.Fatalf("capture overclaimed behavior: %s", out)
+	}
+	stdinOut, stderr, code := runCLIInput(t, root, `{"hook_event_name":"PostToolUse","session_id":"stdin-session","tool_name":"Read"}`, "adapter", "capture", "--adapter", "claude-code", "--stdin", "--print")
+	if code != 0 || !strings.Contains(stdinOut, `"tool": "Read"`) {
+		t.Fatalf("stdin capture failed: %s%s", stdinOut, stderr)
+	}
+	captureOut := filepath.Join(root, "capture.json")
+	if _, stderr, code := runCLI(t, root, "adapter", "capture", "--adapter", "claude-code", "--event", event, "--out", captureOut); code != 0 {
+		t.Fatalf("capture --out failed: %s", stderr)
+	}
+	if _, _, code := runCLI(t, root, "adapter", "capture", "--adapter", "claude-code", "--event", event, "--out", captureOut); code == 0 {
+		t.Fatal("capture --out overwrote an existing file")
+	}
+	secretEvent := writeFixture(t, filepath.Join(root, "secret-hook.json"), `{"hook_event_name":"PostToolUse","session_id":"s","tool_name":"Bash","prompt":"AKIAIOSFODNN7EXAMPLE"}`)
+	if _, stderr, code := runCLI(t, root, "adapter", "capture", "--adapter", "claude-code", "--event", secretEvent, "--print"); code == 0 {
+		t.Fatal("secret-bearing capture accepted")
+	} else if strings.Contains(stderr, "AKIAIOSFODNN7EXAMPLE") {
+		t.Fatal("capture error leaked the secret")
 	}
 }

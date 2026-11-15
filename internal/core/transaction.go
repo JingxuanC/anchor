@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -193,21 +195,56 @@ func (s *Store) cleanupStaleTemps() error {
 	return nil
 }
 
-// writeEvents commits a transaction as one JSON array file. The temp file is
-// ignored by readers; a single rename publishes the entire batch. A crash
-// before that rename leaves no effective events, and a corrupt/incomplete
-// batch file is quarantined as a whole rather than partially applied.
+type batchEnvelope struct {
+	AnchorBatch  int     `json:"anchor_batch"`
+	BatchID      string  `json:"batch_id"`
+	EventCount   int     `json:"event_count"`
+	EventsSHA256 string  `json:"events_sha256"`
+	Events       []Event `json:"events"`
+}
+
+func batchHash(events []Event) (string, error) {
+	b, err := json.Marshal(events)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func validBatchID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// writeEvents commits a transaction as one manifested JSON batch file. The
+// manifest binds event_count and a hash over the complete event array, so a
+// truncated or edited batch cannot be mistaken for a complete commit. The temp
+// file is ignored; a single rename publishes the whole batch.
 func (s *Store) writeEvents(events []Event) error {
 	if len(events) == 0 {
 		return nil
 	}
+	eventsHash, err := batchHash(events)
+	if err != nil {
+		return err
+	}
+	batchID := newID("batch")
 	f, err := os.CreateTemp(s.eventsDir(), ".txn-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
 	defer func() { _ = os.Remove(tmp) }()
-	if _, err := f.WriteString("[\n"); err != nil {
+	prefix := fmt.Sprintf("{\"anchor_batch\":1,\"batch_id\":%q,\"event_count\":%d,\"events_sha256\":%q,\"events\":[\n", batchID, len(events), eventsHash)
+	if _, err := f.WriteString(prefix); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -228,10 +265,10 @@ func (s *Store) writeEvents(events []Event) error {
 			return err
 		}
 		if i == 0 && len(events) > 1 {
-			maybePauseTxnAfterFirstEvent()
+			txnTestHookAfterFirstEvent(i, len(events))
 		}
 	}
-	if _, err := f.WriteString("\n]\n"); err != nil {
+	if _, err := f.WriteString("\n]}\n"); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -242,7 +279,7 @@ func (s *Store) writeEvents(events []Event) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	final := filepath.Join(s.eventsDir(), newID("batch")+".json")
+	final := filepath.Join(s.eventsDir(), batchID+".json")
 	if err := os.Rename(tmp, final); err != nil {
 		return err
 	}
@@ -251,19 +288,6 @@ func (s *Store) writeEvents(events []Event) error {
 		_ = d.Close()
 	}
 	return nil
-}
-
-// Test-only fault injection used by the cross-process crash regression. It
-// pauses after the first event of a multi-event temp batch, before the final
-// newline/rename that would commit the batch.
-func maybePauseTxnAfterFirstEvent() {
-	if os.Getenv("ANCHOR_TEST_TXN_STOP_AFTER_EVENT") != "1" {
-		return
-	}
-	if ready := os.Getenv("ANCHOR_TEST_TXN_READY"); ready != "" {
-		_ = os.WriteFile(ready, []byte("paused"), 0o600)
-	}
-	time.Sleep(30 * time.Second)
 }
 
 // Append keeps the original one-event API but now routes it through the same

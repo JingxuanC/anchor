@@ -1,0 +1,8 @@
+{
+  "event": "post_tool_use",
+  "session_id": "session-fixture-002",
+  "cwd": "/tmp/anchor-fixture/codex",
+  "tool_name": "shell",
+  "timestamp": "2026-11-15T00:00:01Z",
+  "prompt": "must-not-be-copied"
+}

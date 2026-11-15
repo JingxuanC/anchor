@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "adapter": "claude-code",
+  "event": "PostToolUse",
+  "session_ref": "sha256:bccfe1d5a1999505ee13740a1b3a679dbf6920fd7ceac29da101f8046cfda9e5",
+  "cwd_ref": "sha256:a6005043dd29ae4081b01b1b620093590b1afe6e660032f4dbdcfe4206ecd362",
+  "tool": "Bash",
+  "timestamp": "2026-11-15T00:00:00Z",
+  "content_policy": "metadata_only: prompt/tool_input/transcript omitted",
+  "native_hook_verified": false,
+  "does_not_restore_or_block": true
+}

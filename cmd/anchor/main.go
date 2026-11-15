@@ -44,6 +44,8 @@ func main() {
 		cmdEvidence(os.Args[2:])
 	case "handoff":
 		cmdHandoff(os.Args[2:])
+	case "adapter":
+		cmdAdapter(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -66,6 +68,9 @@ func usage() {
   anchor ownership takeover --dir DIR --id ID --owner NAME
   anchor handoff prepare --dir DIR --repo REPO
   anchor handoff restore --dir DIR --repo REPO --packet PACKET.json
+  anchor adapter capabilities [--json]
+  anchor adapter render --adapter ID (--target DIR | --print)
+  anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print)
   anchor status --dir DIR --repo REPO [--json]
   anchor doctor --dir DIR --repo REPO [--json]`)
 }
@@ -320,7 +325,7 @@ func nodeTransition(args []string) {
 			}
 			for _, evidenceID := range evidenceIDs {
 				if _, ok := tx.Tree().Evidence[evidenceID]; !ok {
-					return fmt.Errorf("unknown evidence %q", evidenceID)
+					return fmt.Errorf("evidence %q is unknown or its artifact failed verification", evidenceID)
 				}
 			}
 		}

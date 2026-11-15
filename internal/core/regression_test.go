@@ -365,3 +365,61 @@ func TestTransactionBatchIsAllOrNothing(t *testing.T) {
 		t.Fatalf("truncated batch contributed events: events=%d quarantined=%+v", len(r.Events), r.Quarantined)
 	}
 }
+
+func TestBatchManifestCountAndHashValidated(t *testing.T) {
+	ws := t.TempDir()
+	s, err := Open(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1 := withID(rawOwn("manifest-a", "l1", "a", 1), "manifest-a", "d1", 1)
+	if err := e1.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	e2 := withID(rawOwn("manifest-b", "l2", "a", 1), "manifest-b", "d1", 2)
+	if err := e2.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	h, err := batchHash([]Event{e1, e2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := batchEnvelope{AnchorBatch: 1, BatchID: "batch_manifest", EventCount: 2, EventsSHA256: h, Events: []Event{e1, e2}}
+	write := func(env batchEnvelope) {
+		b, _ := json.Marshal(env)
+		if err := os.WriteFile(filepath.Join(ws, "events", "batch_manifest.json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(env)
+	r, err := s.LoadReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Events) != 2 || len(r.Quarantined) != 0 {
+		t.Fatalf("valid manifest rejected: %+v", r)
+	}
+	badCount := env
+	badCount.EventCount = 1
+	write(badCount)
+	r, _ = s.LoadReport()
+	if len(r.Events) != 0 || len(r.Quarantined) != 1 || !strings.Contains(r.Quarantined[0].Reason, "event_count") {
+		t.Fatalf("manifest count mismatch not quarantined: %+v", r)
+	}
+	badHash := env
+	badHash.EventsSHA256 = "sha256:" + strings.Repeat("0", 64)
+	write(badHash)
+	r, _ = s.LoadReport()
+	if len(r.Events) != 0 || len(r.Quarantined) != 1 || !strings.Contains(r.Quarantined[0].Reason, "manifest hash") {
+		t.Fatalf("manifest hash mismatch not quarantined: %+v", r)
+	}
+	dup := env
+	dup.Events = []Event{e1, e1}
+	dup.EventCount = 2
+	dup.EventsSHA256, _ = batchHash(dup.Events)
+	write(dup)
+	r, _ = s.LoadReport()
+	if len(r.Events) != 0 || len(r.Quarantined) != 1 || !strings.Contains(r.Quarantined[0].Reason, "duplicate") {
+		t.Fatalf("duplicate batch event not quarantined: %+v", r)
+	}
+}

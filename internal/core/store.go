@@ -66,6 +66,7 @@ func (s *Store) LoadReport() (LoadResult, error) {
 	}
 	var out []Event
 	var bad []Quarantine
+	seen := map[string]bool{}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -75,23 +76,13 @@ func (s *Store) LoadReport() (LoadResult, error) {
 			bad = append(bad, Quarantine{File: entry.Name(), Reason: err.Error()})
 			continue
 		}
-		var batch []Event
-		trimmed := bytes.TrimSpace(b)
-		if len(trimmed) > 0 && trimmed[0] == '[' {
-			if err := json.Unmarshal(trimmed, &batch); err != nil {
-				bad = append(bad, Quarantine{File: entry.Name(), Reason: "batch parse: " + err.Error()})
-				continue
-			}
-		} else {
-			var e Event
-			if err := json.Unmarshal(trimmed, &e); err != nil {
-				bad = append(bad, Quarantine{File: entry.Name(), Reason: "parse: " + err.Error()})
-				continue
-			}
-			batch = []Event{e}
+		batch, reason := decodeBatchFile(b)
+		if reason != "" {
+			bad = append(bad, Quarantine{File: entry.Name(), Reason: reason})
+			continue
 		}
-		// A batch is all-or-nothing: one bad event quarantines the whole file.
 		badReason := ""
+		seenBatch := map[string]bool{}
 		for _, e := range batch {
 			h, err := e.Hash()
 			if err != nil {
@@ -102,15 +93,73 @@ func (s *Store) LoadReport() (LoadResult, error) {
 				badReason = "hash mismatch"
 				break
 			}
+			if seen[e.EventID] || seenBatch[e.EventID] {
+				badReason = "duplicate event_id"
+				break
+			}
+			seenBatch[e.EventID] = true
 		}
 		if badReason != "" {
 			bad = append(bad, Quarantine{File: entry.Name(), Reason: badReason})
 			continue
 		}
+		for id := range seenBatch {
+			seen[id] = true
+		}
 		out = append(out, batch...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].EventID < out[j].EventID })
 	return LoadResult{Events: out, Quarantined: bad}, nil
+}
+
+func decodeBatchFile(b []byte) ([]Event, string) {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 {
+		return nil, "empty event file"
+	}
+	if trimmed[0] == '[' {
+		var batch []Event
+		if err := json.Unmarshal(trimmed, &batch); err != nil {
+			return nil, "batch parse: " + err.Error()
+		}
+		return batch, ""
+	}
+	if trimmed[0] != '{' {
+		return nil, "parse: expected JSON object or array"
+	}
+	var probe struct {
+		AnchorBatch int             `json:"anchor_batch"`
+		BatchID     string          `json:"batch_id"`
+		Events      json.RawMessage `json:"events"`
+	}
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return nil, "parse: " + err.Error()
+	}
+	if probe.AnchorBatch == 0 && probe.BatchID == "" && len(probe.Events) == 0 {
+		var e Event
+		if err := json.Unmarshal(trimmed, &e); err != nil {
+			return nil, "parse: " + err.Error()
+		}
+		return []Event{e}, ""
+	}
+	var env batchEnvelope
+	if err := json.Unmarshal(trimmed, &env); err != nil {
+		return nil, "batch parse: " + err.Error()
+	}
+	if env.AnchorBatch != 1 {
+		return nil, "unsupported batch schema"
+	}
+	if !validBatchID(env.BatchID) {
+		return nil, "invalid batch_id"
+	}
+	if env.EventCount <= 0 || env.EventCount != len(env.Events) {
+		return nil, fmt.Sprintf("batch event_count mismatch: declared %d, actual %d", env.EventCount, len(env.Events))
+	}
+	h, err := batchHash(env.Events)
+	if err != nil || env.EventsSHA256 != h {
+		return nil, "batch manifest hash mismatch"
+	}
+	return env.Events, ""
 }
 
 func (s *Store) Load() ([]Event, error) {

@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "session-fixture-001",
+  "cwd": "/tmp/anchor-fixture/project",
+  "tool_name": "Bash",
+  "timestamp": "2026-11-15T00:00:00Z",
+  "prompt": "must-not-be-copied",
+  "tool_input": {"command": "echo fixture"}
+}
