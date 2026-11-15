@@ -617,6 +617,11 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   `handoff restore`/`handoff prepare` record prepared/acked/verified events; raw
   `event append` rejects them. The packet file may be deleted, but the gate stays
   active and `status` reports `packet_missing`, prompting a fresh preparation.
+- **`handoff prepare` freezes editing until the handoff is verified.** The gate
+  treats preparation as "session is ending", so the same agent that wants to keep
+  editing must ack and verify its own packet (or the operator should prepare only
+  when handing off). Verification requires the repository HEAD *and* the working
+  tree to match the packet; otherwise `--force` is required and recorded.
 - **The successor gate fails closed.** If the projection cannot be replayed (for
   example a referenced evidence blob disappeared), the gate reports the handoff
   as pending instead of assuming progress; the workspace then refuses writes

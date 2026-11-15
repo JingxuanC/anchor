@@ -1061,9 +1061,16 @@ func TestCLIRestoreStaleCodeRequiresForce(t *testing.T) {
 	if !strings.Contains(out, `"forced": true`) {
 		t.Fatalf("forced ack was not recorded as forced: %s", out)
 	}
-	// The gate still requires verification, which the dirty tree permits here.
-	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify"); code != 0 {
-		t.Fatalf("verify after forced ack: %s%s", out, stderr)
+	// The gate still requires verification; because the worktree drifted, that
+	// verification also has to be explicit (--force) and is recorded as forced.
+	verifyOut, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify")
+	if code != 1 || !strings.Contains(stderr, "working tree differs") {
+		t.Fatalf("drifting verify should be blocked: code=%d %s%s", code, verifyOut, stderr)
+	}
+	if out, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify", "--force"); code != 0 {
+		t.Fatalf("forced verify: %s%s", out, stderr)
+	} else if !strings.Contains(out, `"forced": true`) {
+		t.Fatalf("forced verify not recorded as forced: %s", out)
 	}
 	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "allowed"); code != 0 {
 		t.Fatalf("workspace still gated after a forced ack+verify: %s", stderr)

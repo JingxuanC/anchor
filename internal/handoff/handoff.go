@@ -664,8 +664,13 @@ func BuildPlan(dir, repo string, p Packet, path string) (RestorePlan, error) {
 		plan.VerifyBlockers = append(plan.VerifyBlockers, "handoff must be acked first")
 	} else if plan.Progress.Verified {
 		plan.VerifyBlockers = append(plan.VerifyBlockers, "handoff is already verified")
-	} else if !plan.Code.HeadMatches {
-		plan.VerifyBlockers = append(plan.VerifyBlockers, "repository HEAD differs from the packet; --force is required to verify anyway")
+	} else {
+		if !plan.Code.HeadMatches {
+			plan.VerifyBlockers = append(plan.VerifyBlockers, "repository HEAD differs from the packet; --force is required to verify anyway")
+		}
+		if !plan.Code.StagedDiffMatches || !plan.Code.UnstagedDiffMatches {
+			plan.VerifyBlockers = append(plan.VerifyBlockers, "working tree differs from the packet; --force is required to verify anyway")
+		}
 	}
 	plan.CanVerify = len(plan.VerifyBlockers) == 0
 

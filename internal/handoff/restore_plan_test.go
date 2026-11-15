@@ -266,3 +266,22 @@ func TestRecordPreparedIsIdempotencySafe(t *testing.T) {
 		t.Fatalf("latest preparation should gate the workspace: %+v", gate)
 	}
 }
+
+func TestBuildPlanVerifyRequiresMatchingWorktree(t *testing.T) {
+	dir, repo, p, path := preparePlanFixture(t)
+	appendHandoffEventH(t, dir, core.EvHandoffAcked, core.HandoffPayload{HandoffID: p.HandoffID, ContentHash: p.ContentHash})
+	// Dirty the tracked file: HEAD still matches but the worktree does not.
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("drifted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(dir, repo, p, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.CanVerify {
+		t.Fatalf("verify should be blocked while the worktree drifted: %+v", plan)
+	}
+	if !strings.Contains(strings.Join(plan.VerifyBlockers, " "), "working tree differs") {
+		t.Fatalf("blocker should name the worktree drift: %+v", plan.VerifyBlockers)
+	}
+}
