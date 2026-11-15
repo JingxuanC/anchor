@@ -27,20 +27,52 @@ const (
 	StatusArchived   Status = "archived"
 )
 
+// Provenance records how a node's content became trusted. Only a local user
+// attestation may produce ProvenanceUserConfirmed; agents cannot self-report it.
+type Provenance string
+
+const (
+	ProvenanceUserConfirmed Provenance = "user_confirmed"
+	ProvenanceAgentInferred Provenance = "agent_inferred"
+	ProvenanceImported      Provenance = "imported"
+)
+
+// ValidProvenance reports whether p is a known provenance value or empty.
+func ValidProvenance(p string) bool {
+	switch Provenance(p) {
+	case "", ProvenanceUserConfirmed, ProvenanceAgentInferred, ProvenanceImported:
+		return true
+	}
+	return false
+}
+
 type Node struct {
-	ID           string   `json:"id"`
-	Type         NodeType `json:"type"`
-	Title        string   `json:"title"`
-	ParentID     string   `json:"parent_id,omitempty"`
-	Status       Status   `json:"status"`
-	Note         string   `json:"note,omitempty"`
-	Revision     int      `json:"revision"`
-	Owner        string   `json:"owner,omitempty"`
-	LeaseID      string   `json:"lease_id,omitempty"`
-	LeaseEventID string   `json:"lease_event_id,omitempty"`
-	FencingToken uint64   `json:"fencing_token,omitempty"`
-	LastEventID  string   `json:"last_event_id,omitempty"`
-	Deleted      bool     `json:"deleted,omitempty"`
+	ID       string   `json:"id"`
+	Type     NodeType `json:"type"`
+	Title    string   `json:"title"`
+	ParentID string   `json:"parent_id,omitempty"`
+	Status   Status   `json:"status"`
+	Note     string   `json:"note,omitempty"`
+	// Goal fields (REQ-ST-001). Only goal nodes may carry them.
+	NorthStar       string   `json:"north_star,omitempty"`
+	Must            []string `json:"must,omitempty"`
+	MustNot         []string `json:"must_not,omitempty"`
+	SuccessCriteria []string `json:"success_criteria,omitempty"`
+	// Decision fields (REQ-ST-002). Only decision nodes may carry them.
+	Decision     string   `json:"decision,omitempty"`
+	Rationale    string   `json:"rationale,omitempty"`
+	Alternatives []string `json:"alternatives,omitempty"`
+	Consequences []string `json:"consequences,omitempty"`
+	// Provenance (REQ-ST-005) and confidence (0..1, nil when unspecified).
+	Provenance   Provenance `json:"provenance,omitempty"`
+	Confidence   *float64   `json:"confidence,omitempty"`
+	Revision     int        `json:"revision"`
+	Owner        string     `json:"owner,omitempty"`
+	LeaseID      string     `json:"lease_id,omitempty"`
+	LeaseEventID string     `json:"lease_event_id,omitempty"`
+	FencingToken uint64     `json:"fencing_token,omitempty"`
+	LastEventID  string     `json:"last_event_id,omitempty"`
+	Deleted      bool       `json:"deleted,omitempty"`
 }
 
 type EvidenceEntry struct {

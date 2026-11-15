@@ -22,6 +22,15 @@ type manifest struct {
 	CreatedAt       string `json:"created_at"`
 }
 
+// stringList collects a repeatable flag value.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -63,7 +72,12 @@ func usage() {
   anchor event append --dir DIR --file EVENT.json
   anchor event audit --dir DIR [--json]
   anchor node create --dir DIR --id ID --type goal|decision|task|branch|question|note --title T [--parent ID]
-  anchor node edit --dir DIR --id ID --title T
+      [--north-star T] [--must M]... [--must-not M]... [--success C]...
+      [--decision D] [--rationale R] [--alternative A]... [--consequence C]...
+      [--provenance agent_inferred|imported] [--confidence 0..1]
+  anchor node edit --dir DIR --id ID [--title T] [--north-star T] [--must M]... [--must-not M]...
+      [--success C]... [--decision D] [--rationale R] [--alternative A]... [--consequence C]...
+      [--provenance agent_inferred|imported] [--confidence 0..1]
   anchor node tombstone --dir DIR --id ID
   anchor node transition --dir DIR --id ID --to STATUS
   anchor note set --dir DIR --id ID --text TEXT
@@ -305,9 +319,27 @@ func nodeCreate(args []string) {
 	title := fs.String("title", "", "title")
 	parent := fs.String("parent", "", "parent node id")
 	owner := fs.String("owner", "local", "owner")
+	northStar := fs.String("north-star", "", "goal north star (goal nodes only)")
+	var must, mustNot, success stringList
+	fs.Var(&must, "must", "goal must-constraint (repeatable; goal nodes only)")
+	fs.Var(&mustNot, "must-not", "goal must-not constraint (repeatable; goal nodes only)")
+	fs.Var(&success, "success", "goal success criterion (repeatable; goal nodes only)")
+	decision := fs.String("decision", "", "decision taken (decision nodes only)")
+	rationale := fs.String("rationale", "", "decision rationale (decision nodes only)")
+	var alternatives, consequences stringList
+	fs.Var(&alternatives, "alternative", "rejected alternative (repeatable; decision nodes only)")
+	fs.Var(&consequences, "consequence", "decision consequence (repeatable; decision nodes only)")
+	provenance := fs.String("provenance", string(core.ProvenanceAgentInferred), "provenance: agent_inferred|imported")
+	confidence := fs.Float64("confidence", -1, "provenance confidence 0..1 (optional)")
 	_ = fs.Parse(args)
 	if *id == "" || *typ == "" || *title == "" {
 		die(fmt.Errorf("--id, --type and --title are required"))
+	}
+	if err := checkProvenanceFlag(*provenance); err != nil {
+		die(err)
+	}
+	if *confidence > 1 {
+		die(fmt.Errorf("--confidence must be between 0 and 1"))
 	}
 	nt, ok := core.ValidNodeType(*typ)
 	if !ok {
@@ -338,7 +370,13 @@ func nodeCreate(args []string) {
 		if err != nil {
 			return err
 		}
-		np := core.NodePayload{NodeID: *id, Type: string(nt), Title: *title, ParentID: *parent, Owner: *owner}
+		np := core.NodePayload{NodeID: *id, Type: string(nt), Title: *title, ParentID: *parent, Owner: *owner,
+			NorthStar: *northStar, Must: must, MustNot: mustNot, SuccessCriteria: success,
+			Decision: *decision, Rationale: *rationale, Alternatives: alternatives, Consequences: consequences,
+			Provenance: *provenance}
+		if *confidence >= 0 {
+			np.Confidence = confidence
+		}
 		nb, _ := json.Marshal(np)
 		ne, err := localEvent(*dir, core.Event{Type: core.EvNodeCreated, CausalParents: []string{claim.EventID}, LeaseID: lease, FencingToken: fencing, Payload: nb})
 		if err != nil {
@@ -589,12 +627,53 @@ func nodeEdit(args []string) {
 	dir := fs.String("dir", ".", "workspace directory")
 	id := fs.String("id", "", "node id")
 	title := fs.String("title", "", "new title")
+	northStar := fs.String("north-star", "", "goal north star (goal nodes only)")
+	var must, mustNot, success stringList
+	fs.Var(&must, "must", "goal must-constraint (repeatable; goal nodes only)")
+	fs.Var(&mustNot, "must-not", "goal must-not constraint (repeatable; goal nodes only)")
+	fs.Var(&success, "success", "goal success criterion (repeatable; goal nodes only)")
+	decision := fs.String("decision", "", "decision taken (decision nodes only)")
+	rationale := fs.String("rationale", "", "decision rationale (decision nodes only)")
+	var alternatives, consequences stringList
+	fs.Var(&alternatives, "alternative", "rejected alternative (repeatable; decision nodes only)")
+	fs.Var(&consequences, "consequence", "decision consequence (repeatable; decision nodes only)")
+	provenance := fs.String("provenance", "", "provenance: agent_inferred|imported")
+	confidence := fs.Float64("confidence", -1, "provenance confidence 0..1 (optional)")
 	_ = fs.Parse(args)
-	if *id == "" || *title == "" {
-		die(fmt.Errorf("--id and --title are required"))
+	if *id == "" {
+		die(fmt.Errorf("--id is required"))
 	}
-	ev := appendOwnedMutation(*dir, *id, core.EvNodeUpdated, core.NodePayload{NodeID: *id, Title: *title})
+	if err := checkProvenanceFlag(*provenance); err != nil {
+		die(err)
+	}
+	if *confidence > 1 {
+		die(fmt.Errorf("--confidence must be between 0 and 1"))
+	}
+	np := core.NodePayload{NodeID: *id, Title: *title,
+		NorthStar: *northStar, Must: must, MustNot: mustNot, SuccessCriteria: success,
+		Decision: *decision, Rationale: *rationale, Alternatives: alternatives, Consequences: consequences,
+		Provenance: *provenance}
+	if *confidence >= 0 {
+		np.Confidence = confidence
+	}
+	changed := *title != "" || *northStar != "" || *decision != "" || *rationale != "" || *provenance != "" ||
+		*confidence >= 0 || len(must) > 0 || len(mustNot) > 0 || len(success) > 0 || len(alternatives) > 0 || len(consequences) > 0
+	if !changed {
+		die(fmt.Errorf("no changes requested; pass at least one field flag"))
+	}
+	ev := appendOwnedMutation(*dir, *id, core.EvNodeUpdated, np)
 	fmt.Printf("edited %s (%s)\n", *id, ev.EventID)
+}
+
+// checkProvenanceFlag keeps agents from self-reporting user confirmation.
+func checkProvenanceFlag(p string) error {
+	if !core.ValidProvenance(p) {
+		return fmt.Errorf("invalid --provenance %q: use agent_inferred or imported", p)
+	}
+	if core.Provenance(p) == core.ProvenanceUserConfirmed {
+		return fmt.Errorf("--provenance user_confirmed requires a local user attestation; agents may only record agent_inferred or imported")
+	}
+	return nil
 }
 
 func nodeTombstone(args []string) {

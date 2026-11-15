@@ -57,12 +57,68 @@ type TreeSummary struct {
 	ProjectionStatus string               `json:"projection_status"`
 }
 
+// GoalSummary carries the north star, constraints and success criteria the
+// successor must not lose (REQ-ST-001, REQ-RST-001).
+type GoalSummary struct {
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	NorthStar       string   `json:"north_star,omitempty"`
+	Must            []string `json:"must,omitempty"`
+	MustNot         []string `json:"must_not,omitempty"`
+	SuccessCriteria []string `json:"success_criteria,omitempty"`
+	Status          string   `json:"status"`
+	Provenance      string   `json:"provenance,omitempty"`
+}
+
+// DecisionRef records a decision with its rationale and trade-offs (REQ-ST-002).
+type DecisionRef struct {
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Decision     string   `json:"decision,omitempty"`
+	Rationale    string   `json:"rationale,omitempty"`
+	Alternatives []string `json:"alternatives,omitempty"`
+	Consequences []string `json:"consequences,omitempty"`
+	Status       string   `json:"status"`
+	Provenance   string   `json:"provenance,omitempty"`
+}
+
+// NextStep is an open task the successor should pick up.
+type NextStep struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+	Owner      string `json:"owner,omitempty"`
+	Provenance string `json:"provenance,omitempty"`
+}
+
+// OpenQuestion is an unresolved question node.
+type OpenQuestion struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+	Provenance string `json:"provenance,omitempty"`
+}
+
+// OwnershipRef is an active lease the successor must respect (REQ-CONC-004).
+type OwnershipRef struct {
+	NodeID       string `json:"node_id"`
+	Owner        string `json:"owner"`
+	LeaseID      string `json:"lease_id,omitempty"`
+	FencingToken uint64 `json:"fencing_token,omitempty"`
+}
+
 type Packet struct {
 	SchemaVersion        int               `json:"schema_version"`
 	HandoffID            string            `json:"handoff_id"`
 	CreatedAt            time.Time         `json:"created_at"`
 	Summary              string            `json:"summary"`
 	Tree                 TreeSummary       `json:"tree"`
+	Goal                 *GoalSummary      `json:"goal,omitempty"`
+	Decisions            []DecisionRef     `json:"decisions,omitempty"`
+	NextSteps            []NextStep        `json:"next_steps,omitempty"`
+	OpenQuestions        []OpenQuestion    `json:"open_questions,omitempty"`
+	Ownership            []OwnershipRef    `json:"ownership,omitempty"`
+	ProvenanceSummary    map[string]int    `json:"provenance_summary,omitempty"`
 	CodeState            CodeState         `json:"code_state"`
 	ArtifactAvailability string            `json:"artifact_availability"` // metadata_only | bytes_present | missing
 	RecoveryStatus       string            `json:"recovery_status"`
@@ -226,6 +282,67 @@ func treeSummary(events []core.Event, result core.ReplayResult) TreeSummary {
 	return ts
 }
 
+func provenanceOf(n *core.Node) string {
+	if n.Provenance == "" {
+		return "unspecified"
+	}
+	return string(n.Provenance)
+}
+
+// detailSummary derives the task structure a successor needs from the replayed
+// tree: the goal and its constraints, decisions, next steps, open questions,
+// active ownership and a provenance breakdown.
+func detailSummary(tree *core.Tree) (*GoalSummary, []DecisionRef, []NextStep, []OpenQuestion, []OwnershipRef, map[string]int) {
+	var goal *GoalSummary
+	var decisions []DecisionRef
+	var next []NextStep
+	var questions []OpenQuestion
+	var ownership []OwnershipRef
+	prov := map[string]int{}
+	statusRank := map[core.Status]int{core.StatusInProgress: 0, core.StatusBlocked: 1, core.StatusTodo: 2}
+	for _, n := range tree.SortedNodes() {
+		prov[provenanceOf(n)]++
+		if n.Deleted {
+			continue
+		}
+		if n.Owner != "" {
+			ownership = append(ownership, OwnershipRef{NodeID: n.ID, Owner: n.Owner, LeaseID: n.LeaseID, FencingToken: n.FencingToken})
+		}
+		switch n.Type {
+		case core.NodeGoal:
+			if goal == nil {
+				goal = &GoalSummary{ID: n.ID, Title: n.Title, NorthStar: n.NorthStar, Must: n.Must, MustNot: n.MustNot,
+					SuccessCriteria: n.SuccessCriteria, Status: string(n.Status), Provenance: provenanceOf(n)}
+			}
+		case core.NodeDecision:
+			decisions = append(decisions, DecisionRef{ID: n.ID, Title: n.Title, Decision: n.Decision, Rationale: n.Rationale,
+				Alternatives: n.Alternatives, Consequences: n.Consequences, Status: string(n.Status), Provenance: provenanceOf(n)})
+		case core.NodeTask:
+			if n.Status != core.StatusDone && n.Status != core.StatusAbandoned {
+				next = append(next, NextStep{ID: n.ID, Title: n.Title, Status: string(n.Status), Owner: n.Owner, Provenance: provenanceOf(n)})
+			}
+		case core.NodeQuestion:
+			if n.Status != core.StatusDone && n.Status != core.StatusAbandoned {
+				questions = append(questions, OpenQuestion{ID: n.ID, Title: n.Title, Status: string(n.Status), Provenance: provenanceOf(n)})
+			}
+		}
+	}
+	sort.Slice(next, func(i, j int) bool {
+		ri, rj := statusRank[core.Status(next[i].Status)], statusRank[core.Status(next[j].Status)]
+		if ri != rj {
+			return ri < rj
+		}
+		return next[i].ID < next[j].ID
+	})
+	sort.Slice(decisions, func(i, j int) bool { return decisions[i].ID < decisions[j].ID })
+	sort.Slice(questions, func(i, j int) bool { return questions[i].ID < questions[j].ID })
+	sort.Slice(ownership, func(i, j int) bool { return ownership[i].NodeID < ownership[j].NodeID })
+	if len(prov) == 0 {
+		prov = nil
+	}
+	return goal, decisions, next, questions, ownership, prov
+}
+
 func Prepare(dir, repo string) (Packet, string, error) {
 	store, err := core.Open(dir)
 	if err != nil {
@@ -247,7 +364,13 @@ func Prepare(dir, repo string) (Packet, string, error) {
 	p := Packet{SchemaVersion: 1, HandoffID: newID(), CreatedAt: time.Now().UTC(),
 		Summary: "Structured handoff snapshot. This summary is not a substitute for code and evidence verification.",
 		Tree:    treeSummary(events, replay), CodeState: cs, ArtifactAvailability: "metadata_only", Quarantined: report.Quarantined}
+	p.Goal, p.Decisions, p.NextSteps, p.OpenQuestions, p.Ownership, p.ProvenanceSummary = detailSummary(replay.Tree)
 	p.RecoveryStatus = StatusComplete
+	if p.Goal == nil {
+		p.Warnings = append(p.Warnings, "no goal node in the workspace; the packet carries no north star or constraints")
+	} else if p.Goal.NorthStar == "" {
+		p.Warnings = append(p.Warnings, "goal "+p.Goal.ID+" has no north star recorded")
+	}
 	if len(report.Quarantined) > 0 {
 		p.RecoveryStatus = StatusIncomplete
 		p.Warnings = append(p.Warnings, "some event files are quarantined; recovery is incomplete")

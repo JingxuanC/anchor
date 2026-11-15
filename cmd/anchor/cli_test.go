@@ -1838,3 +1838,124 @@ func TestCLIInitAttachRequiresExistingProject(t *testing.T) {
 		t.Fatalf("attach created the missing project directory: %v", err)
 	}
 }
+
+// TestCLINodeDetailFieldsAndPacket covers the CLI surface for REQ-ST-001/002/005
+// and REQ-RST-001: goal constraints, decision trade-offs and provenance must be
+// recordable and must reach the handoff packet.
+func TestCLINodeDetailFieldsAndPacket(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	if _, stderr, code := runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "Ship",
+		"--north-star", "successor resumes with zero context loss",
+		"--must", "keep evidence immutable", "--must-not", "no local causal database",
+		"--success", "restore works on a second device"); code != 0 {
+		t.Fatalf("goal create: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "dec1", "--type", "decision", "--parent", "goal1",
+		"--title", "Hash the packet", "--decision", "hash the body", "--rationale", "detect tampering",
+		"--alternative", "sign with a key", "--consequence", "no key management",
+		"--provenance", "imported"); code != 0 {
+		t.Fatalf("decision create: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "Carry events"); code != 0 {
+		t.Fatalf("task create: %s", stderr)
+	}
+	// Editing must be able to replace the constraint list (a repeated flag states
+	// the full list, which keeps edits idempotent instead of accumulating).
+	if _, stderr, code := runCLI(t, root, "node", "edit", "--dir", ws, "--id", "goal1",
+		"--must", "keep evidence immutable", "--must", "fail closed on unsafe paths"); code != 0 {
+		t.Fatalf("goal edit: %s", stderr)
+	}
+	// Agents may not self-report user confirmation.
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal2", "--type", "goal", "--title", "Bad",
+		"--provenance", "user_confirmed"); code == 0 {
+		t.Fatalf("user_confirmed provenance was accepted: %s", stderr)
+	} else if !strings.Contains(stderr, "local user attestation") {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+	// A flag combination that changes nothing must be rejected.
+	if _, stderr, code := runCLI(t, root, "node", "edit", "--dir", ws, "--id", "goal1"); code == 0 {
+		t.Fatalf("empty edit was accepted: %s", stderr)
+	}
+
+	out, stderr, code := runCLI(t, root, "status", "--dir", ws, "--repo", repo, "--json")
+	if code != 0 {
+		t.Fatalf("status: %s %s", out, stderr)
+	}
+	var st struct {
+		Tree struct {
+			Nodes map[string]struct {
+				NorthStar       string   `json:"north_star"`
+				Must            []string `json:"must"`
+				MustNot         []string `json:"must_not"`
+				SuccessCriteria []string `json:"success_criteria"`
+				Decision        string   `json:"decision"`
+				Rationale       string   `json:"rationale"`
+				Alternatives    []string `json:"alternatives"`
+				Consequences    []string `json:"consequences"`
+				Provenance      string   `json:"provenance"`
+			} `json:"nodes"`
+		} `json:"tree"`
+	}
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		t.Fatal(err)
+	}
+	goal := st.Tree.Nodes["goal1"]
+	if goal.NorthStar != "successor resumes with zero context loss" {
+		t.Fatalf("north star not recorded: %+v", goal)
+	}
+	if len(goal.Must) != 2 || len(goal.MustNot) != 1 || len(goal.SuccessCriteria) != 1 {
+		t.Fatalf("goal constraints not recorded: %+v", goal)
+	}
+	dec := st.Tree.Nodes["dec1"]
+	if dec.Decision != "hash the body" || dec.Rationale != "detect tampering" ||
+		len(dec.Alternatives) != 1 || len(dec.Consequences) != 1 || dec.Provenance != "imported" {
+		t.Fatalf("decision fields not recorded: %+v", dec)
+	}
+
+	// The packet must carry the same structure.
+	if _, stderr, code := runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo); code != 0 {
+		t.Fatalf("handoff prepare: %s", stderr)
+	}
+	packets, err := filepath.Glob(filepath.Join(ws, "handoff", "*.json"))
+	if err != nil || len(packets) != 1 {
+		t.Fatalf("packet files: %v %v", packets, err)
+	}
+	b, err := os.ReadFile(packets[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var packet struct {
+		Goal struct {
+			NorthStar       string   `json:"north_star"`
+			Must            []string `json:"must"`
+			SuccessCriteria []string `json:"success_criteria"`
+		} `json:"goal"`
+		Decisions []struct {
+			Rationale string `json:"rationale"`
+		} `json:"decisions"`
+		NextSteps []struct {
+			ID string `json:"id"`
+		} `json:"next_steps"`
+		ProvenanceSummary map[string]int `json:"provenance_summary"`
+	}
+	if err := json.Unmarshal(b, &packet); err != nil {
+		t.Fatal(err)
+	}
+	if packet.Goal.NorthStar != "successor resumes with zero context loss" || len(packet.Goal.Must) != 2 {
+		t.Fatalf("packet goal block incomplete: %+v", packet.Goal)
+	}
+	if len(packet.Decisions) != 1 || packet.Decisions[0].Rationale != "detect tampering" {
+		t.Fatalf("packet decisions incomplete: %+v", packet.Decisions)
+	}
+	if len(packet.NextSteps) != 1 || packet.NextSteps[0].ID != "task1" {
+		t.Fatalf("packet next steps incomplete: %+v", packet.NextSteps)
+	}
+	if packet.ProvenanceSummary["imported"] != 1 {
+		t.Fatalf("packet provenance summary incomplete: %+v", packet.ProvenanceSummary)
+	}
+}

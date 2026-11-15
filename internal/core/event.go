@@ -67,6 +67,19 @@ type NodePayload struct {
 	Owner        string   `json:"owner,omitempty"`
 	EvidenceIDs  []string `json:"evidence_ids,omitempty"`
 	UserOverride bool     `json:"user_override,omitempty"`
+	// Goal fields (REQ-ST-001); valid only on goal nodes.
+	NorthStar       string   `json:"north_star,omitempty"`
+	Must            []string `json:"must,omitempty"`
+	MustNot         []string `json:"must_not,omitempty"`
+	SuccessCriteria []string `json:"success_criteria,omitempty"`
+	// Decision fields (REQ-ST-002); valid only on decision nodes.
+	Decision     string   `json:"decision,omitempty"`
+	Rationale    string   `json:"rationale,omitempty"`
+	Alternatives []string `json:"alternatives,omitempty"`
+	Consequences []string `json:"consequences,omitempty"`
+	// Provenance (REQ-ST-005).
+	Provenance string   `json:"provenance,omitempty"`
+	Confidence *float64 `json:"confidence,omitempty"`
 }
 
 type EvidencePayload struct {

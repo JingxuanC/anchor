@@ -524,11 +524,40 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 				return fmt.Errorf("parent %s not found", p.ParentID)
 			}
 		}
-		n := &Node{ID: p.NodeID, Type: t, Title: p.Title, ParentID: p.ParentID, Status: InitialStatus(t), Revision: 1, Owner: p.Owner, LeaseID: e.LeaseID, FencingToken: e.FencingToken, LastEventID: e.EventID}
+		if err := validateNodeDetailFields(t, p, e.ActorAttestation); err != nil {
+			return err
+		}
+		n := &Node{ID: p.NodeID, Type: t, Title: p.Title, ParentID: p.ParentID, Status: InitialStatus(t), Revision: 1, Owner: p.Owner, LeaseID: e.LeaseID, FencingToken: e.FencingToken, LastEventID: e.EventID,
+			NorthStar: p.NorthStar, Must: p.Must, MustNot: p.MustNot, SuccessCriteria: p.SuccessCriteria,
+			Decision: p.Decision, Rationale: p.Rationale, Alternatives: p.Alternatives, Consequences: p.Consequences,
+			Provenance: Provenance(p.Provenance), Confidence: p.Confidence}
 		tree.Nodes[p.NodeID] = n
 		return nil
 	}
 	return fmt.Errorf("unsupported event type %s", e.Type)
+}
+
+// validateNodeDetailFields enforces the goal/decision/provenance rules of the
+// node payload before it can enter the projection.
+func validateNodeDetailFields(t NodeType, p NodePayload, attestation string) error {
+	hasGoal := p.NorthStar != "" || len(p.Must) > 0 || len(p.MustNot) > 0 || len(p.SuccessCriteria) > 0
+	if hasGoal && t != NodeGoal {
+		return fmt.Errorf("goal fields require a goal node")
+	}
+	hasDecision := p.Decision != "" || p.Rationale != "" || len(p.Alternatives) > 0 || len(p.Consequences) > 0
+	if hasDecision && t != NodeDecision {
+		return fmt.Errorf("decision fields require a decision node")
+	}
+	if !ValidProvenance(p.Provenance) {
+		return fmt.Errorf("invalid provenance %q", p.Provenance)
+	}
+	if p.Provenance == string(ProvenanceUserConfirmed) && attestation == "" {
+		return fmt.Errorf("user_confirmed provenance requires a local user attestation")
+	}
+	if p.Confidence != nil && (*p.Confidence < 0 || *p.Confidence > 1) {
+		return fmt.Errorf("confidence must be between 0 and 1")
+	}
+	return nil
 }
 
 func containsString(ss []string, want string) bool {
@@ -598,8 +627,41 @@ func applyMutation(tree *Tree, e Event, nodeID string, verify EvidenceVerifier) 
 		}
 		n.Status = to
 	case EvNodeUpdated:
+		if err := validateNodeDetailFields(n.Type, p, e.ActorAttestation); err != nil {
+			return err
+		}
 		if p.Title != "" {
 			n.Title = p.Title
+		}
+		if p.NorthStar != "" {
+			n.NorthStar = p.NorthStar
+		}
+		if len(p.Must) > 0 {
+			n.Must = p.Must
+		}
+		if len(p.MustNot) > 0 {
+			n.MustNot = p.MustNot
+		}
+		if len(p.SuccessCriteria) > 0 {
+			n.SuccessCriteria = p.SuccessCriteria
+		}
+		if p.Decision != "" {
+			n.Decision = p.Decision
+		}
+		if p.Rationale != "" {
+			n.Rationale = p.Rationale
+		}
+		if len(p.Alternatives) > 0 {
+			n.Alternatives = p.Alternatives
+		}
+		if len(p.Consequences) > 0 {
+			n.Consequences = p.Consequences
+		}
+		if p.Provenance != "" {
+			n.Provenance = Provenance(p.Provenance)
+		}
+		if p.Confidence != nil {
+			n.Confidence = p.Confidence
 		}
 	case EvNoteUpdated:
 		if n.Type != NodeNote {
