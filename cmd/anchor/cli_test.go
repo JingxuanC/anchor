@@ -587,6 +587,18 @@ func TestCLIEvidenceArtifactSecurityAndDoneGate(t *testing.T) {
 		t.Fatalf("evidence add failed: %s %s", out, errText)
 	}
 	blob := filepath.Join(ws, "evidence", "blobs", digest)
+	orphan := strings.Repeat("b", 64)
+	orphanPath := filepath.Join(ws, "evidence", "blobs", orphan)
+	if err := os.WriteFile(orphanPath, []byte("unreferenced fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auditOut, _, code := runCLI(t, root, "evidence", "audit", "--dir", ws, "--json")
+	if code != 0 || !strings.Contains(auditOut, `"read_only": true`) || !strings.Contains(auditOut, `"gc_performed": false`) || !strings.Contains(auditOut, orphan) {
+		t.Fatalf("evidence audit failed: %s", auditOut)
+	}
+	if _, err := os.Stat(orphanPath); err != nil {
+		t.Fatal("audit deleted the orphan blob")
+	}
 	info, err := os.Stat(blob)
 	if err != nil {
 		t.Fatal(err)

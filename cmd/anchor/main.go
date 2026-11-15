@@ -65,6 +65,7 @@ func usage() {
   anchor node transition --dir DIR --id ID --to STATUS
   anchor note set --dir DIR --id ID --text TEXT
   anchor evidence add --dir DIR --id EVID --node NODE --kind KIND --file PATH [--sha256 HEX64]
+  anchor evidence audit --dir DIR [--json]
   anchor ownership takeover --dir DIR --id ID --owner NAME
   anchor handoff prepare --dir DIR --repo REPO
   anchor handoff restore --dir DIR --repo REPO --packet PACKET.json
@@ -353,7 +354,15 @@ func mutationParents(n *core.Node) []string {
 }
 
 func cmdEvidence(args []string) {
-	if len(args) < 1 || args[0] != "add" {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	if args[0] == "audit" {
+		evidenceAudit(args[1:])
+		return
+	}
+	if args[0] != "add" {
 		usage()
 		os.Exit(2)
 	}
@@ -375,7 +384,7 @@ func cmdEvidence(args []string) {
 	}
 	var out core.Event
 	_, err = store.Transact(func(tx *core.Tx) error {
-		pb, _ := json.Marshal(core.EvidencePayload{EvidenceID: *id, NodeID: *node, Kind: *kind, SHA256: artifact.SHA256, Size: artifact.Size})
+		pb, _ := json.Marshal(core.EvidencePayload{EvidenceID: *id, NodeID: *node, Kind: *kind, SHA256: artifact.SHA256, Size: artifact.Size, ArtifactSchema: 1})
 		e, err := localEvent(*dir, core.Event{Type: core.EvEvidenceAdded, Payload: pb})
 		if err != nil {
 			return err
@@ -387,6 +396,33 @@ func cmdEvidence(args []string) {
 		die(err)
 	}
 	fmt.Printf("evidence %s added sha256=%s size=%d (%s)\n", *id, artifact.SHA256, artifact.Size, out.EventID)
+}
+
+func evidenceAudit(args []string) {
+	fs := flag.NewFlagSet("evidence audit", flag.ExitOnError)
+	dir := fs.String("dir", ".", "workspace directory")
+	asJSON := fs.Bool("json", false, "JSON output")
+	_ = fs.Parse(args)
+	a, err := openStore(*dir).AuditEvidence()
+	if err != nil {
+		die(err)
+	}
+	if *asJSON {
+		b, _ := json.MarshalIndent(a, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("read_only=%v gc_performed=%v referenced=%d blobs=%d orphan=%d invalid=%d legacy=%d\n",
+		a.ReadOnly, a.GCPerformed, len(a.Referenced), len(a.BlobFiles), len(a.OrphanBlobs), len(a.InvalidArtifacts), len(a.LegacyEvidence))
+	for _, id := range a.OrphanBlobs {
+		fmt.Printf("orphan %s (not deleted)\n", id)
+	}
+	for _, issue := range a.InvalidArtifacts {
+		fmt.Printf("invalid %s\n", issue)
+	}
+	for _, legacy := range a.LegacyEvidence {
+		fmt.Printf("legacy %s\n", legacy)
+	}
 }
 
 func cmdStatus(args []string) {

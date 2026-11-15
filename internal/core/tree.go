@@ -44,11 +44,12 @@ type Node struct {
 }
 
 type EvidenceEntry struct {
-	EvidenceID string `json:"evidence_id"`
-	NodeID     string `json:"node_id"`
-	Kind       string `json:"kind"`
-	SHA256     string `json:"sha256"`
-	Size       int64  `json:"size"`
+	EvidenceID     string `json:"evidence_id"`
+	NodeID         string `json:"node_id"`
+	Kind           string `json:"kind"`
+	SHA256         string `json:"sha256"`
+	Size           int64  `json:"size"`
+	ArtifactSchema int    `json:"artifact_schema"`
 }
 
 type Tree struct {

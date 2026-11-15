@@ -381,6 +381,15 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 		if p.Size < 0 {
 			return fmt.Errorf("evidence size must be non-negative")
 		}
+		if p.ArtifactSchema < 0 {
+			return fmt.Errorf("invalid evidence artifact_schema %d", p.ArtifactSchema)
+		}
+		if p.ArtifactSchema > 1 {
+			return fmt.Errorf("unsupported evidence artifact_schema %d", p.ArtifactSchema)
+		}
+		if verify != nil && p.ArtifactSchema == 0 {
+			return fmt.Errorf("legacy evidence schema: artifact bytes were not registered; explicit evidence add --file is required (no automatic migration)")
+		}
 		b, err := hex.DecodeString(p.SHA256)
 		if err != nil || len(b) != 32 {
 			return fmt.Errorf("evidence sha256 must be 64 hex characters")
@@ -394,7 +403,7 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 		if _, exists := tree.Evidence[p.EvidenceID]; exists {
 			return fmt.Errorf("evidence %s already exists", p.EvidenceID)
 		}
-		entry := EvidenceEntry{EvidenceID: p.EvidenceID, NodeID: p.NodeID, Kind: p.Kind, SHA256: p.SHA256, Size: p.Size}
+		entry := EvidenceEntry{EvidenceID: p.EvidenceID, NodeID: p.NodeID, Kind: p.Kind, SHA256: p.SHA256, Size: p.Size, ArtifactSchema: p.ArtifactSchema}
 		if verify != nil {
 			if err := verify(entry); err != nil {
 				return fmt.Errorf("evidence artifact verification failed: %w", err)

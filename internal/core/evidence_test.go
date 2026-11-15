@@ -20,7 +20,7 @@ func writeArtifact(t *testing.T, content string) string {
 }
 
 func evidencePayload(id, node, digest string, size int64) json.RawMessage {
-	b, _ := json.Marshal(EvidencePayload{EvidenceID: id, NodeID: node, Kind: "test", SHA256: digest, Size: size})
+	b, _ := json.Marshal(EvidencePayload{EvidenceID: id, NodeID: node, Kind: "test", SHA256: digest, Size: size, ArtifactSchema: 1})
 	return b
 }
 
@@ -222,5 +222,92 @@ func TestEvidenceEventWithoutBytesRejected(t *testing.T) {
 	after, _ := s.LoadReport()
 	if len(after.Events) != len(before.Events) {
 		t.Fatal("rejected evidence event wrote bytes")
+	}
+}
+
+func TestLegacyEvidenceSchemaRejectedAndAudited(t *testing.T) {
+	ws := t.TempDir()
+	s, err := Open(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, created := seed(t, s)
+	legacyPayload := json.RawMessage(`{"evidence_id":"legacy-ev","node_id":"n1","kind":"test","sha256":"` + strings.Repeat("a", 64) + `","size":0}`)
+	ev := Event{
+		SchemaVersion: SchemaVersion, EventID: "legacy-event", DeviceID: "d1", DeviceSeq: 1,
+		Type: EvEvidenceAdded, CausalParents: []string{created.EventID}, Payload: legacyPayload,
+	}
+	if err := ev.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(ev)
+	if err := os.WriteFile(filepath.Join(ws, "events", "legacy-event.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadReplay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range r.Conflicts {
+		if strings.Contains(c.Reason, "legacy evidence schema") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("legacy evidence schema not diagnosed: %+v", r.Conflicts)
+	}
+	a, err := s.AuditEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.ReadOnly || a.GCPerformed {
+		t.Fatalf("audit must be read-only: %+v", a)
+	}
+	if len(a.LegacyEvidence) != 1 || !strings.Contains(a.LegacyEvidence[0], "legacy-ev") {
+		t.Fatalf("legacy evidence not audited: %+v", a.LegacyEvidence)
+	}
+}
+
+func TestEvidenceAuditReportsOrphansWithoutDeleting(t *testing.T) {
+	ws := t.TempDir()
+	s, err := Open(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, created := seed(t, s)
+	art, err := s.PutEvidenceFile(writeArtifact(t, "audited fixture\n"), "", []string{"ev1", "n1", "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(Event{Type: EvEvidenceAdded, CausalParents: []string{created.EventID}, Payload: evidencePayload("ev1", "n1", art.SHA256, art.Size)}); err != nil {
+		t.Fatal(err)
+	}
+	orphan := strings.Repeat("b", 64)
+	orphanPath := filepath.Join(ws, "evidence", "blobs", orphan)
+	if err := os.WriteFile(orphanPath, []byte("unreferenced local fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.AuditEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.ReadOnly || a.GCPerformed {
+		t.Fatalf("audit claimed mutation: %+v", a)
+	}
+	if len(a.OrphanBlobs) != 1 || a.OrphanBlobs[0] != orphan {
+		t.Fatalf("orphan not reported: %+v", a.OrphanBlobs)
+	}
+	if _, err := os.Stat(orphanPath); err != nil {
+		t.Fatal("audit deleted the orphan blob")
+	}
+	found := false
+	for _, d := range a.Referenced {
+		if d == art.SHA256 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("referenced digest missing: %+v", a.Referenced)
 	}
 }

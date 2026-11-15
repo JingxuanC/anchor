@@ -3,10 +3,12 @@ package core
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -230,4 +232,77 @@ func (s *Store) LoadReplay() (ReplayResult, error) {
 		return ReplayResult{}, err
 	}
 	return ReplayVerified(events, s.VerifyEvidence), nil
+}
+
+type EvidenceAudit struct {
+	ReadOnly         bool         `json:"read_only"`
+	GCPerformed      bool         `json:"gc_performed"`
+	Referenced       []string     `json:"referenced_digests"`
+	BlobFiles        []string     `json:"blob_files"`
+	OrphanBlobs      []string     `json:"orphan_blobs"`
+	InvalidArtifacts []string     `json:"invalid_artifacts"`
+	LegacyEvidence   []string     `json:"legacy_evidence"`
+	Quarantined      []Quarantine `json:"quarantined,omitempty"`
+	MigrationNote    string       `json:"migration_note"`
+}
+
+// AuditEvidence is read-only. It never deletes blobs and never rewrites events.
+func (s *Store) AuditEvidence() (EvidenceAudit, error) {
+	report, err := s.LoadReport()
+	if err != nil {
+		return EvidenceAudit{}, err
+	}
+	audit := EvidenceAudit{
+		ReadOnly: true, GCPerformed: false, Quarantined: report.Quarantined,
+		MigrationNote: "no automatic migration or GC; legacy evidence requires explicit evidence add --file",
+	}
+	referenced := map[string]bool{}
+	for _, e := range report.Events {
+		if e.Type != EvEvidenceAdded {
+			continue
+		}
+		var p EvidencePayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			audit.InvalidArtifacts = append(audit.InvalidArtifacts, e.EventID+": invalid evidence payload")
+			continue
+		}
+		if p.ArtifactSchema != 1 {
+			audit.LegacyEvidence = append(audit.LegacyEvidence, fmt.Sprintf("%s (schema %d)", p.EvidenceID, p.ArtifactSchema))
+			continue
+		}
+		referenced[p.SHA256] = true
+		entry := EvidenceEntry{EvidenceID: p.EvidenceID, NodeID: p.NodeID, Kind: p.Kind, SHA256: p.SHA256, Size: p.Size, ArtifactSchema: p.ArtifactSchema}
+		if err := s.VerifyEvidence(entry); err != nil {
+			audit.InvalidArtifacts = append(audit.InvalidArtifacts, p.EvidenceID+": "+err.Error())
+		}
+	}
+	blobsDir := s.evidenceBlobs()
+	if info, err := os.Lstat(blobsDir); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return EvidenceAudit{}, fmt.Errorf("evidence blob store must be a real directory")
+		}
+		entries, err := os.ReadDir(blobsDir)
+		if err != nil {
+			return EvidenceAudit{}, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			audit.BlobFiles = append(audit.BlobFiles, name)
+			if !referenced[name] {
+				audit.OrphanBlobs = append(audit.OrphanBlobs, name)
+			}
+		}
+	}
+	for digest := range referenced {
+		audit.Referenced = append(audit.Referenced, digest)
+	}
+	sort.Strings(audit.Referenced)
+	sort.Strings(audit.BlobFiles)
+	sort.Strings(audit.OrphanBlobs)
+	sort.Strings(audit.InvalidArtifacts)
+	sort.Strings(audit.LegacyEvidence)
+	return audit, nil
 }
