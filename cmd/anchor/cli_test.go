@@ -2121,3 +2121,39 @@ func TestCLIExportImportRebuildsWorkspace(t *testing.T) {
 		t.Fatal("tampered import created a target")
 	}
 }
+
+// TestCLIAttachKeepsHandoffInsideState ensures an attached workspace keeps every
+// state artifact under .anchor, including handoff packets (regression: packets
+// were written to the project directory instead of the resolved state root).
+func TestCLIAttachKeepsHandoffInsideState(t *testing.T) {
+	project := initRepo(t)
+	if _, stderr, code := runCLI(t, project, "init", "--attach", "--dir", project, "--workspace", "ws1", "--device", "dev1"); code != 0 {
+		t.Fatalf("attach: %s", stderr)
+	}
+	runCLI(t, project, "node", "create", "--dir", project, "--id", "goal1", "--type", "goal", "--title", "G")
+	if _, stderr, code := runCLI(t, project, "handoff", "prepare", "--dir", project, "--repo", project); code != 0 {
+		t.Fatalf("prepare: %s", stderr)
+	}
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packets, err := filepath.Glob(filepath.Join(canonical, ".anchor", "handoff", "ho_*.json"))
+	if err != nil || len(packets) != 1 {
+		t.Fatalf("packet not stored under .anchor/handoff: %v %v", packets, err)
+	}
+	if _, err := os.Stat(filepath.Join(canonical, "handoff")); !os.IsNotExist(err) {
+		t.Fatal("handoff packet polluted the project directory")
+	}
+	out, stderr, code := runCLI(t, project, "handoff", "status", "--dir", project, "--repo", project)
+	if code != 0 {
+		t.Fatalf("handoff status: %s %s", out, stderr)
+	}
+	if !strings.Contains(out, `"handoff_id"`) || strings.Contains(out, "no prepared handoff") {
+		t.Fatalf("attached handoff not found by status: %s", out)
+	}
+	// Export must pick the packet up from the attached state too.
+	if out, stderr, code := runCLI(t, project, "handoff", "export", "--dir", project, "--repo", project, "--out", filepath.Join(t.TempDir(), "pkg"), "--json"); code != 0 {
+		t.Fatalf("export from attached workspace failed: %s %s", out, stderr)
+	}
+}

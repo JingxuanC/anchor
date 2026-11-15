@@ -390,7 +390,7 @@ func Prepare(dir, repo string) (Packet, string, error) {
 	sum := sha256.Sum256(body)
 	p.ContentHash = hex.EncodeToString(sum[:])
 	b, _ := json.MarshalIndent(p, "", "  ")
-	hd := filepath.Join(dir, "handoff")
+	hd := filepath.Join(store.Dir, "handoff")
 	if err := os.MkdirAll(hd, 0o700); err != nil {
 		return Packet{}, "", err
 	}
@@ -425,7 +425,11 @@ func Load(path string) (Packet, error) {
 }
 
 func Latest(dir string) (Packet, string, error) {
-	paths, err := filepath.Glob(filepath.Join(dir, "handoff", "ho_*.json"))
+	stateDir, err := core.StateDir(dir)
+	if err != nil {
+		return Packet{}, "", err
+	}
+	paths, err := filepath.Glob(filepath.Join(stateDir, "handoff", "ho_*.json"))
 	if err != nil {
 		return Packet{}, "", err
 	}
