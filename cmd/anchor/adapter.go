@@ -48,7 +48,8 @@ func adapterUsage() {
   anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print | --capture-dir DIR)
   anchor adapter detect [--json]
   anchor adapter install --adapter claude-code --dir DIR [--repo PROJECT]
-      [--scope project|user] [--apply | --uninstall] [--anchor-path PATH] [--json]
+      [--scope project|user] [--apply | --uninstall] [--with-mcp]
+      [--anchor-path PATH] [--json]
   anchor adapter ingest --adapter ID --dir WS --node NODE (--event FILE | --stdin) [--source fixture|hook_unverified] [--json]`)
 }
 
@@ -349,6 +350,7 @@ func adapterInstall(args []string) {
 	scope := fs.String("scope", "project", "project|user")
 	apply := fs.Bool("apply", false, "write the change (default is a plan)")
 	uninstall := fs.Bool("uninstall", false, "remove the managed hook entries")
+	withMCP := fs.Bool("with-mcp", false, "also register the read-only Anchor MCP server in the project's .mcp.json")
 	anchorPath := fs.String("anchor-path", "", "override the anchor executable recorded in hook commands")
 	asJSON := fs.Bool("json", false, "JSON output")
 	_ = fs.Parse(args)
@@ -360,7 +362,7 @@ func adapterInstall(args []string) {
 	stateDir := store.Dir
 	plan, err := adapter.Install(adapter.InstallOptions{
 		AdapterID: *id, StateDir: stateDir, RepoDir: *repo, Scope: *scope,
-		AnchorPath: *anchorPath, Apply: *apply, Uninstall: *uninstall,
+		AnchorPath: *anchorPath, Apply: *apply, Uninstall: *uninstall, WithMCP: *withMCP,
 	})
 	if err != nil {
 		die(err)
@@ -384,6 +386,9 @@ func adapterInstall(args []string) {
 		} else {
 			fmt.Printf("  backup (on apply): %s\n", plan.BackupPath)
 		}
+	}
+	if plan.MCPPath != "" {
+		fmt.Printf("  mcp config: %s (registered=%v)\n", plan.MCPPath, plan.MCPConfigured || plan.AlreadyInstalled)
 	}
 	if plan.AlreadyInstalled {
 		fmt.Println("  already installed; nothing to change")

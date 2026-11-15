@@ -58,6 +58,10 @@ func main() {
 		cmdHandoff(os.Args[2:])
 	case "adapter":
 		cmdAdapter(os.Args[2:])
+	case "wrap":
+		cmdWrap(os.Args[2:])
+	case "mcp":
+		cmdMcp(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -97,7 +101,10 @@ func usage() {
   anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print | --capture-dir DIR)
   anchor adapter detect [--json]
   anchor adapter install --adapter claude-code --dir DIR [--repo PROJECT]
-      [--scope project|user] [--apply | --uninstall] [--anchor-path PATH] [--json]
+      [--scope project|user] [--apply | --uninstall] [--with-mcp]
+      [--anchor-path PATH] [--json]
+  anchor wrap --dir DIR --node NODE [--repo PROJECT] [--prepare-handoff] [--json] -- <agent command> [args...]
+  anchor mcp serve [--dir DIR]                    (read-only MCP tools over stdio)
   anchor adapter ingest --adapter ID --dir WS --node NODE (--event FILE | --stdin) [--source fixture|hook_unverified] [--json]
   anchor status --dir DIR --repo REPO [--json]
   anchor doctor --dir DIR --repo REPO [--json]`)

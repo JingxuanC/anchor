@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 61 Go files / ~25,000 LOC, of which ~17,300 lines are tests
-(372 top-level test functions, 953 `=== RUN` entries).
+Current tree: 80 Go files / ~30,700 LOC, of which ~19,400 lines are tests
+(417 top-level test functions, 986 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -39,7 +39,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | ST | 5 | 5 | 3 | 0 | 13 |
 | CAP | 4 | 5 | 0 | 0 | 9 |
 | RST | 8 | 0 | 3 | 0 | 11 |
-| AD | 2 | 8 | 3 | 0 | 13 |
+| AD | 4 | 7 | 2 | 0 | 13 |
 | CM | 0 | 1 | 12 | 0 | 13 |
 | SY | 2 | 6 | 4 | 0 | 12 |
 | CFG | 0 | 0 | 8 | 0 | 8 |
@@ -51,7 +51,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | SEC | 0 | 4 | 3 | 0 | 7 |
 | NFR | 2 | 2 | 3 | 0 | 7 |
 | OPS | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **32** | **51** | **56** | **1** | **140** |
+| **Total** | **34** | **50** | **55** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -121,7 +121,27 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    verifies evidence blobs and reports an honest `complete`/`incomplete` status.
    Legacy artifact-only packages still import their bytes but are reported as not
    rebuilding a workspace.
-12. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
+12. **Hookless fallback (`anchor wrap`)** — runs the agent CLI as a child with
+    inherited stdio and exact argv (never through a shell), records
+    `adapter_session_seen`/`adapter_session_ended` for adapter `wrap`, exports
+    `ANCHOR_WORKSPACE`/`NODE`/`SESSION`/`CONTEXT_FILE`, writes a context file
+    derived from the Session Tree (goal constraints, decisions, tasks, open
+    questions), forwards SIGINT/SIGTERM/SIGHUP, propagates the child's exit code
+    and optionally prepares the successor handoff at exit. Captured session
+    evidence stays `hook_unverified` / `unverified_adapter`.
+13. **Read-only MCP server + registration** — `anchor mcp serve` speaks
+    newline-delimited JSON-RPC 2.0 over stdio with four read-only tools
+    (`anchor_status`, `anchor_tree`, `anchor_evidence_verify`,
+    `anchor_restore_plan`), and `adapter install --with-mcp` registers that server
+    in the project's `.mcp.json` (merged, backed up, idempotent; uninstall removes
+    only the recorded entry). No mutation tool is exposed over MCP.
+14. **A/B benchmark harness** — `bench/` contains a small offline fixture project,
+    a two-phase (implement → resume with a fresh process) protocol, hidden
+    acceptance tests restored after the agent exits, and a runner
+    (`go run ./bench/ab`) with baseline vs anchor arms, a deterministic mock
+    agent for CI, and JSON/markdown reports. No real-agent numbers were produced
+    in this environment; see the caveats.
+15. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
 
@@ -195,15 +215,15 @@ authoritative.
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
 | AD-001 | implemented | `adapter.Detect`/`DetectAll`; `TestDetectRealClaudeWhenInstalled`, `TestCLIAdapterDetectReportsRealVersions` | Real, timeout-bounded `--version` detection; descriptors stay explicit and hook evidence stays `unverified`. |
-| AD-002 | partial | `render.go:38`; `TestRenderGolden` | Only a `PostToolUse` fragment: no MCP registration, CLAUDE.md/rules, install/uninstall. |
+| AD-002 | partial | `install.go`; `TestCLIAdapterInstallContractE2E`, `TestCLIAdapterInstallMCPRegistrationE2E` | Claude Code hooks + MCP server can be installed/uninstalled; rules-file (CLAUDE.md managed block) management is still missing. |
 | AD-003 | partial | `render.go:59`; `TestRenderGolden` | Fragment only: no AGENTS.md, MCP, install, trust handling. |
 | AD-004 | partial | `render.go:50`; `TestRenderGolden` | Fragment only: no GEMINI.md, extensions, MCP, install. |
-| AD-005 | partial | `cmd/anchor/adapter.go:124` | No `anchor wrap`; no restore path. |
+| AD-005 | implemented | `cmd/anchor/wrap.go`; `TestCLIWrapRunsChildAndRecordsSession`, `TestCLIWrapForwardsTerminationSignals` | Hookless fallback: session seen/ended events, context file + env injection, exact argv, signal forwarding, exit-code propagation, optional handoff prepare. |
 | AD-006 | implemented (claude-code) | `adapter.Install`; `TestInstallPlanThenApplyThenUninstall`, `TestCLIAdapterInstallContractE2E` | Plan-first install, idempotent apply, backup, managed state, uninstall, drift tolerance. Codex/Gemini installs are not implemented. |
 | AD-007 | partial | `contract.go:13`, `render.go:35` | Descriptor has no version field; per-ID switch is a cross-agent assumption. |
 | AD-008 | partial | `contract.go:30`; `TestCLIAdapterDryRunCaptureAndNoSharedInstall` | Fixtures carry no `source`/retrieval-date field; no UI labels. |
-| AD-009 | partial | `render.go:31` (shell string, bare `anchor`) | No argv array, absolute exe, env allowlist, timeout, or process-group handling. |
-| AD-010 | missing | `mcp` appears only in `not_claimed` strings | No MCP server, no registration. |
+| AD-009 | partial | `install.go` (absolute exe, quoted shell command, timeout), `wrap.go` (argv); `TestInstallRefusesUnsafeTargets` | Hook commands are still shell strings (the native schema requires one), though they use an absolute, quoted executable and a timeout; no env allowlist or process-group handling. |
+| AD-010 | implemented | `internal/mcp`; `TestServeProtocol`, `TestCLIMcpServeContract`, `TestCLIAdapterInstallMCPRegistrationE2E` | Read-only MCP stdio server (status/tree/evidence/restore-plan) plus project `.mcp.json` registration via `adapter install --with-mcp`; no mutation tools by design. |
 | AD-011 | missing | no injection or limit constants | Entire behavior absent. |
 | AD-012 | missing | no config management | No drift detection or explicit re-apply. |
 | AD-013 | partial | `contract.go:37` | No enforcement-state field, no capture-failure log, no policy hook. |
@@ -329,10 +349,9 @@ matches only capability strings.
 Ranked by "what blocks a usable local segment":
 
 1. ~~**Make restore actually restore** (RST-003/008, EVID-003).~~ **Done** —
-   `handoff restore` now emits a plan, records `handoff_acked`/`handoff_verified`,
-   and gates node mutations until verification. Code bytes are now transported
-   too (`--include-code` + `handoff apply-code`). Remaining: bundles are capped at
-   the package file limit (64 MiB) and are not signed.
+   `handoff restore` emits a plan, records `handoff_acked`/`handoff_verified` and
+   gates node mutations until verification; code bytes are transported with
+   `--include-code` + `handoff apply-code`.
 2. ~~**Carry the workspace inside the export package** (WS-007).~~ **Done** — the
    package always carries the workspace manifest and event log; import rebuilds,
    replays and verifies. Remaining: config/rules snapshot and bundled commit bytes.
@@ -342,27 +361,35 @@ Ranked by "what blocks a usable local segment":
 4. **Context injection + managed rules files** (RST-002, AD-002/003/004/006,
    CFG-002/007). Managed-block renderer for `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` with
    dry-run/diff, backup, idempotent re-apply, and size-capped SessionStart injection.
-5. **Provenance + local user attestation** (ST-005/013, RST-010, EVID-002). Provenance
-   enum + confidence on nodes/events; local attestation token validated in replay; an
-   `override_recorded` event with reason.
-6. **Wire real capture** (CAP-001, AD-001/005/009). Detect installed CLI/version,
-   install/merge a real Claude hook (backup + trust instructions), surface capture
-   failures in `doctor`, add `anchor wrap` fallback.
+   Installation of hooks and MCP is done; rules-file management is not.
+5. **Provenance + local user attestation** (ST-005/013, RST-010, EVID-002). Node
+   provenance is enforced; event-level attestation and `override_recorded` are not.
+6. ~~**Wire real capture** (CAP-001, AD-001/005/009).~~ **Done except live
+   validation** — detection, Claude hook install/uninstall, `--capture-dir`, a
+   doctor check and `anchor wrap` fallback all landed. Remaining: exercise the
+   hook inside a logged-in agent (impossible here: Claude Code is not logged in).
 7. ~~**Fix adoption: `init --attach`** (WS-001).~~ **Done** — state lives in
    `<project>/.anchor`, user files are untouched, and every command resolves the
    attached state root from the project directory.
 8. **Human-readable projections + `tree` view** (WS-002, UI-001). Deterministic
    `TREE.md` + `state.json`, `anchor tree [--json]`, and a `branch` command.
-9. **Expose Anchor tools over MCP** (AD-010) before the memory bridge. Minimal stdio
-   server: `anchor_status`, `anchor_tree`, `anchor_verify_evidence`.
-10. **Make dirty code recoverable** (RST-007/008, SY-005). Emit a git bundle/patch
-    artifact plus a restore plan (`git bundle verify`, backup ref, `--force` on dirty).
+9. ~~**Expose Anchor tools over MCP** (AD-010) before the memory bridge.~~ **Done**
+   — stdio server with four read-only tools, registered by `adapter install
+   --with-mcp`. Deliberately no mutation tools yet.
+10. ~~**Make dirty code recoverable** (RST-007/008, SY-005).~~ **Done** — git
+    bundle + hashed diffs/untracked bytes, verified against the packet, applied
+    with backup refs, stash and rollback.
 11. **Complete the ownership lifecycle** (CONC-001/002). Lease expiry in replay,
     claim/release/heartbeat commands, stale-owner takeover only after expiry,
-    ownership audit query.
+    ownership audit query. (Fencing and isolation already work; expiry is not
+    enforced and heartbeat/release commands are missing.)
 12. **Make it shippable** (WS-003/008, OPS-001..004, NFR-001). `migrate` with
     dry-run/backup/rollback, `uninstall --purge` confirmation, CI (gofmt/vet/race on
     3 OSes), checksummed release builds.
+13. **Produce real A/B numbers** (benchmark). The harness is done and
+    mock-validated; a logged-in agent must run
+    `go run ./bench/ab --trials 5 --agent-cmd "claude -p"` (see
+    `bench/README.md`). No real-agent numbers exist in this checkout.
 
 ## 5. Status ledger (authoritative)
 
@@ -434,15 +461,15 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 | Req | Status | Note |
 |---|---|---|
 | AD-001 | implemented | real CLI version detection |
-| AD-002 | partial | claude hooks install via merged settings; MCP/rules still missing |
+| AD-002 | partial | claude hooks + MCP server installed; CLAUDE.md rules block still missing |
 | AD-003 | partial |  |
 | AD-004 | partial |  |
-| AD-005 | partial |  |
+| AD-005 | implemented | `anchor wrap` fallback (session events, context file, signal/exit propagation) |
 | AD-006 | implemented | claude-code hook install/uninstall (plan-first, backed up) |
 | AD-007 | partial |  |
 | AD-008 | partial |  |
-| AD-009 | partial |  |
-| AD-010 | missing | no MCP server |
+| AD-009 | partial | absolute quoted exe + timeout; hook command remains a shell string |
+| AD-010 | implemented | read-only MCP stdio server + `.mcp.json` registration |
 | AD-011 | missing |  |
 | AD-012 | missing |  |
 | AD-013 | partial |  |
@@ -603,9 +630,11 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `internal/adapter` | 75.8% | 82.6% | Remaining gaps are `json.Marshal`/`Write` error branches. |
 | `internal/handoff` | 78.1% | 93.3% | Goal ranking, packet blocks, stale/detached eval covered. |
 | `internal/recovery` | 51.9% | 85.4% | Export/import branches, staging atomicity, limits, legacy packages covered. |
+| `internal/mcp` | new | 83.5% | Protocol/JSON-RPC edge cases and all four read-only tools. |
+| `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 372 top-level test functions / 953 run entries, ~17,300 test lines.
+Test suite: 417 top-level test functions / 986 run entries, ~19,400 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
@@ -630,6 +659,23 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   false. Installation manages only Claude Code in this build, rewrites the
   settings file (formatting changes, unknown keys preserved) and backs it up
   first; the user scope requires an explicit `--scope user`.
+- **`anchor wrap` is a fallback, not a hook.** It records session start/end
+  events (adapter `wrap`, source `hook_unverified`) plus a context file and
+  `ANCHOR_*` env vars; it does not capture tool calls (hooks do), and it
+  forwards signals/exit codes to the child. Its evidence is deliberately
+  labelled unverified.
+- **MCP tools are read-only.** `anchor mcp serve` proxies read-only inspection
+  (status/tree/evidence verify/restore plan) and never mutates the workspace or
+  records ack/verify. Registration happens only with
+  `adapter install --with-mcp` (project scope, `.mcp.json`, merged/backed up/
+  uninstallable). Protocol and CLI contract tests pass, but no live agent has
+  called the server from inside a real session in this environment.
+- **The A/B benchmark has no real-agent numbers here.** `bench/ab` is
+  deterministic and mock-validated (`go test ./bench/...`), with baseline vs
+  anchor arms and a fresh-process resume phase; the mock pass rates are a harness
+  self-test, not empirical evidence. Real numbers require a logged-in agent
+  (`bench/README.md` has the exact commands); Claude Code is installed but not
+  logged in, and the local codex provider emitted no tool actions.
 - **Secret scanning covers canonical state too.** Export scans event batches, so
   a note or title containing a credential-shaped string (for example
   `password=...`) blocks export. This is fail-closed on purpose (SEC-003) and the

@@ -6,7 +6,10 @@ package main
 // actually reachable and fails in a predictable way.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +69,7 @@ func TestCLIHelpListsEverySurface(t *testing.T) {
 		"anchor handoff export", "anchor handoff import", "anchor handoff status",
 		"anchor adapter capabilities", "anchor adapter render", "anchor adapter capture", "anchor adapter ingest",
 		"anchor adapter detect", "anchor adapter install", "--capture-dir",
+		"anchor wrap", "anchor mcp serve",
 		"anchor status", "anchor doctor",
 	}
 	for _, w := range want {
@@ -1662,5 +1666,247 @@ func TestCLIAdapterCaptureDirModes(t *testing.T) {
 	}
 	if _, stderr, code := runCLIInput(t, root, hookJSON, "adapter", "capture", "--adapter", "claude-code", "--stdin", "--capture-dir", filepath.Join(home, ".claude")); code != 1 {
 		t.Fatalf("capture into shared agent config accepted: %s", stderr)
+	}
+}
+
+// TestCLIMcpServeContract drives the MCP stdio server through the real binary:
+// initialize, tools/list and a tools/call round trip, then verifies the
+// workspace was not mutated by read-only tools.
+func TestCLIMcpServeContract(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+
+	before := snapshotDir(t, ws)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"anchor_status","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"anchor_tree","arguments":{"limit":5}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"bogus/method"}`,
+	}, "\n") + "\n"
+	cmd := exec.Command(anchorBin, "mcp", "serve", "--dir", ws)
+	cmd.Stdin = strings.NewReader(input)
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("mcp serve: %v %s", err, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 responses (notification is silent), got %d: %s", len(lines), stdout.String())
+	}
+	type rpcResp struct {
+		ID     *int            `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	byID := map[int]rpcResp{}
+	for _, line := range lines {
+		var r rpcResp
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("bad response line %q: %v", line, err)
+		}
+		if r.ID != nil {
+			byID[*r.ID] = r
+		}
+	}
+	var init struct {
+		ProtocolVersion string `json:"protocolVersion"`
+		ServerInfo      struct {
+			Name string `json:"name"`
+		} `json:"serverInfo"`
+	}
+	if err := json.Unmarshal(byID[1].Result, &init); err != nil || init.ProtocolVersion == "" || init.ServerInfo.Name != "anchor" {
+		t.Fatalf("initialize result wrong: %s", byID[1].Result)
+	}
+	var list struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(byID[2].Result, &list); err != nil || len(list.Tools) != 4 {
+		t.Fatalf("tools/list wrong: %s", byID[2].Result)
+	}
+	names := []string{}
+	for _, tool := range list.Tools {
+		names = append(names, tool.Name)
+	}
+	for _, want := range []string{"anchor_status", "anchor_tree", "anchor_evidence_verify", "anchor_restore_plan"} {
+		if !strings.Contains(strings.Join(names, ","), want) {
+			t.Fatalf("missing MCP tool %s: %v", want, names)
+		}
+	}
+	statusText := toolText(t, byID[3].Result)
+	var status struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if err := json.Unmarshal([]byte(statusText), &status); err != nil || status.WorkspaceID != "ws1" {
+		t.Fatalf("anchor_status result wrong: %s", statusText)
+	}
+	treeText := toolText(t, byID[4].Result)
+	if !strings.Contains(treeText, `"goal1"`) {
+		t.Fatalf("anchor_tree result missing the goal: %s", treeText)
+	}
+	if byID[5].Error == nil || byID[5].Error.Code != -32601 {
+		t.Fatalf("unknown method should be -32601: %+v", byID[5])
+	}
+	// Read-only guarantee: no workspace file changed.
+	after := snapshotDir(t, ws)
+	if before != after {
+		t.Fatalf("MCP read-only tools changed the workspace:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func toolText(t *testing.T, result json.RawMessage) string {
+	t.Helper()
+	var res struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(result, &res); err != nil {
+		t.Fatalf("bad tool result %s: %v", result, err)
+	}
+	if res.IsError || len(res.Content) == 0 || res.Content[0].Type != "text" {
+		t.Fatalf("tool error result: %s", result)
+	}
+	return res.Content[0].Text
+}
+
+// snapshotDir returns a stable digest of every regular file under dir.
+func snapshotDir(t *testing.T, dir string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		h.Write([]byte(rel + "\x00"))
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		h.Write(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// TestCLIAdapterInstallMCPRegistrationE2E installs the managed MCP server,
+// executes the exact command written into .mcp.json (handshake + tool call), and
+// uninstalls without touching a user's other MCP servers.
+func TestCLIAdapterInstallMCPRegistrationE2E(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	canonicalRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(canonicalRepo, ".mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{"other":{"command":"other-server","args":[]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code := runCLI(t, root, "adapter", "install", "--adapter", "claude-code", "--dir", ws, "--repo", repo, "--with-mcp", "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("install --with-mcp: %s%s", out, stderr)
+	}
+	var plan struct {
+		MCPPath       string `json:"mcp_path"`
+		MCPConfigured bool   `json:"mcp_configured"`
+	}
+	if err := json.Unmarshal([]byte(out), &plan); err != nil || plan.MCPPath != mcpPath || !plan.MCPConfigured {
+		t.Fatalf("MCP plan wrong: %s", out)
+	}
+	raw, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	server, ok := cfg.MCPServers["anchor"]
+	if !ok {
+		t.Fatalf("anchor MCP server missing: %s", raw)
+	}
+	if _, ok := cfg.MCPServers["other"]; !ok {
+		t.Fatalf("user MCP server lost: %s", raw)
+	}
+
+	// The registered command must work as an MCP server.
+	handshake := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"anchor_status","arguments":{}}}`,
+	}, "\n") + "\n"
+	mcpCmd := exec.Command(server.Command, server.Args...)
+	mcpCmd.Stdin = strings.NewReader(handshake)
+	var mcpOut, mcpErr strings.Builder
+	mcpCmd.Stdout, mcpCmd.Stderr = &mcpOut, &mcpErr
+	if err := mcpCmd.Run(); err != nil {
+		t.Fatalf("registered MCP server failed: %v %s", err, mcpErr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(mcpOut.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("registered MCP server responses = %d: %s", len(lines), mcpOut.String())
+	}
+	var resp struct {
+		ID     int `json:"id"`
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &resp); err != nil || resp.ID != 2 || len(resp.Result.Content) == 0 {
+		t.Fatalf("registered MCP status call wrong: %s", lines[1])
+	}
+	if !strings.Contains(resp.Result.Content[0].Text, `"workspace_id":"ws1"`) {
+		t.Fatalf("registered MCP status result wrong: %s", resp.Result.Content[0].Text)
+	}
+
+	// Uninstall removes only the managed entry.
+	if out, stderr, code := runCLI(t, root, "adapter", "install", "--adapter", "claude-code", "--dir", ws, "--repo", repo, "--uninstall", "--apply", "--json"); code != 0 {
+		t.Fatalf("uninstall: %s%s", out, stderr)
+	}
+	raw, err = os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var afterCfg struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &afterCfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := afterCfg.MCPServers["anchor"]; ok {
+		t.Fatalf("anchor MCP server left after uninstall: %s", raw)
+	}
+	if _, ok := afterCfg.MCPServers["other"]; !ok {
+		t.Fatalf("user MCP server lost after uninstall: %s", raw)
 	}
 }

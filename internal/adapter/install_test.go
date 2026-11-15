@@ -372,3 +372,90 @@ func TestDetectUnparsableVersionStillInstalled(t *testing.T) {
 		t.Fatalf("unparsable version detection wrong: %+v", d)
 	}
 }
+
+func TestInstallWithMCPRegistration(t *testing.T) {
+	stateDir, repoDir, anchorPath := installFixture(t)
+	// A user's existing MCP config must be preserved.
+	if err := os.WriteFile(filepath.Join(repoDir, ".mcp.json"), []byte(`{"mcpServers": {"other": {"command": "other-server", "args": []}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := InstallOptions{AdapterID: "claude-code", StateDir: stateDir, RepoDir: repoDir,
+		Scope: ScopeProject, AnchorPath: anchorPath, WithMCP: true, Apply: true,
+		Now: func() time.Time { return time.Unix(3000, 0) }}
+	plan, err := Install(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.MCPPath == "" || !plan.MCPConfigured || plan.MCPBackupPath == "" {
+		t.Fatalf("mcp registration not applied: %+v", plan)
+	}
+	raw, err := os.ReadFile(plan.MCPPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	servers := cfg["mcpServers"].(map[string]any)
+	if _, ok := servers["other"]; !ok {
+		t.Fatalf("user MCP server lost: %s", raw)
+	}
+	anchor, ok := servers["anchor"].(map[string]any)
+	if !ok {
+		t.Fatalf("anchor MCP server missing: %s", raw)
+	}
+	args, _ := anchor["args"].([]any)
+	if len(args) != 4 || args[0] != "mcp" || args[1] != "serve" || args[2] != "--dir" {
+		t.Fatalf("anchor MCP args wrong: %v", anchor)
+	}
+	if anchor["command"] != plan.AnchorPath {
+		t.Fatalf("anchor MCP command = %v, want %s", anchor["command"], plan.AnchorPath)
+	}
+	// Idempotent.
+	again, err := Install(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.AlreadyInstalled {
+		t.Fatalf("MCP re-install not idempotent: %+v", again)
+	}
+	// Uninstall removes both hook entries and the anchor MCP server.
+	opts.Uninstall = true
+	plan, err = Install(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.MCPRemoved || !plan.Applied {
+		t.Fatalf("MCP not removed: %+v", plan)
+	}
+	raw, err = os.ReadFile(plan.MCPPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	servers = cfg["mcpServers"].(map[string]any)
+	if _, ok := servers["anchor"]; ok {
+		t.Fatalf("anchor MCP server left behind: %s", raw)
+	}
+	if _, ok := servers["other"]; !ok {
+		t.Fatalf("user MCP server lost on uninstall: %s", raw)
+	}
+}
+
+func TestInstallWithMCPRefusesBadConfigAndUserScope(t *testing.T) {
+	stateDir, repoDir, anchorPath := installFixture(t)
+	if _, err := Install(InstallOptions{AdapterID: "claude-code", StateDir: stateDir, RepoDir: repoDir,
+		Scope: ScopeUser, AnchorPath: anchorPath, WithMCP: true, Apply: true}); err == nil || !strings.Contains(err.Error(), "requires project scope") {
+		t.Fatalf("user-scope MCP accepted: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".mcp.json"), []byte(`{"mcpServers": "bad"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(InstallOptions{AdapterID: "claude-code", StateDir: stateDir, RepoDir: repoDir,
+		Scope: ScopeProject, AnchorPath: anchorPath, WithMCP: true, Apply: true}); err == nil || !strings.Contains(err.Error(), "mcpServers value is not an object") {
+		t.Fatalf("malformed MCP config accepted: %v", err)
+	}
+}

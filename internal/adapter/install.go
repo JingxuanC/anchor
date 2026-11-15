@@ -31,18 +31,26 @@ type HookSpec struct {
 	Command string `json:"command"`
 }
 
+// MCPRegistration records a project-scope MCP server entry Anchor manages.
+type MCPRegistration struct {
+	Path   string         `json:"path"`
+	Server string         `json:"server"`
+	Value  map[string]any `json:"value"`
+}
+
 // InstallState is the on-disk record of what Anchor installed, used for
 // drift-free uninstall and for doctor reporting.
 type InstallState struct {
-	SchemaVersion  int        `json:"schema_version"`
-	AdapterID      string     `json:"adapter_id"`
-	Scope          string     `json:"scope"`
-	SettingsPath   string     `json:"settings_path"`
-	AnchorPath     string     `json:"anchor_path"`
-	Entries        []HookSpec `json:"entries"`
-	AppliedAt      string     `json:"applied_at"`
-	SettingsSHA256 string     `json:"settings_sha256"`
-	Warnings       []string   `json:"warnings,omitempty"`
+	SchemaVersion  int              `json:"schema_version"`
+	AdapterID      string           `json:"adapter_id"`
+	Scope          string           `json:"scope"`
+	SettingsPath   string           `json:"settings_path"`
+	AnchorPath     string           `json:"anchor_path"`
+	Entries        []HookSpec       `json:"entries"`
+	MCP            *MCPRegistration `json:"mcp,omitempty"`
+	AppliedAt      string           `json:"applied_at"`
+	SettingsSHA256 string           `json:"settings_sha256"`
+	Warnings       []string         `json:"warnings,omitempty"`
 }
 
 // InstallOptions describes one install/uninstall request.
@@ -54,6 +62,9 @@ type InstallOptions struct {
 	AnchorPath string
 	Apply      bool
 	Uninstall  bool
+	// WithMCP also registers the read-only Anchor MCP server in the project's
+	// .mcp.json so the agent can call its tools directly.
+	WithMCP bool
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
 }
@@ -69,6 +80,10 @@ type InstallPlan struct {
 	Desired          []HookSpec `json:"desired,omitempty"`
 	Operations       []string   `json:"operations,omitempty"`
 	BackupPath       string     `json:"backup_path,omitempty"`
+	MCPPath          string     `json:"mcp_path,omitempty"`
+	MCPBackupPath    string     `json:"mcp_backup_path,omitempty"`
+	MCPConfigured    bool       `json:"mcp_configured,omitempty"`
+	MCPRemoved       bool       `json:"mcp_removed,omitempty"`
 	Applied          bool       `json:"applied"`
 	Uninstall        bool       `json:"uninstall,omitempty"`
 	AlreadyInstalled bool       `json:"already_installed,omitempty"`
@@ -121,21 +136,70 @@ func Install(opts InstallOptions) (InstallPlan, error) {
 	if !exists {
 		settings = map[string]any{}
 	}
-	changed, operations, err := mergeHooks(settings, desired)
+	changedHooks, hookOps, err := mergeHooks(settings, desired)
 	if err != nil {
 		return InstallPlan{}, err
 	}
-	plan.Operations = operations
-	if !changed {
+	plan.Operations = append(plan.Operations, hookOps...)
+
+	// Optional: register the read-only MCP server in the project so the agent
+	// can call anchor_status/anchor_tree/anchor_evidence_verify/
+	// anchor_restore_plan directly.
+	var mcp map[string]any
+	var mcpExists, mcpChanged bool
+	var mcpReg *MCPRegistration
+	if opts.WithMCP {
+		if opts.Scope != ScopeProject || opts.RepoDir == "" {
+			return InstallPlan{}, fmt.Errorf("--with-mcp requires project scope and --repo")
+		}
+		repo, err := existingDir(opts.RepoDir)
+		if err != nil {
+			return InstallPlan{}, fmt.Errorf("repo: %w", err)
+		}
+		mcpPath := filepath.Join(repo, ".mcp.json")
+		mcp, mcpExists, err = loadSettings(mcpPath)
+		if err != nil {
+			return InstallPlan{}, err
+		}
+		if !mcpExists {
+			mcp = map[string]any{}
+		}
+		mcpReg = &MCPRegistration{Path: mcpPath, Server: "anchor", Value: mcpServerValue(anchorPath, stateDir)}
+		mcpChanged, err = upsertMCPServer(mcp, mcpReg.Server, mcpReg.Value)
+		if err != nil {
+			return InstallPlan{}, err
+		}
+		plan.MCPPath = mcpPath
+		if mcpChanged {
+			plan.Operations = append(plan.Operations, "register MCP server anchor in .mcp.json")
+		}
+	}
+	if !changedHooks && !mcpChanged {
 		plan.AlreadyInstalled = true
 		return plan, nil
 	}
-	plan.BackupPath = backupPath(settingsPath, exists, opts.Now())
+	if changedHooks {
+		plan.BackupPath = backupPath(settingsPath, exists, opts.Now())
+	}
+	if mcpChanged {
+		plan.MCPBackupPath = backupPath(plan.MCPPath, mcpExists, opts.Now())
+	}
 	if !opts.Apply {
 		return plan, nil
 	}
-	if err := writeSettings(settingsPath, settings, exists, opts.Now()); err != nil {
-		return InstallPlan{}, err
+	if changedHooks {
+		if err := writeSettings(settingsPath, settings, exists, opts.Now()); err != nil {
+			return InstallPlan{}, err
+		}
+	}
+	if mcpChanged {
+		if err := writeSettings(plan.MCPPath, mcp, mcpExists, opts.Now()); err != nil {
+			if changedHooks {
+				return InstallPlan{}, fmt.Errorf("hooks installed but MCP registration failed: %w", err)
+			}
+			return InstallPlan{}, err
+		}
+		plan.MCPConfigured = true
 	}
 	plan.Applied = true
 	b, err := json.MarshalIndent(settings, "", "  ")
@@ -143,13 +207,60 @@ func Install(opts InstallOptions) (InstallPlan, error) {
 		return InstallPlan{}, err
 	}
 	sum := sha256.Sum256(append(b, '\n'))
+	// Preserve a previously registered MCP entry when this run did not manage it.
+	if mcpReg == nil {
+		if old, err := LoadInstallState(opts.StateDir, "claude-code"); err == nil && old != nil {
+			mcpReg = old.MCP
+		}
+	}
 	state := InstallState{SchemaVersion: installSchemaVersion, AdapterID: "claude-code", Scope: opts.Scope,
-		SettingsPath: settingsPath, AnchorPath: anchorPath, Entries: desired,
+		SettingsPath: settingsPath, AnchorPath: anchorPath, Entries: desired, MCP: mcpReg,
 		AppliedAt: opts.Now().UTC().Format(time.RFC3339), SettingsSHA256: hex.EncodeToString(sum[:])}
 	if err := writeState(statePath, state); err != nil {
 		return InstallPlan{}, err
 	}
 	return plan, nil
+}
+
+// mcpServerValue is the MCP registration Anchor writes for Claude Code.
+func mcpServerValue(anchorPath, stateDir string) map[string]any {
+	return map[string]any{
+		"command": anchorPath,
+		"args":    []any{"mcp", "serve", "--dir", stateDir},
+	}
+}
+
+// upsertMCPServer inserts or updates the managed server entry.
+func upsertMCPServer(obj map[string]any, name string, value map[string]any) (bool, error) {
+	serversAny, ok := obj["mcpServers"]
+	if !ok {
+		serversAny = map[string]any{}
+		obj["mcpServers"] = serversAny
+	}
+	servers, ok := serversAny.(map[string]any)
+	if !ok {
+		return false, fmt.Errorf("refusing to modify MCP config: mcpServers value is not an object")
+	}
+	if existing, ok := servers[name]; ok && reflect.DeepEqual(existing, value) {
+		return false, nil
+	}
+	servers[name] = value
+	return true, nil
+}
+
+// removeMCPServer deletes the managed entry only when it still equals what
+// Anchor recorded (drift is left to the user).
+func removeMCPServer(obj map[string]any, name string, recorded map[string]any) bool {
+	serversAny, ok := obj["mcpServers"].(map[string]any)
+	if !ok {
+		return false
+	}
+	existing, ok := serversAny[name]
+	if !ok || !reflect.DeepEqual(existing, recorded) {
+		return false
+	}
+	delete(serversAny, name)
+	return true
 }
 
 // managedHooks returns the hook entries Anchor installs. They only record
@@ -252,38 +363,62 @@ func uninstallHooks(plan InstallPlan, statePath, settingsPath string, opts Insta
 		plan.Warnings = append(plan.Warnings, "no recorded installation for claude-code in this workspace")
 		return plan, nil
 	}
-	settings, exists, err := loadSettings(settingsPath)
+	settings, settingsExist, err := loadSettings(settingsPath)
 	if err != nil {
 		return InstallPlan{}, err
 	}
-	if !exists {
-		plan.Warnings = append(plan.Warnings, "settings file is missing; removing the recorded installation only")
-		if opts.Apply {
-			if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
-				return InstallPlan{}, err
-			}
-			plan.Applied = true
-		}
-		return plan, nil
-	}
 	removed := 0
-	for _, spec := range state.Entries {
-		removed += removeHook(settings, spec)
+	if settingsExist {
+		for _, spec := range state.Entries {
+			removed += removeHook(settings, spec)
+		}
+	} else if len(state.Entries) > 0 {
+		plan.Warnings = append(plan.Warnings, "settings file is missing; hook entries cannot be removed there")
 	}
 	plan.Removed = removed
-	plan.Operations = []string{fmt.Sprintf("remove %d managed hook entr(ies)", removed)}
-	if removed == 0 {
+	plan.Operations = append(plan.Operations, fmt.Sprintf("remove %d managed hook entr(ies)", removed))
+
+	// Remove the managed MCP registration too, but only when it still matches
+	// what Anchor recorded.
+	mcpRemoved := false
+	if state.MCP != nil {
+		mcpObj, mcpExists, err := loadSettings(state.MCP.Path)
+		if err != nil {
+			return InstallPlan{}, err
+		}
+		if mcpExists && removeMCPServer(mcpObj, state.MCP.Server, state.MCP.Value) {
+			mcpRemoved = true
+			plan.MCPPath = state.MCP.Path
+			plan.MCPRemoved = true
+			plan.Operations = append(plan.Operations, "remove MCP server anchor from .mcp.json")
+		} else if !mcpExists {
+			plan.Warnings = append(plan.Warnings, "MCP config is missing; nothing to remove there")
+		} else {
+			plan.Warnings = append(plan.Warnings, "MCP server anchor was edited; leaving it in place")
+		}
+		if mcpRemoved {
+			plan.MCPBackupPath = backupPath(state.MCP.Path, true, opts.Now())
+			if opts.Apply {
+				if err := writeSettings(state.MCP.Path, mcpObj, true, opts.Now()); err != nil {
+					return InstallPlan{}, err
+				}
+			}
+		}
+	}
+
+	if removed == 0 && !mcpRemoved {
 		plan.Warnings = append(plan.Warnings, "no matching managed entries found (already uninstalled or edited); removing the recorded state only")
 	}
+	if settingsExist && removed > 0 {
+		plan.BackupPath = backupPath(settingsPath, true, opts.Now())
+		if opts.Apply {
+			if err := writeSettings(settingsPath, settings, true, opts.Now()); err != nil {
+				return InstallPlan{}, err
+			}
+		}
+	}
 	if !opts.Apply {
 		return plan, nil
-	}
-	plan.BackupPath = backupPath(settingsPath, true, opts.Now())
-	if !opts.Apply {
-		return plan, nil
-	}
-	if err := writeSettings(settingsPath, settings, true, opts.Now()); err != nil {
-		return InstallPlan{}, err
 	}
 	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 		return InstallPlan{}, err
