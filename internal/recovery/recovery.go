@@ -131,7 +131,7 @@ func writePackageFile(staging, rel, kind string, data []byte, files *[]FileEntry
 		return fmt.Errorf("package file exceeds %d bytes", MaxFileBytes)
 	}
 	if err := core.ScanSecrets(data); err != nil {
-		return fmt.Errorf("package bytes rejected: %w", err)
+		return fmt.Errorf("package file %s rejected: %w", rel, err)
 	}
 	dst := filepath.Join(staging, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {

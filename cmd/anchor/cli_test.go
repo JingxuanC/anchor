@@ -2233,3 +2233,54 @@ func TestCLIDoctorUninitializedWorkspace(t *testing.T) {
 		t.Fatalf("doctor failure report wrong: %s", out)
 	}
 }
+
+// TestCLIExportRejectsSecretShapedEventContent documents the fail-closed scan:
+// canonical state is scanned like artifacts, and the diagnostic names the batch.
+func TestCLIExportRejectsSecretShapedEventContent(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "note1", "--type", "note", "--parent", "goal1", "--title", "N")
+	if _, stderr, code := runCLI(t, root, "note", "set", "--dir", ws, "--id", "note1", "--text", "example: password=hunter2hunter2"); code != 0 {
+		t.Fatalf("note set failed: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo); code != 0 {
+		t.Fatalf("prepare failed: %s", stderr)
+	}
+	pkg := filepath.Join(root, "pkg")
+	_, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", pkg)
+	if code == 0 {
+		t.Fatal("export accepted secret-shaped note content")
+	}
+	if !strings.Contains(stderr, "payload/events/") || !strings.Contains(stderr, "potential secret") {
+		t.Fatalf("diagnostic does not identify the rejected batch: %s", stderr)
+	}
+	if _, err := os.Stat(pkg); !os.IsNotExist(err) {
+		t.Fatal("failed export left a package directory")
+	}
+}
+
+// TestCLIImportRequiresExistingTargetParent keeps export and import symmetric.
+func TestCLIImportRequiresExistingTargetParent(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	pkg := filepath.Join(root, "pkg")
+	if out, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", pkg); code != 0 {
+		t.Fatalf("export failed: %s %s", out, stderr)
+	}
+	missingParent := filepath.Join(root, "absent", "nested", "restored")
+	if _, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", missingParent, "--apply"); code == 0 {
+		t.Fatalf("import created missing parent directories: %s", stderr)
+	} else if !strings.Contains(stderr, "parent directory does not exist") {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(root, "absent")); !os.IsNotExist(err) {
+		t.Fatal("failed import created the parent directory")
+	}
+}

@@ -568,6 +568,15 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
   `local/imported/`, and the successor must check out the recorded commit.
 - **Legacy artifact-only packages** (no workspace payload) still import their
   verified bytes but never report a rebuilt workspace.
+- **Secret scanning covers canonical state too.** Export scans event batches, so
+  a note or title containing a credential-shaped string (for example
+  `password=...`) blocks export until it is redacted. This is fail-closed on
+  purpose (SEC-003), and the diagnostic names the rejected batch.
+- **Package limits are symmetric.** Export refuses a workspace that would exceed
+  the import limits (1000 files / 256 MiB), so an export can never produce a
+  package that import rejects.
+- **Import is atomic.** A failed import removes its staging tree and never leaves
+  a half-built workspace; the target parent directory must already exist.
 - **`acceptance/matrix.yaml`** still lists all 140 requirements as `planned` with
   test IDs (`UT-*`, `IT-*`, `SEC-*`, `E2E-*`) that do not exist in the repo. The
   matrix is a design artifact, not evidence. `docs/05` §5 promises an
