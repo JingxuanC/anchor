@@ -56,6 +56,14 @@ func ApplyCode(pkg, repo string, dryRun, force bool) (CodeReport, error) {
 		return CodeReport{}, fmt.Errorf("package has no prepared code head")
 	}
 
+	if err := safeRefComponent(v.manifest.Packet.HandoffID); err != nil {
+		return CodeReport{}, fmt.Errorf("unsafe handoff id %q: %w", v.manifest.Packet.HandoffID, err)
+	}
+	if b := v.manifest.Packet.CodeState.Branch; b != "" && b != "detached" {
+		if err := safeBranchName(b); err != nil {
+			return CodeReport{}, fmt.Errorf("unsafe branch name %q in the packet: %w", b, err)
+		}
+	}
 	bundleRel := ""
 	for _, f := range v.manifest.Files {
 		if f.Kind == "git_bundle" {
@@ -161,14 +169,33 @@ func ApplyCode(pkg, repo string, dryRun, force bool) (CodeReport, error) {
 		return CodeReport{}, fmt.Errorf("checked out HEAD does not match the prepared commit")
 	}
 
+	// Every mutation after the checkout is wrapped: a failure rolls the worktree
+	// back to the pre-apply commit instead of leaving it half-restored.
+	run := func(fn func() error) error {
+		if err := fn(); err != nil {
+			if note := rollbackCode(repo, r.RepoHead); note != "" {
+				return fmt.Errorf("%w; %s", err, note)
+			}
+			return err
+		}
+		return nil
+	}
 	if rel, ok := payloadPath(v, "payload/git/staged.diff"); ok {
-		if err := applyDiffFile(repo, filepath.Join(pkg, filepath.FromSlash(rel)), true); err != nil {
+		path := filepath.Join(pkg, filepath.FromSlash(rel))
+		if err := checkDiffHash(path, v.manifest.Packet.CodeState.StagedDiffSHA256); err != nil {
+			return CodeReport{}, err
+		}
+		if err := run(func() error { return applyDiffFile(repo, path, true) }); err != nil {
 			return CodeReport{}, err
 		}
 		r.StagedDiffApplied = true
 	}
 	if rel, ok := payloadPath(v, "payload/git/unstaged.diff"); ok {
-		if err := applyDiffFile(repo, filepath.Join(pkg, filepath.FromSlash(rel)), false); err != nil {
+		path := filepath.Join(pkg, filepath.FromSlash(rel))
+		if err := checkDiffHash(path, v.manifest.Packet.CodeState.UnstagedDiffSHA256); err != nil {
+			return CodeReport{}, err
+		}
+		if err := run(func() error { return applyDiffFile(repo, path, false) }); err != nil {
 			return CodeReport{}, err
 		}
 		r.UnstagedDiffApplied = true
@@ -178,7 +205,11 @@ func ApplyCode(pkg, repo string, dryRun, force bool) (CodeReport, error) {
 		if !ok {
 			continue
 		}
-		if err := writeUntracked(repo, u.Path, filepath.Join(pkg, filepath.FromSlash(rel))); err != nil {
+		src := filepath.Join(pkg, filepath.FromSlash(rel))
+		if err := checkBlobHash(src, u.SHA256); err != nil {
+			return CodeReport{}, err
+		}
+		if err := run(func() error { return writeUntracked(repo, u.Path, src) }); err != nil {
 			return CodeReport{}, err
 		}
 		r.UntrackedWritten++
@@ -280,4 +311,73 @@ func writeUntracked(repo, rel, src string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// safeRefComponent rejects values that would make a malformed git refname.
+func safeRefComponent(s string) error {
+	if s == "" || s == "." || s == ".." || strings.HasPrefix(s, "-") || strings.Contains(s, "..") {
+		return fmt.Errorf("empty, dot-only or dash-prefixed value")
+	}
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'
+		if !ok {
+			return fmt.Errorf("only letters, digits, dot, dash and underscore are allowed")
+		}
+	}
+	return nil
+}
+
+// safeBranchName rejects branch names that git would treat as options or would
+// otherwise refuse, since the packet supplies the name.
+func safeBranchName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.HasPrefix(name, "-") || strings.HasPrefix(name, "/") ||
+		strings.HasSuffix(name, "/") || strings.Contains(name, "..") || strings.Contains(name, "//") {
+		return fmt.Errorf("invalid branch name")
+	}
+	if strings.ContainsAny(name, " ~^:?*[\\\x00") {
+		return fmt.Errorf("invalid characters in branch name")
+	}
+	return nil
+}
+
+// checkDiffHash verifies that a packaged diff matches the packet's recorded hash.
+func checkDiffHash(path, want string) error {
+	if want == "" {
+		return nil
+	}
+	data, err := core.ReadRegularFileLimited(path, MaxFileBytes)
+	if err != nil {
+		return err
+	}
+	if got := hashBytes(data); got != want && got != "sha256:"+strings.TrimPrefix(want, "sha256:") {
+		return fmt.Errorf("packaged diff %s does not match the packet hash", filepath.Base(path))
+	}
+	return nil
+}
+
+// checkBlobHash verifies that a packaged untracked file matches the recorded hash.
+func checkBlobHash(path, want string) error {
+	if want == "" {
+		return nil
+	}
+	data, err := core.ReadRegularFileLimited(path, MaxFileBytes)
+	if err != nil {
+		return err
+	}
+	if got := hashBytes(data); got != "sha256:"+strings.TrimPrefix(want, "sha256:") {
+		return fmt.Errorf("packaged untracked file %s does not match the packet hash", filepath.Base(path))
+	}
+	return nil
+}
+
+// rollbackCode restores the pre-apply commit after a partial application and
+// returns a human-readable note for the error.
+func rollbackCode(repo, oldHead string) string {
+	if oldHead == "" {
+		return "the target repository had no previous commit, so the worktree may be partially modified"
+	}
+	if _, err := git(repo, "reset", "--hard", oldHead); err != nil {
+		return "rollback to " + oldHead + " also failed: " + err.Error()
+	}
+	return "the worktree was rolled back to " + oldHead
 }

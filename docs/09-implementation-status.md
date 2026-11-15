@@ -1,14 +1,15 @@
 # Implementation Status (audited)
 
 **Audit date:** 2026-11-16
-**Commit:** audited at `1a6acc5`; since then WS-001 (`init --attach`), the packet
-content work (ST-001/002/005, RST-001/010) and workspace-carrying export/import
-(WS-007) landed. 36 Go files / ~10,100 LOC / 111 Go test functions.
+**Baseline:** audited at `1a6acc5`; since then the local segment, the test
+coverage pass, the successor restore/gate and code-byte transport landed.
+Current tree: 55 Go files / ~22,900 LOC, of which ~16,200 lines are tests
+(341 top-level test functions, 922 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
-**Method:** read-only code audit. `go build ./...` OK; `go test ./... -count=1` and
-`go test -race ./...` pass for `cmd/anchor`, `internal/{core,adapter,handoff,recovery}`
-(`internal/pathguard` has no test files). Cross-compilation verified for
-darwin/linux/windows on arm64 and amd64.
+**Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
+and `go test -race ./...` pass for every package (`pathguard` now has tests);
+`go vet` and `gofmt -l` are clean. Cross-compilation verified for
+darwin/linux/windows on amd64 (arm64 also checked earlier).
 
 **Why this file exists:** `README.md`, `acceptance/matrix.yaml` and
 `docs/05-acceptance-mapping.md` describe a pre-implementation baseline. They are
@@ -88,13 +89,18 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
 8. **Successor restore + gate** — `handoff restore` emits a read-only plan
    (code comparison, blocker list, actions), records `handoff_acked` /
    `handoff_verified` events, and refuses node mutations until the latest
-   prepared handoff is verified. Code is still never applied: the plan states
-   `code_apply: disabled` and tells the successor what to check out.
+   prepared handoff is verified. The gate is derived from `handoff_prepared`
+   events (not the packet file), so deleting or moving a packet cannot disable
+   it, and raw `event append` cannot forge ack/verify. Code is still never
+   applied by restore: the plan states `code_apply: disabled`.
 9. **Code byte transport** — `handoff export --include-code` bundles the prepared
    commit (verified with `git bundle list-heads`) and `handoff apply-code`
    restores it into a repository: fetch, backup ref, stash when forced, checkout,
    then applies the packaged staged/unstaged diffs and untracked bytes after
-   hash and secret checks. Code is never applied unless `--apply` is explicit.
+   hash and secret checks. Packaged code must match the packet's recorded hashes,
+   handoff ids and branch names are validated, and a failure rolls the worktree
+   back to the pre-apply commit. Code is never applied unless `--apply` is
+   explicit.
 10. **Restorable packages** — export always transports the workspace manifest and
    event log; import rebuilds the workspace in a fresh empty target, replays it,
    verifies evidence blobs and reports an honest `complete`/`incomplete` status.
@@ -584,7 +590,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `internal/recovery` | 51.9% | 86.4% | Export/import branches, staging atomicity, limits, legacy packages covered. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 334 top-level test functions / 915 run entries, ~15,700 test lines.
+Test suite: 341 top-level test functions / ~960 run entries, ~16,300 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
@@ -607,6 +613,10 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   diagnostic names the rejected batch, but events are immutable and there is no
   redaction tool yet: the only remedies today are rebuilding the workspace or
   deleting the offending batch.
+- **Handoff progress cannot be forged through the raw event surface.** Only
+  `handoff restore`/`handoff prepare` record prepared/acked/verified events; raw
+  `event append` rejects them. The packet file may be deleted, but the gate stays
+  active and `status` reports `packet_missing`, prompting a fresh preparation.
 - **The successor gate fails closed.** If the projection cannot be replayed (for
   example a referenced evidence blob disappeared), the gate reports the handoff
   as pending instead of assuming progress; the workspace then refuses writes

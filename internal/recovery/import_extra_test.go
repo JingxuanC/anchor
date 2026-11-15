@@ -118,8 +118,12 @@ func TestImportRebuildsWorkspaceComplete(t *testing.T) {
 	if r.EvidenceVerified != 1 || r.ProjectionStatus != "complete" {
 		t.Fatalf("verification counts = %+v", r)
 	}
-	if r.FilesWritten != len(outer.Files) {
-		t.Fatalf("files written = %d, want %d", r.FilesWritten, len(outer.Files))
+	wantFiles := len(outer.Files)
+	if r.HandoffRestored {
+		wantFiles++
+	}
+	if r.FilesWritten != wantFiles {
+		t.Fatalf("files written = %d, want %d (payload files plus the restored handoff packet)", r.FilesWritten, wantFiles)
 	}
 	if r.Writes != r.FilesWritten+1 {
 		t.Fatalf("writes = %d, want files_written+1 = %d", r.Writes, r.FilesWritten+1)
@@ -200,7 +204,11 @@ func TestImportZeroEventWorkspaceIsComplete(t *testing.T) {
 	if r.EventBatches != 0 || r.EventsApplied != 0 || r.EvidenceVerified != 0 || r.ProjectionStatus != "complete" {
 		t.Fatalf("counts = %+v", r)
 	}
-	if r.FilesWritten != len(outer.Files) || r.Writes != r.FilesWritten+1 {
+	wantFiles := len(outer.Files)
+	if r.HandoffRestored {
+		wantFiles++
+	}
+	if r.FilesWritten != wantFiles || r.Writes != r.FilesWritten+1 {
 		t.Fatalf("write counts = %+v", r)
 	}
 	persisted := readReportFile(t, target)
@@ -251,8 +259,12 @@ func TestImportMissingEvidenceIsIncomplete(t *testing.T) {
 	if !found {
 		t.Fatalf("warnings = %v", r.Warnings)
 	}
-	if r.FilesWritten != len(outer.Files) {
-		t.Fatalf("files written = %d, want %d", r.FilesWritten, len(outer.Files))
+	wantFiles := len(outer.Files)
+	if r.HandoffRestored {
+		wantFiles++
+	}
+	if r.FilesWritten != wantFiles {
+		t.Fatalf("files written = %d, want %d (payload files plus the restored handoff packet)", r.FilesWritten, wantFiles)
 	}
 }
 
@@ -696,8 +708,12 @@ func TestImportWritesImportedArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.FilesWritten != len(outer.Files) {
-		t.Fatalf("files written = %d, want %d", r.FilesWritten, len(outer.Files))
+	wantFiles := len(outer.Files)
+	if r.HandoffRestored {
+		wantFiles++
+	}
+	if r.FilesWritten != wantFiles {
+		t.Fatalf("files written = %d, want %d (payload files plus the restored handoff packet)", r.FilesWritten, wantFiles)
 	}
 	if r.Writes != r.FilesWritten+1 {
 		t.Fatalf("writes = %d", r.Writes)

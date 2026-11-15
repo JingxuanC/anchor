@@ -25,6 +25,7 @@ const (
 	EvEvidenceAdded       EventType = "evidence_added"
 	EvAdapterSessionSeen  EventType = "adapter_session_seen"
 	EvAdapterSessionEnded EventType = "adapter_session_ended"
+	EvHandoffPrepared     EventType = "handoff_prepared"
 	EvHandoffAcked        EventType = "handoff_acked"
 	EvHandoffVerified     EventType = "handoff_verified"
 )

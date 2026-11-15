@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -528,6 +527,7 @@ type GateState struct {
 	Pending        bool            `json:"pending"`
 	HandoffID      string          `json:"handoff_id,omitempty"`
 	PacketPath     string          `json:"packet_path,omitempty"`
+	PacketMissing  bool            `json:"packet_missing,omitempty"`
 	RecoveryStatus string          `json:"recovery_status,omitempty"`
 	Progress       HandoffProgress `json:"progress"`
 }
@@ -550,18 +550,84 @@ func handoffProgress(dir, handoffID string) HandoffProgress {
 		CodeHead: st.CodeHead, EvidenceIDs: st.EvidenceIDs, Forced: st.Forced}
 }
 
-// Gate reports whether the latest prepared handoff still blocks mutations.
-func Gate(dir string) (GateState, error) {
-	p, path, err := Latest(dir)
+// LatestPrepared returns the packet referenced by the latest handoff_prepared
+// event, if that event exists and its packet file is still present.
+func LatestPrepared(dir string) (Packet, string, bool) {
+	store, err := core.Open(dir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return GateState{Pending: false}, nil
-		}
+		return Packet{}, "", false
+	}
+	replay, err := store.LoadReplay()
+	if err != nil || replay.Tree == nil || replay.Tree.LatestHandoffID == "" {
+		return Packet{}, "", false
+	}
+	path := filepath.Join(store.Dir, "handoff", replay.Tree.LatestHandoffID+".json")
+	p, err := Load(path)
+	if err != nil {
+		return Packet{}, "", false
+	}
+	return p, path, true
+}
+
+// RecordPrepared appends the handoff_prepared event for a packet. The successor
+// gate is derived from events, so deleting a packet file cannot disable it.
+func RecordPrepared(dir string, p Packet) error {
+	payload := core.HandoffPayload{HandoffID: p.HandoffID, ContentHash: p.ContentHash, CodeHead: p.CodeState.Head}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	store, err := core.Open(dir)
+	if err != nil {
+		return err
+	}
+	_, _, err = store.Append(core.Event{Type: core.EvHandoffPrepared, CausalParents: []string{}, Payload: b})
+	return err
+}
+
+// Gate reports whether the latest prepared handoff still blocks mutations. It is
+// derived from the event log (not from the packet file), so removing or moving
+// the packet cannot bypass it.
+func Gate(dir string) (GateState, error) {
+	store, err := core.Open(dir)
+	if err != nil {
 		return GateState{}, err
 	}
-	progress := handoffProgress(dir, p.HandoffID)
-	return GateState{Pending: !progress.Verified, HandoffID: p.HandoffID, PacketPath: path,
-		RecoveryStatus: p.RecoveryStatus, Progress: progress}, nil
+	replay, err := store.LoadReplay()
+	if err != nil {
+		return GateState{}, err
+	}
+	latest := ""
+	var state *core.HandoffState
+	if replay.Tree != nil {
+		latest = replay.Tree.LatestHandoffID
+		if latest != "" {
+			state = replay.Tree.Handoffs[latest]
+		}
+	}
+	if latest == "" {
+		return GateState{Pending: false}, nil
+	}
+	progress := HandoffProgress{}
+	if state != nil {
+		progress = HandoffProgress{Acked: state.Acked, AckedBy: state.AckedBy, Verified: state.Verified,
+			VerifiedBy: state.VerifiedBy, CodeHead: state.CodeHead, EvidenceIDs: state.EvidenceIDs, Forced: state.Forced}
+	}
+	path := filepath.Join(store.Dir, "handoff", latest+".json")
+	missing := false
+	if _, err := os.Lstat(path); err != nil {
+		if !os.IsNotExist(err) {
+			return GateState{}, err
+		}
+		missing = true
+		path = ""
+	}
+	status := ""
+	if p, _, err := Latest(dir); err == nil && p.HandoffID == latest {
+		status = p.RecoveryStatus
+	}
+	return GateState{Pending: !progress.Verified, HandoffID: latest, PacketPath: path,
+		PacketMissing: missing, RecoveryStatus: status, Progress: progress}, nil
 }
 
 // BuildPlan compares a packet with the current repository and projects the

@@ -101,6 +101,8 @@ func TestBuildPlanStaleCodeAndGateLifecycle(t *testing.T) {
 		t.Fatalf("ack blocker should mention force: %+v", plan.AckBlockers)
 	}
 
+	// The gate is event-based: record the preparation first.
+	appendHandoffEventH(t, dir, core.EvHandoffPrepared, core.HandoffPayload{HandoffID: p.HandoffID, ContentHash: p.ContentHash, CodeHead: p.CodeState.Head})
 	gate, err := Gate(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -196,4 +198,71 @@ func hasAction(actions []RestoreAction, kind string) bool {
 		}
 	}
 	return false
+}
+
+// TestGateSurvivesPacketDeletion covers the review finding that deleting the
+// packet file used to disable the successor gate.
+func TestGateSurvivesPacketDeletion(t *testing.T) {
+	dir, _, p, path := preparePlanFixture(t)
+	if err := RecordPrepared(dir, p); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := Gate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gate.Pending || gate.PacketMissing || gate.HandoffID != p.HandoffID {
+		t.Fatalf("gate should be pending with its packet present: %+v", gate)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	gate, err = Gate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gate.Pending || !gate.PacketMissing || gate.HandoffID != p.HandoffID {
+		t.Fatalf("deleting the packet must not disable the gate: %+v", gate)
+	}
+	// A later preparation supersedes the old id.
+	p2, path2, err := Prepare(dir, "")
+	if err == nil {
+		_ = path2
+		if err := RecordPrepared(dir, p2); err != nil {
+			t.Fatal(err)
+		}
+		gate, err = Gate(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gate.HandoffID != p2.HandoffID || !gate.Pending {
+			t.Fatalf("new preparation should become the gated handoff: %+v", gate)
+		}
+	}
+}
+
+func TestRecordPreparedIsIdempotencySafe(t *testing.T) {
+	dir, _, p, _ := preparePlanFixture(t)
+	if err := RecordPrepared(dir, p); err != nil {
+		t.Fatal(err)
+	}
+	// Preparing the same packet twice is an event-level conflict, surfaced by the
+	// store; a fresh preparation gets a new id instead.
+	again, _, err := Prepare(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.HandoffID == p.HandoffID {
+		t.Fatal("a new preparation reused the previous handoff id")
+	}
+	if err := RecordPrepared(dir, again); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := Gate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gate.HandoffID != again.HandoffID || !gate.Pending {
+		t.Fatalf("latest preparation should gate the workspace: %+v", gate)
+	}
 }

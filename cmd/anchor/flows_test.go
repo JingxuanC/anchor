@@ -515,6 +515,8 @@ func TestCLIAttachFullSurfaceFlow(t *testing.T) {
 	if _, stderr, code := runCLI(t, project, "init", "--attach", "--dir", project, "--workspace", "ws1", "--device", "dev1"); code != 0 {
 		t.Fatalf("attach: %s", stderr)
 	}
+	gitAdd(t, project, ".gitignore")
+	gitCommit(t, project, "adopt anchor")
 	rootEntriesBefore := projectRootEntries(t, project)
 
 	runCLI(t, project, "node", "create", "--dir", project, "--id", "goal1", "--type", "goal", "--title", "G",
@@ -547,13 +549,23 @@ func TestCLIAttachFullSurfaceFlow(t *testing.T) {
 	if after := projectRootEntries(t, project); !equalEntries(rootEntriesBefore, after) {
 		t.Fatalf("attached commands changed the project tree: %v -> %v", rootEntriesBefore, after)
 	}
-	// Restored workspace is independent and writable.
+	// Restored workspace is independent; as a successor it must acknowledge and
+	// verify the restored handoff before editing.
 	out, stderr, code := runCLI(t, project, "status", "--dir", restored, "--json")
 	if code != 0 || !strings.Contains(out, `"goal1"`) {
 		t.Fatalf("restored workspace unusable: %s %s", out, stderr)
 	}
+	if _, stderr, code := runCLI(t, project, "node", "transition", "--dir", restored, "--id", "task1", "--to", "blocked"); code != 1 {
+		t.Fatalf("successor gate did not protect the restored workspace: %s", stderr)
+	}
+	restoredPkt, err := filepath.Glob(filepath.Join(restored, "handoff", "ho_*.json"))
+	if err != nil || len(restoredPkt) != 1 {
+		t.Fatalf("restored packet missing: %v %v", restoredPkt, err)
+	}
+	runCLI(t, project, "handoff", "restore", "--dir", restored, "--repo", project, "--packet", restoredPkt[0], "--ack")
+	runCLI(t, project, "handoff", "restore", "--dir", restored, "--repo", project, "--packet", restoredPkt[0], "--verify")
 	if _, stderr, code := runCLI(t, project, "node", "transition", "--dir", restored, "--id", "task1", "--to", "blocked"); code != 0 {
-		t.Fatalf("restored workspace not writable: %s", stderr)
+		t.Fatalf("restored workspace not writable after verification: %s", stderr)
 	}
 }
 
@@ -700,7 +712,17 @@ func TestCLIEndToEndSuccessorFlow(t *testing.T) {
 	if resumedTree.Tree.Nodes["dec1"].Decision != "hash the packet body" {
 		t.Fatalf("successor lost the decision: %s", resumed)
 	}
-	// And it can keep working.
+	// The successor acknowledges and verifies the handoff, then keeps working.
+	secondPkt, err := filepath.Glob(filepath.Join(second, "handoff", "ho_*.json"))
+	if err != nil || len(secondPkt) != 1 {
+		t.Fatalf("restored packet missing: %v %v", secondPkt, err)
+	}
+	if _, stderr, code := runCLI(t, project, "handoff", "restore", "--dir", second, "--repo", project, "--packet", secondPkt[0], "--ack"); code != 0 {
+		t.Fatalf("successor ack: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, project, "handoff", "restore", "--dir", second, "--repo", project, "--packet", secondPkt[0], "--verify"); code != 0 {
+		t.Fatalf("successor verify: %s", stderr)
+	}
 	runCLI(t, project, "node", "create", "--dir", second, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "Continue")
 	if _, stderr, code := runCLI(t, project, "node", "transition", "--dir", second, "--id", "task2", "--to", "in_progress"); code != 0 {
 		t.Fatalf("successor cannot work: %s", stderr)
@@ -1193,6 +1215,18 @@ func TestCLIExportApplyCodeEndToEnd(t *testing.T) {
 	if !strings.Contains(importOut, `"recovery_status": "complete"`) {
 		t.Fatalf("import did not report complete: %s", importOut)
 	}
+	// The restored code is dirty relative to the packet, so the successor
+	// acknowledges with --force and then verifies before editing.
+	restoredPkt, err := filepath.Glob(filepath.Join(ws2, "handoff", "ho_*.json"))
+	if err != nil || len(restoredPkt) != 1 {
+		t.Fatalf("restored packet missing: %v %v", restoredPkt, err)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws2, "--repo", repoB, "--packet", restoredPkt[0], "--ack", "--force"); code != 0 {
+		t.Fatalf("successor ack: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws2, "--repo", repoB, "--packet", restoredPkt[0], "--verify"); code != 0 {
+		t.Fatalf("successor verify: %s", stderr)
+	}
 	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws2, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "continue"); code != 0 {
 		t.Fatalf("successor workspace not usable: %s", stderr)
 	}
@@ -1221,5 +1255,92 @@ func TestCLIApplyCodeRefusesWithoutBundle(t *testing.T) {
 	_, stderr, code := runCLI(t, root, "handoff", "apply-code", "--package", pkg, "--repo", target)
 	if code != 1 || !strings.Contains(stderr, "no code bundle") {
 		t.Fatalf("apply-code without a bundle: code=%d %s", code, stderr)
+	}
+}
+
+// TestCLIGateCannotBeBypassedByDeletingThePacket covers the review finding that
+// the gate previously depended on the packet file.
+func TestCLIGateCannotBeBypassedByDeletingThePacket(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	if out, stderr, code := runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo); code != 0 {
+		t.Fatalf("prepare: %s%s", out, stderr)
+	}
+	pkt, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("packets: %v %v", pkt, err)
+	}
+	if err := os.Remove(pkt[0]); err != nil {
+		t.Fatal(err)
+	}
+	// The gate survives and reports the missing packet explicitly.
+	if _, stderr, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "in_progress"); code != 1 {
+		t.Fatalf("deleting the packet disabled the gate: %s", stderr)
+	} else if !strings.Contains(stderr, "packet file is missing") {
+		t.Fatalf("gate should explain the missing packet: %s", stderr)
+	}
+	statusOut, _, _ := runCLI(t, root, "status", "--dir", ws, "--json")
+	if !strings.Contains(statusOut, `"pending": true`) || !strings.Contains(statusOut, `"packet_missing": true`) {
+		t.Fatalf("status should expose the missing packet: %s", statusOut)
+	}
+}
+
+// TestCLIRawEventCannotForgeHandoffProgress covers the review finding that raw
+// `event append` could fake ack/verify events (bypassing evidence checks).
+func TestCLIRawEventCannotForgeHandoffProgress(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	pkt, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("packets: %v %v", pkt, err)
+	}
+	hid := strings.TrimSuffix(filepath.Base(pkt[0]), ".json")
+	ackFile := writeFixture(t, filepath.Join(root, "ack.json"), `{"type":"handoff_acked","causal_parents":[],"payload":{"handoff_id":"`+hid+`"}}`)
+	if _, stderr, code := runCLI(t, root, "event", "append", "--dir", ws, "--file", ackFile); code == 0 {
+		t.Fatalf("raw ack event was accepted: %s", stderr)
+	} else if !strings.Contains(stderr, "handoff commands") {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+	verFile := writeFixture(t, filepath.Join(root, "ver.json"), `{"type":"handoff_verified","causal_parents":[],"payload":{"handoff_id":"`+hid+`"}}`)
+	if _, stderr, code := runCLI(t, root, "event", "append", "--dir", ws, "--file", verFile); code == 0 {
+		t.Fatalf("raw verify event was accepted: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "in_progress"); code != 1 {
+		t.Fatalf("gate was cleared by raw events: %s", stderr)
+	}
+}
+
+// TestCLIRestoreRejectsNonLatestPacket covers the review requirement that only
+// the prepared handoff can be acked/verified.
+func TestCLIRestoreRejectsNonLatestPacket(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	first, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(first) != 1 {
+		t.Fatalf("packets: %v %v", first, err)
+	}
+	old := first[0]
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	all, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(all) != 2 {
+		t.Fatalf("packets: %v %v", all, err)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", old, "--ack"); code != 1 {
+		t.Fatalf("stale packet was acked: %s", stderr)
+	} else if !strings.Contains(stderr, "not the latest prepared handoff") {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
 	}
 }

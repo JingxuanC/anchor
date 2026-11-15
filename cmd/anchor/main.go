@@ -300,6 +300,12 @@ func cmdEvent(args []string) {
 	if e.Type.IsMutation() || e.Type == core.EvNodeCreated {
 		requireHandoffCleared(*dir)
 	}
+	// Handoff progress events must come from `handoff restore`, which validates
+	// the packet, the code state and the evidence artifacts.
+	switch e.Type {
+	case core.EvHandoffPrepared, core.EvHandoffAcked, core.EvHandoffVerified:
+		die(fmt.Errorf("event type %s is recorded by the handoff commands, not by raw event append", e.Type))
+	}
 	stored, created := appendEvent(*dir, e)
 	fmt.Printf("%s %s created=%v\n", stored.EventID, stored.Type, created)
 }
@@ -691,6 +697,10 @@ func requireHandoffCleared(dir string) {
 		die(err)
 	}
 	if gate.Pending {
+		if gate.PacketPath == "" || gate.PacketMissing {
+			die(fmt.Errorf("handoff %s is pending successor verification but its packet file is missing; re-run 'anchor handoff prepare --dir %s --repo <repo>' and verify that packet before editing",
+				gate.HandoffID, dir))
+		}
 		next := "--ack"
 		if gate.Progress.Acked {
 			next = "--verify"
@@ -870,6 +880,11 @@ func cmdHandoff(args []string) {
 		if err != nil {
 			die(err)
 		}
+		// The successor gate is derived from events, so the preparation itself is
+		// recorded; deleting the packet file cannot disable the gate.
+		if err := handoff.RecordPrepared(*dir, p); err != nil {
+			die(fmt.Errorf("handoff packet written but the prepared event could not be recorded: %w", err))
+		}
 		out := map[string]any{"handoff_id": p.HandoffID, "path": path, "recovery_status": p.RecoveryStatus, "artifact_availability": p.ArtifactAvailability, "warnings": p.Warnings, "content_hash": p.ContentHash}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
@@ -895,6 +910,13 @@ func cmdHandoff(args []string) {
 		p, err := handoff.Load(*packet)
 		if err != nil {
 			die(err)
+		}
+		gate, err := handoff.Gate(*dir)
+		if err != nil {
+			die(err)
+		}
+		if gate.HandoffID != "" && gate.HandoffID != p.HandoffID && (*ack || *verify) {
+			die(fmt.Errorf("packet %s is not the latest prepared handoff (%s); re-run 'anchor handoff prepare' and verify the new packet", p.HandoffID, gate.HandoffID))
 		}
 		plan, err := handoff.BuildPlan(*dir, *repo, p, *packet)
 		if err != nil {

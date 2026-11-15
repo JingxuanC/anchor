@@ -106,6 +106,8 @@ type Session struct {
 type HandoffState struct {
 	HandoffID       string   `json:"handoff_id"`
 	ContentHash     string   `json:"content_hash,omitempty"`
+	Prepared        bool     `json:"prepared,omitempty"`
+	PreparedHead    string   `json:"prepared_head,omitempty"`
 	Acked           bool     `json:"acked,omitempty"`
 	AckedBy         string   `json:"acked_by,omitempty"`
 	AckedEventID    string   `json:"acked_event_id,omitempty"`
@@ -122,6 +124,9 @@ type Tree struct {
 	Evidence map[string]EvidenceEntry `json:"evidence,omitempty"`
 	Sessions map[string]Session       `json:"sessions,omitempty"`
 	Handoffs map[string]*HandoffState `json:"handoffs,omitempty"`
+	// LatestHandoffID is the most recently prepared packet. The successor gate
+	// reads it so deleting a packet file cannot disable the gate.
+	LatestHandoffID string `json:"latest_handoff_id,omitempty"`
 }
 
 func NewTree() *Tree {

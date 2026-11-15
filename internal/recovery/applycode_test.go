@@ -302,8 +302,10 @@ func TestApplyCodeRejectsDiffThatDoesNotApply(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pkg, "manifest.json"), append(sealed, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ApplyCode(pkg, initEmptyRepo(t), false, false); err == nil || !strings.Contains(err.Error(), "apply") {
-		t.Fatalf("non-applying diff was accepted: %v", err)
+	if _, err := ApplyCode(pkg, initEmptyRepo(t), false, false); err == nil {
+		t.Fatal("diff that does not match the packet hash was applied")
+	} else if !strings.Contains(err.Error(), "does not match the packet hash") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -383,5 +385,114 @@ func TestApplyCodeRejectsSecretBearingDiff(t *testing.T) {
 	doctorPackage(t, pkg, "payload/git/staged.diff", bogus)
 	if _, err := ApplyCode(pkg, initEmptyRepo(t), false, false); err == nil || !strings.Contains(strings.ToLower(err.Error()), "secret") {
 		t.Fatalf("secret-bearing diff was applied: %v", err)
+	}
+}
+
+// resealManifest rewrites the package manifest after mutating it, recomputing
+// the content hash so hash verification still passes.
+func resealManifest(t *testing.T, pkg string, mutate func(*Manifest)) {
+	t.Helper()
+	mb, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(mb, &m); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&m)
+	clone := m
+	clone.ContentHash = ""
+	body, err := json.Marshal(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ContentHash = hashBytes(body)
+	sealed, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "manifest.json"), append(sealed, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyCodeRejectsUnsafeHandoffIDAndBranch(t *testing.T) {
+	dir, repoA := codeFixture(t)
+	pkg := filepath.Join(t.TempDir(), "pkg")
+	if _, _, err := ExportWithCode(dir, repoA, pkg, false, true); err != nil {
+		t.Fatal(err)
+	}
+	resealManifest(t, pkg, func(m *Manifest) {
+		m.Packet.HandoffID = "../evil"
+	})
+	if _, err := ApplyCode(pkg, initEmptyRepo(t), true, false); err == nil || !strings.Contains(err.Error(), "unsafe handoff id") {
+		t.Fatalf("unsafe handoff id accepted: %v", err)
+	}
+
+	pkg2 := filepath.Join(t.TempDir(), "pkg2")
+	if _, _, err := ExportWithCode(dir, repoA, pkg2, false, true); err != nil {
+		t.Fatal(err)
+	}
+	resealManifest(t, pkg2, func(m *Manifest) {
+		m.Packet.CodeState.Branch = "--upload-pack=evil"
+	})
+	if _, err := ApplyCode(pkg2, initEmptyRepo(t), true, false); err == nil || !strings.Contains(err.Error(), "unsafe branch name") {
+		t.Fatalf("option-like branch name accepted: %v", err)
+	}
+}
+
+func TestApplyCodeRollsBackPartialApplication(t *testing.T) {
+	dir, repoA := codeFixture(t)
+	// One staged change and one unstaged change.
+	if err := os.WriteFile(filepath.Join(repoA, "tracked.txt"), []byte("staged ver\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutR(t, repoA, "add", "tracked.txt")
+	if err := os.WriteFile(filepath.Join(repoA, "tracked.txt"), []byte("unstaged ver\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(t.TempDir(), "pkg")
+	m, _, err := ExportWithCode(dir, repoA, pkg, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.StagedDiffIncluded || !m.UnstagedDiffIncluded {
+		t.Fatalf("expected both diffs: %+v", m)
+	}
+	// Make the unstaged diff non-applying but matching the *packet* hash, so the
+	// pre-flight hash check passes and application itself fails.
+	bogus := []byte("diff --git a/tracked.txt b/tracked.txt\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-not the content\n+x\n")
+	if err := os.WriteFile(filepath.Join(pkg, "payload", "git", "unstaged.diff"), bogus, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resealManifest(t, pkg, func(m *Manifest) {
+		m.Packet.CodeState.UnstagedDiffSHA256 = hashBytes(bogus)
+		for i := range m.Files {
+			if m.Files[i].Path == "payload/git/unstaged.diff" {
+				m.Files[i].SHA256 = hashBytes(bogus)
+				m.Files[i].Size = int64(len(bogus))
+			}
+		}
+	})
+
+	repoB := initEmptyRepo(t)
+	if err := os.WriteFile(filepath.Join(repoB, "local.txt"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutR(t, repoB, "add", "local.txt")
+	gitOutR(t, repoB, "commit", "-qm", "local")
+	before := gitOutR(t, repoB, "rev-parse", "HEAD")
+
+	if _, err := ApplyCode(pkg, repoB, false, false); err == nil {
+		t.Fatal("non-applying unstaged diff was accepted")
+	} else if !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("failure did not report rollback: %v", err)
+	}
+	if got := gitOutR(t, repoB, "rev-parse", "HEAD"); got != before {
+		t.Fatalf("worktree not rolled back: HEAD=%s want %s", got, before)
+	}
+	if b, err := os.ReadFile(filepath.Join(repoB, "local.txt")); err != nil || string(b) != "local\n" {
+		t.Fatalf("local file lost after rollback: %q %v", b, err)
 	}
 }

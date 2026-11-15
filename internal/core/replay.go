@@ -515,7 +515,7 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 		}
 		return nil
 	}
-	if e.Type == EvHandoffAcked || e.Type == EvHandoffVerified {
+	if e.Type == EvHandoffPrepared || e.Type == EvHandoffAcked || e.Type == EvHandoffVerified {
 		var p HandoffPayload
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
 			return err
@@ -533,6 +533,17 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 		if st == nil {
 			st = &HandoffState{HandoffID: p.HandoffID}
 			tree.Handoffs[p.HandoffID] = st
+		}
+		if e.Type == EvHandoffPrepared {
+			if st.Prepared {
+				return fmt.Errorf("handoff %s is already prepared", p.HandoffID)
+			}
+			st.Prepared = true
+			st.ContentHash = p.ContentHash
+			st.PreparedHead = p.CodeHead
+			st.AckedEventID = ""
+			tree.LatestHandoffID = p.HandoffID
+			return nil
 		}
 		if e.Type == EvHandoffAcked {
 			if st.Acked && !p.Forced {

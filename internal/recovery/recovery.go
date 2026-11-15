@@ -78,6 +78,7 @@ type Report struct {
 	WorkspaceRebuilt      bool     `json:"workspace_rebuilt"`
 	EventBatches          int      `json:"event_batches,omitempty"`
 	EventsApplied         int      `json:"events_applied,omitempty"`
+	HandoffRestored       bool     `json:"handoff_restored,omitempty"`
 	EvidenceVerified      int      `json:"evidence_verified,omitempty"`
 	ProjectionStatus      string   `json:"projection_status,omitempty"`
 	Warnings              []string `json:"warnings,omitempty"`
@@ -214,9 +215,16 @@ func ExportWithCode(dir, repo, out string, includeBytes, includeCode bool) (Mani
 	if err != nil {
 		return Manifest{}, "", err
 	}
-	p, _, err := handoff.Prepare(store.Dir, repo)
-	if err != nil {
-		return Manifest{}, "", err
+	// Export the latest *prepared* packet when one exists: that is the packet the
+	// successor gate refers to, so importing it must restore the same handoff id.
+	// Otherwise export snapshots the current state with a fresh packet.
+	p, _, prepared := handoff.LatestPrepared(store.Dir)
+	if !prepared {
+		var prepareErr error
+		p, _, prepareErr = handoff.Prepare(store.Dir, repo)
+		if prepareErr != nil {
+			return Manifest{}, "", prepareErr
+		}
 	}
 	if _, err := os.Lstat(out); err == nil {
 		return Manifest{}, "", fmt.Errorf("refusing to overwrite existing export target %s", out)
@@ -778,6 +786,23 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 		if err := writeExclusive(filepath.Join(staging, "local", "imported", filepath.FromSlash(rel)), data); err != nil {
 			return Report{}, err
 		}
+		r.FilesWritten++
+	}
+
+	// Restore the handoff packet so the successor can ack/verify it (the prepared
+	// event is already in the restored event log, so the gate stays active).
+	if h := v.manifest.Packet.HandoffID; h != "" && v.manifest.Packet.ContentHash != "" {
+		if err := safePackageBase(h); err != nil {
+			return Report{}, err
+		}
+		pb, err := json.MarshalIndent(v.manifest.Packet, "", "  ")
+		if err != nil {
+			return Report{}, err
+		}
+		if err := writeExclusive(filepath.Join(staging, "handoff", h+".json"), append(pb, '\n')); err != nil {
+			return Report{}, err
+		}
+		r.HandoffRestored = true
 		r.FilesWritten++
 	}
 
