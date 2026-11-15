@@ -1,0 +1,114 @@
+package core
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+const SchemaVersion = 1
+
+type EventType string
+
+const (
+	EvOwnershipClaimed   EventType = "ownership_claimed"
+	EvOwnershipHeartbeat EventType = "ownership_heartbeat"
+	EvOwnershipReleased  EventType = "ownership_released"
+	EvOwnershipTakenOver EventType = "ownership_taken_over"
+	EvNodeCreated        EventType = "node_created"
+	EvNodeUpdated        EventType = "node_updated"
+	EvStatusChanged      EventType = "status_changed"
+	EvNoteUpdated        EventType = "note_updated"
+	EvNodeTombstoned     EventType = "node_tombstoned"
+)
+
+var ownershipTypes = map[EventType]bool{
+	EvOwnershipClaimed: true, EvOwnershipHeartbeat: true,
+	EvOwnershipReleased: true, EvOwnershipTakenOver: true,
+}
+
+func (t EventType) IsOwnership() bool { return ownershipTypes[t] }
+func (t EventType) IsMutation() bool {
+	return t == EvNodeUpdated || t == EvStatusChanged || t == EvNoteUpdated || t == EvNodeTombstoned
+}
+
+type Event struct {
+	SchemaVersion    int             `json:"schema_version"`
+	EventID          string          `json:"event_id"`
+	WorkspaceID      string          `json:"workspace_id"`
+	DeviceID         string          `json:"device_id"`
+	DeviceSeq        uint64          `json:"device_seq"`
+	RecordedAt       time.Time       `json:"recorded_at"`
+	Type             EventType       `json:"type"`
+	IdempotencyKey   string          `json:"idempotency_key"`
+	CausalParents    []string        `json:"causal_parents"`
+	BaseRevision     int             `json:"base_revision"`
+	ExpectedRevision int             `json:"expected_revision"`
+	LeaseID          string          `json:"lease_id,omitempty"`
+	FencingToken     uint64          `json:"fencing_token,omitempty"`
+	Payload          json.RawMessage `json:"payload"`
+	EventHash        string          `json:"event_hash,omitempty"`
+}
+
+type NodePayload struct {
+	NodeID   string `json:"node_id"`
+	Type     string `json:"type,omitempty"`
+	Title    string `json:"title,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Note     string `json:"note,omitempty"`
+	Owner    string `json:"owner,omitempty"`
+}
+
+type OwnershipPayload struct {
+	NodeID       string    `json:"node_id"`
+	Owner        string    `json:"owner"`
+	LeaseID      string    `json:"lease_id"`
+	FencingToken uint64    `json:"fencing_token"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+func (e Event) NodeID() (string, error) {
+	var p NodePayload
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return "", err
+	}
+	if p.NodeID == "" {
+		return "", fmt.Errorf("event %s has no node_id", e.EventID)
+	}
+	return p.NodeID, nil
+}
+
+func (e Event) OwnershipNodeID() (string, error) {
+	var p OwnershipPayload
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return "", err
+	}
+	if p.NodeID == "" {
+		return "", fmt.Errorf("ownership event %s has no node_id", e.EventID)
+	}
+	return p.NodeID, nil
+}
+
+// Hash is SHA-256 over the canonical JSON body with EventHash blanked.
+func (e Event) Hash() (string, error) {
+	copy := e
+	copy.EventHash = ""
+	b, err := json.Marshal(copy)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func (e *Event) Seal() error {
+	h, err := e.Hash()
+	if err != nil {
+		return err
+	}
+	e.EventHash = h
+	return nil
+}

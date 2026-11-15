@@ -73,6 +73,7 @@ repository or byte upload.
 | Item | Value |
 |---|---|
 | Design branch (preserved) | `/workspace/anchor`, `design/baseline`, `a901541` |
+| Local implementation branch | `/workspace/anchor-mainline`, `feature/core-events`, created from `f5f2584`; see local commit report |
 | Mainline branch (prepared) | `/workspace/anchor-mainline`, `design/baseline-mainline`, `fdbbaa5` |
 | Common ancestor | `39b6fffdb35511859a82632d174b97ca304e26f5` (verified init commit) |
 | Remote configured | none (fetched by URL; no `origin` added) |

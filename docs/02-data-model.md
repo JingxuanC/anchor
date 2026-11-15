@@ -202,7 +202,13 @@ Rules:
 ```
 
 Node types: `goal`, `decision`, `task`, `branch`, `question`, `note`.
-Statuses: `todo`, `in_progress`, `done`, `blocked`, `abandoned`.
+Workflow statuses: `todo`, `in_progress`, `done`, `blocked`, `abandoned`.
+
+**Note state rule:** a `note` is an annotation, not a workflow task. It starts
+`active`, may only transition `active → archived`, and has no `todo`/`done`/
+`blocked` states. `note_updated` may edit an active note; archived is terminal
+for that note (create a new note to add more). Notes do not satisfy the
+`done`-evidence gate and are excluded from task completion counts.
 `branch` nodes additionally carry `hypothesis`, `forked_from`, and
 `merge_target`; `question` nodes carry `answer`/`resolved_by`.
 

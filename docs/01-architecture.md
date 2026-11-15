@@ -301,7 +301,7 @@ anchor handoff prepare [--include-uncommitted]
 successor session:
   → restore injects packet + explicit verification checklist
   → agent calls anchor_verify_evidence / records code check
-  → anchor ack (verification event) before editing (policy hook can enforce)
+  → anchor ack (verification event) before editing where the adapter can enforce it; otherwise the gate is advisory and visibly labeled
 ```
 
 ### 5.4 Causal bridge
@@ -417,7 +417,7 @@ Two paths must be separated:
 |---|---|
 | causal-memory offline | Bounded write queue; stale/no lessons allowed; UI/doctor show degraded; core continues. |
 | Git remote unavailable | Local work continues; sync status shows pending/offline; no blocking capture. |
-| Hook timeout | Capture gap logged; agent continues unless the hook is a policy hook with blocking capability. |
+| Hook timeout/malformed output | Capture gap logged; agent continues. A hook is `best_effort_hook`, never a hard guarantee; timeout/malformed output may fail open. `anchor wrap` is the enforceable fallback for writes it controls. |
 | Adapter cannot block | `policy_enforcement=advisory|observed|unavailable`; handoff/UI warns; `anchor wrap`/Anchor-mediated writes provide the enforceable path. |
 | Adapter missing | `anchor wrap`/manual capture/restore; `doctor` explains. |
 | Vault unavailable | Secret-dependent actions fail closed; tree/capture still work. |

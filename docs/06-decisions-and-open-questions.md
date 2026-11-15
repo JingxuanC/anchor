@@ -42,10 +42,10 @@ The authoritative table is in `docs/00-requirements-baseline.md` section 7
 
 | ID | Decision needed | Blocks |
 |---|---|---|
-| O-001 | Sync topology (user skipped). | Sync implementation, privacy model, artifact storage. | Adopted default: dedicated private state repo, configurable; no automatic remote creation. |
+| O-001 | Sync topology (user skipped; no longer blocks sync implementation). | Privacy/onboarding only. | Adopted default: dedicated private state repo, configurable; no automatic remote creation. Implement behind a config boundary. |
 | O-002 | Architectures within macOS/Linux/Windows; all three OSes are release-blocking full acceptance. | Packaging, install/uninstall, keychain and real e2e for each OS. Windows is not optional. |
 | O-003 | Supported agent CLI versions. | Adapter compatibility claims. |
-| O-004 | Whether `.anchor/` may be committed to the project repo. | Default workspace behavior. |
+| O-004 | Whether `.anchor/` may be committed to the project repo. | Resolved: default is **closed**; `.anchor/` is ignored by the project Git repo. Sync uses the configurable dedicated state repo. |
 | O-005 | causal-memory MCP endpoint/tool contract/test-account policy. | Bridge integration and live e2e. |
 | O-006 | Linux vault fallback without Secret Service. | Headless support. |
 | O-007 | Uncommitted code artifact format (bundle/patch/both). | Handoff implementation. |
@@ -81,7 +81,7 @@ The user (not another agent's relay) must confirm each item before the action:
 1. **Design baseline approval** — requirements 00, architecture 01, data model
    02, adapter matrix 03, security 04, acceptance 05.
 2. **Stack confirmation** — Go core + TS web is the reversible design default (P-001); confirm or override with Rust/other.
-3. **Sync topology** — default adopted (dedicated private state repo, no auto-create); confirm or override O-001/O-004.
+3. **Sync topology** — default adopted and no longer blocking: dedicated private state repo, no auto-create; `.anchor/` ignored by project Git (O-004 closed). Confirm only if you want a different topology.
 4. **Repository creation** — create private `JingxuanC/anchor` under the
    authenticated account.
 5. **Default-branch bootstrap** — choose GitHub auto-init vs a one-time

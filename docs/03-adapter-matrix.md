@@ -50,7 +50,7 @@ Sources:
 | Hook trust | Project settings/hooks load after workspace trust; `.mcp.json` approval prompts | Project `.codex/` hooks require project trust; `/hooks` review/trust | Project settings have their own trust model; MCP `trust` defaults false | Anchor installer must explain trust prompts |
 | Context/output limits | `additionalContext`/stdout capped at 10,000 chars; oversized saved to file + preview | `additionalContext` ~2,500 tokens default; `additionalContextLimit` override | Hook timeout default 60,000 ms; context schema to verify | Anchor packet size budget |
 | Hook timeout | D: 600 s default for command/http/mcp_tool; 30 s prompt; 60 s agent; SessionEnd 1.5 s shared. Runtime spike required. | D: 600 s default; SessionEnd/Interrupt 1 s cap 3 s. Runtime spike required. | D: 60,000 ms default, configurable. Runtime spike required. | `anchor wrap` no fixed hook budget |
-| Blocking semantics | exit 2 blocks where supported; exit 1 is not policy; malformed JSON is non-blocking | exit 2 blocks supported events; Stop/SubagentStop success requires JSON | exit 0 parses JSON; exit 2 blocks target; other codes warn | Anchor policy enforced by wrapper/CLI exit code |
+| Blocking semantics | exit 2 blocks where supported; exit 1 is not policy; malformed JSON is non-blocking | exit 2 blocks supported events; Stop/SubagentStop success requires JSON | exit 0 parses JSON; exit 2 blocks target; other codes warn | Native hooks are `best_effort_hook`; only wrapped/Anchor-mediated writes are `enforced_within_wrapper` |
 
 
 ### 1.1 Evidence grades and current status

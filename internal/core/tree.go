@@ -1,0 +1,127 @@
+package core
+
+import (
+	"sort"
+)
+
+type NodeType string
+
+const (
+	NodeGoal     NodeType = "goal"
+	NodeDecision NodeType = "decision"
+	NodeTask     NodeType = "task"
+	NodeBranch   NodeType = "branch"
+	NodeQuestion NodeType = "question"
+	NodeNote     NodeType = "note"
+)
+
+type Status string
+
+const (
+	StatusTodo       Status = "todo"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+	StatusBlocked    Status = "blocked"
+	StatusAbandoned  Status = "abandoned"
+	StatusActive     Status = "active"
+	StatusArchived   Status = "archived"
+)
+
+type Node struct {
+	ID           string   `json:"id"`
+	Type         NodeType `json:"type"`
+	Title        string   `json:"title"`
+	ParentID     string   `json:"parent_id,omitempty"`
+	Status       Status   `json:"status"`
+	Note         string   `json:"note,omitempty"`
+	Revision     int      `json:"revision"`
+	Owner        string   `json:"owner,omitempty"`
+	LeaseID      string   `json:"lease_id,omitempty"`
+	LeaseEventID string   `json:"lease_event_id,omitempty"`
+	FencingToken uint64   `json:"fencing_token,omitempty"`
+	Deleted      bool     `json:"deleted,omitempty"`
+}
+
+type Tree struct {
+	Nodes map[string]*Node `json:"nodes"`
+}
+
+func NewTree() *Tree { return &Tree{Nodes: map[string]*Node{}} }
+
+func (t *Tree) SortedNodes() []*Node {
+	out := make([]*Node, 0, len(t.Nodes))
+	for _, n := range t.Nodes {
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// CanTransition implements the legal edges in docs/02 §4.3.
+func CanTransition(t NodeType, from, to Status) bool {
+	switch t {
+	case NodeGoal:
+		switch from {
+		case StatusInProgress:
+			return to == StatusBlocked || to == StatusAbandoned
+		case StatusBlocked:
+			return to == StatusInProgress || to == StatusAbandoned
+		}
+		return false
+	case NodeDecision, NodeTask:
+		switch from {
+		case StatusTodo:
+			return to == StatusInProgress || to == StatusAbandoned
+		case StatusInProgress:
+			return to == StatusDone || to == StatusBlocked || to == StatusAbandoned
+		case StatusBlocked:
+			return to == StatusInProgress || to == StatusAbandoned
+		case StatusDone:
+			return to == StatusInProgress // reopen
+		}
+		return false
+	case NodeQuestion:
+		switch from {
+		case StatusTodo:
+			return to == StatusInProgress || to == StatusAbandoned
+		case StatusInProgress:
+			return to == StatusDone || to == StatusBlocked || to == StatusAbandoned
+		case StatusBlocked:
+			return to == StatusInProgress || to == StatusAbandoned
+		case StatusDone:
+			return to == StatusInProgress
+		}
+		return false
+	case NodeBranch:
+		switch from {
+		case StatusTodo:
+			return to == StatusInProgress || to == StatusAbandoned
+		case StatusInProgress:
+			return to == StatusDone || to == StatusAbandoned
+		}
+		return false
+	case NodeNote:
+		// Notes have no todo/done workflow; activation starts active and may be archived.
+		return from == StatusActive && to == StatusArchived
+	}
+	return false
+}
+
+func InitialStatus(t NodeType) Status {
+	switch t {
+	case NodeGoal:
+		return StatusInProgress
+	case NodeNote:
+		return StatusActive
+	default:
+		return StatusTodo
+	}
+}
+
+func ValidNodeType(s string) (NodeType, bool) {
+	switch NodeType(s) {
+	case NodeGoal, NodeDecision, NodeTask, NodeBranch, NodeQuestion, NodeNote:
+		return NodeType(s), true
+	}
+	return "", false
+}
