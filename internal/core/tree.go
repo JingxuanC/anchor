@@ -39,14 +39,25 @@ type Node struct {
 	LeaseID      string   `json:"lease_id,omitempty"`
 	LeaseEventID string   `json:"lease_event_id,omitempty"`
 	FencingToken uint64   `json:"fencing_token,omitempty"`
+	LastEventID  string   `json:"last_event_id,omitempty"`
 	Deleted      bool     `json:"deleted,omitempty"`
 }
 
-type Tree struct {
-	Nodes map[string]*Node `json:"nodes"`
+type EvidenceEntry struct {
+	EvidenceID string `json:"evidence_id"`
+	NodeID     string `json:"node_id"`
+	Kind       string `json:"kind"`
+	SHA256     string `json:"sha256"`
 }
 
-func NewTree() *Tree { return &Tree{Nodes: map[string]*Node{}} }
+type Tree struct {
+	Nodes    map[string]*Node         `json:"nodes"`
+	Evidence map[string]EvidenceEntry `json:"evidence,omitempty"`
+}
+
+func NewTree() *Tree {
+	return &Tree{Nodes: map[string]*Node{}, Evidence: map[string]EvidenceEntry{}}
+}
 
 func (t *Tree) SortedNodes() []*Node {
 	out := make([]*Node, 0, len(t.Nodes))

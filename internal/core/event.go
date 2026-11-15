@@ -22,6 +22,7 @@ const (
 	EvStatusChanged      EventType = "status_changed"
 	EvNoteUpdated        EventType = "note_updated"
 	EvNodeTombstoned     EventType = "node_tombstoned"
+	EvEvidenceAdded      EventType = "evidence_added"
 )
 
 var ownershipTypes = map[EventType]bool{
@@ -64,6 +65,13 @@ type NodePayload struct {
 	Owner        string   `json:"owner,omitempty"`
 	EvidenceIDs  []string `json:"evidence_ids,omitempty"`
 	UserOverride bool     `json:"user_override,omitempty"`
+}
+
+type EvidencePayload struct {
+	EvidenceID string `json:"evidence_id"`
+	NodeID     string `json:"node_id"`
+	Kind       string `json:"kind"`
+	SHA256     string `json:"sha256"`
 }
 
 type OwnershipPayload struct {

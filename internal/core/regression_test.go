@@ -196,13 +196,17 @@ func TestDoneRequiresEvidenceOrAttestedUserOverride(t *testing.T) {
 	if !found {
 		t.Fatal("agent self-reported user override accepted")
 	}
-	// Valid local CLI attestation is accepted.
-	okOverride := badOverride
-	okOverride.EventID = "b-done3"
-	okOverride.ActorAttestation = "local_cli_confirm"
-	r = Replay([]Event{gc, ge, c, cr, ip, okOverride})
+	// A registered, hash-bearing evidence reference is accepted; override stays disabled.
+	evPayload := json.RawMessage(`{"evidence_id":"ev1","node_id":"n1","kind":"test","sha256":"` + strings.Repeat("a", 64) + `"}`)
+	ev := Event{EventID: "0evidence", DeviceID: "d1", DeviceSeq: 5, Type: EvEvidenceAdded, CausalParents: []string{"created"}, Payload: evPayload}
+	okDone := doneNoEvidence
+	okDone.EventID = "b-done3"
+	okDone.DeviceSeq = 7
+	okDone.CausalParents = []string{"a-inprog", "0evidence"}
+	okDone.Payload = json.RawMessage(`{"node_id":"n1","status":"done","evidence_ids":["ev1"]}`)
+	r = Replay([]Event{gc, ge, c, cr, ev, ip, okDone})
 	if r.Tree.Nodes["n1"].Status != StatusDone {
-		t.Fatalf("attested override rejected: %+v", r)
+		t.Fatalf("done with registered evidence rejected: %+v", r)
 	}
 }
 
@@ -248,5 +252,20 @@ func TestExpectedRevisionMismatchIsConflict(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected_revision mismatch not isolated: %+v", r.Conflicts)
+	}
+}
+
+func TestExplicitMutationChainSurvivesReversedIDs(t *testing.T) {
+	gc := withID(rawOwn("g1", "lg", "a", 1), "gclaim", "d1", 1)
+	ge := withID(rawCreated("g1", "goal", "", "lg", 1, "gclaim"), "gcreated", "d1", 2)
+	c := withID(rawOwn("n1", "l1", "a", 1, "gcreated"), "claim", "d1", 3)
+	created := withID(rawCreated("n1", "task", "g1", "l1", 1, "claim"), "z-created", "d1", 4)
+	m1 := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "z-created"), "a-mut", "d1", 5)
+	m2 := withID(rawStatus("n1", StatusDone, 2, "l1", 1, "a-mut"), "b-mut", "d1", 6)
+	m2.Payload = json.RawMessage(`{"node_id":"n1","status":"done","evidence_ids":["ev1"]}`)
+	ev := Event{EventID: "0evidence", DeviceID: "d1", DeviceSeq: 7, Type: EvEvidenceAdded, CausalParents: []string{"z-created"}, Payload: json.RawMessage(`{"evidence_id":"ev1","node_id":"n1","kind":"test","sha256":"` + strings.Repeat("a", 64) + `"}`)}
+	r := Replay([]Event{gc, ge, c, created, m1, m2, ev})
+	if r.Tree.Nodes["n1"].Status != StatusDone || len(r.Conflicts) != 0 {
+		t.Fatalf("explicit chain failed with reversed IDs: %+v", r)
 	}
 }

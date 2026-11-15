@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -354,6 +355,27 @@ func ownershipFor(all []Event, mutationID string, isAncestor func(a, b string) b
 }
 
 func applyNonMutation(tree *Tree, e Event) error {
+	if e.Type == EvEvidenceAdded {
+		var p EvidencePayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return err
+		}
+		if p.EvidenceID == "" || p.NodeID == "" || p.Kind == "" {
+			return fmt.Errorf("evidence_id, node_id and kind are required")
+		}
+		b, err := hex.DecodeString(p.SHA256)
+		if err != nil || len(b) != 32 {
+			return fmt.Errorf("evidence sha256 must be 64 hex characters")
+		}
+		if _, ok := tree.Nodes[p.NodeID]; !ok {
+			return fmt.Errorf("evidence node %s not found", p.NodeID)
+		}
+		if _, exists := tree.Evidence[p.EvidenceID]; exists {
+			return fmt.Errorf("evidence %s already exists", p.EvidenceID)
+		}
+		tree.Evidence[p.EvidenceID] = EvidenceEntry{EvidenceID: p.EvidenceID, NodeID: p.NodeID, Kind: p.Kind, SHA256: p.SHA256}
+		return nil
+	}
 	if e.Type.IsOwnership() {
 		id, err := e.OwnershipNodeID()
 		if err != nil {
@@ -394,7 +416,7 @@ func applyNonMutation(tree *Tree, e Event) error {
 				return fmt.Errorf("parent %s not found", p.ParentID)
 			}
 		}
-		n := &Node{ID: p.NodeID, Type: t, Title: p.Title, ParentID: p.ParentID, Status: InitialStatus(t), Revision: 1, Owner: p.Owner, LeaseID: e.LeaseID, FencingToken: e.FencingToken}
+		n := &Node{ID: p.NodeID, Type: t, Title: p.Title, ParentID: p.ParentID, Status: InitialStatus(t), Revision: 1, Owner: p.Owner, LeaseID: e.LeaseID, FencingToken: e.FencingToken, LastEventID: e.EventID}
 		tree.Nodes[p.NodeID] = n
 		return nil
 	}
@@ -426,11 +448,16 @@ func applyMutation(tree *Tree, e Event, nodeID string) error {
 			return fmt.Errorf("illegal transition %s: %s -> %s", n.Type, n.Status, to)
 		}
 		if to == StatusDone {
-			if len(p.EvidenceIDs) == 0 && !p.UserOverride {
-				return fmt.Errorf("done requires evidence_ids or an explicit local user override")
+			if p.UserOverride {
+				return fmt.Errorf("user_override is disabled: no trusted local attestation mechanism is available")
 			}
-			if p.UserOverride && (e.ActorKind != "user" || e.ActorAttestation != "local_cli_confirm") {
-				return fmt.Errorf("user_override requires local user attestation")
+			if len(p.EvidenceIDs) == 0 {
+				return fmt.Errorf("done requires evidence_ids")
+			}
+			for _, evidenceID := range p.EvidenceIDs {
+				if _, ok := tree.Evidence[evidenceID]; !ok {
+					return fmt.Errorf("done references unknown evidence %q", evidenceID)
+				}
 			}
 		}
 		n.Status = to
@@ -449,5 +476,6 @@ func applyMutation(tree *Tree, e Event, nodeID string) error {
 		return fmt.Errorf("unsupported mutation %s", e.Type)
 	}
 	n.Revision++
+	n.LastEventID = e.EventID
 	return nil
 }

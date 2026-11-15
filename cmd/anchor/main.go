@@ -40,6 +40,8 @@ func main() {
 		cmdOwnership(os.Args[2:])
 	case "note":
 		cmdNote(os.Args[2:])
+	case "evidence":
+		cmdEvidence(os.Args[2:])
 	case "handoff":
 		cmdHandoff(os.Args[2:])
 	case "help", "-h", "--help":
@@ -60,6 +62,7 @@ func usage() {
   anchor node tombstone --dir DIR --id ID
   anchor node transition --dir DIR --id ID --to STATUS
   anchor note set --dir DIR --id ID --text TEXT
+  anchor evidence add --dir DIR --id EVID --node NODE --kind KIND --sha256 HEX64
   anchor ownership takeover --dir DIR --id ID --owner NAME
   anchor handoff prepare --dir DIR --repo REPO
   anchor handoff restore --dir DIR --repo REPO --packet PACKET.json
@@ -214,6 +217,9 @@ func nodeCreate(args []string) {
 	if _, exists := r.Tree.Nodes[*id]; exists {
 		die(fmt.Errorf("node %s already exists", *id))
 	}
+	if nt != core.NodeGoal && *parent == "" {
+		die(fmt.Errorf("non-goal node %s requires --parent", *id))
+	}
 	if *parent != "" {
 		if _, ok := r.Tree.Nodes[*parent]; !ok {
 			die(fmt.Errorf("parent %s not found", *parent))
@@ -227,8 +233,8 @@ func nodeCreate(args []string) {
 	np := core.NodePayload{NodeID: *id, Type: string(nt), Title: *title, ParentID: *parent, Owner: *owner}
 	nb, _ := json.Marshal(np)
 	created, _ := appendEvent(*dir, core.Event{Type: core.EvNodeCreated, CausalParents: []string{claim.EventID}, LeaseID: lease, FencingToken: fencing, Payload: nb})
+	requireApplied(*dir, created.EventID)
 	fmt.Printf("%s %s status=%s lease=%s\n", *id, nt, core.InitialStatus(nt), lease)
-	_ = created
 }
 
 func nodeTransition(args []string) {
@@ -247,9 +253,15 @@ func nodeTransition(args []string) {
 	if !ok {
 		die(fmt.Errorf("node %s not found", *id))
 	}
+	if n.Deleted {
+		die(fmt.Errorf("node %s is tombstoned", *id))
+	}
 	status := core.Status(*to)
 	if !core.CanTransition(n.Type, n.Status, status) {
 		die(fmt.Errorf("illegal transition %s: %s -> %s", n.Type, n.Status, status))
+	}
+	if *userOverride {
+		die(fmt.Errorf("user_override is disabled: no trusted local attestation mechanism is available; use --evidence"))
 	}
 	lease := n.LeaseID
 	fencing := n.FencingToken
@@ -266,8 +278,15 @@ func nodeTransition(args []string) {
 			}
 		}
 	}
-	if status == core.StatusDone && len(evidenceIDs) == 0 && !*userOverride {
-		die(fmt.Errorf("done requires --evidence id[,id] or --user-override (local user confirmation)"))
+	if status == core.StatusDone {
+		if len(evidenceIDs) == 0 {
+			die(fmt.Errorf("done requires --evidence id[,id]"))
+		}
+		for _, evidenceID := range evidenceIDs {
+			if _, ok := r.Tree.Evidence[evidenceID]; !ok {
+				die(fmt.Errorf("unknown evidence %q", evidenceID))
+			}
+		}
 	}
 	sp := core.NodePayload{NodeID: *id, Status: string(status), EvidenceIDs: evidenceIDs, UserOverride: *userOverride}
 	sb, _ := json.Marshal(sp)
@@ -277,6 +296,37 @@ func nodeTransition(args []string) {
 	}
 	ev, _ := appendEvent(*dir, core.Event{Type: core.EvStatusChanged, CausalParents: []string{n.LeaseEventID}, BaseRevision: n.Revision, ExpectedRevision: n.Revision + 1, LeaseID: lease, FencingToken: fencing, ActorKind: actorKind, ActorAttestation: attestation, Payload: sb})
 	fmt.Printf("%s %s -> %s (%s)\n", *id, n.Status, status, ev.EventID)
+}
+
+func requireApplied(dir, eventID string) {
+	r := replayDir(dir)
+	for _, id := range r.Applied {
+		if id == eventID {
+			return
+		}
+	}
+	die(fmt.Errorf("event %s was rejected by replay: %+v", eventID, r.Conflicts))
+}
+
+func cmdEvidence(args []string) {
+	if len(args) < 1 || args[0] != "add" {
+		usage()
+		os.Exit(2)
+	}
+	fs := flag.NewFlagSet("evidence add", flag.ExitOnError)
+	dir := fs.String("dir", ".", "workspace directory")
+	id := fs.String("id", "", "evidence id")
+	node := fs.String("node", "", "node id")
+	kind := fs.String("kind", "test", "evidence kind")
+	sha := fs.String("sha256", "", "64 hex SHA-256")
+	_ = fs.Parse(args[1:])
+	if *id == "" || *node == "" || *sha == "" {
+		die(fmt.Errorf("--id, --node and --sha256 are required"))
+	}
+	pb, _ := json.Marshal(core.EvidencePayload{EvidenceID: *id, NodeID: *node, Kind: *kind, SHA256: *sha})
+	ev, _ := appendEvent(*dir, core.Event{Type: core.EvEvidenceAdded, Payload: pb})
+	requireApplied(*dir, ev.EventID)
+	fmt.Printf("evidence %s added (%s)\n", *id, ev.EventID)
 }
 
 func cmdStatus(args []string) {
@@ -330,11 +380,19 @@ func appendOwnedMutation(dir, id string, typ core.EventType, payload any) core.E
 	if !ok {
 		die(fmt.Errorf("node %s not found", id))
 	}
+	if n.Deleted {
+		die(fmt.Errorf("node %s is tombstoned", id))
+	}
 	if n.LeaseID == "" || n.LeaseEventID == "" {
 		die(fmt.Errorf("node %s has no ownership lease event", id))
 	}
+	parents := []string{n.LeaseEventID}
+	if n.LastEventID != "" && n.LastEventID != n.LeaseEventID {
+		parents = append(parents, n.LastEventID)
+	}
 	pb, _ := json.Marshal(payload)
-	ev, _ := appendEvent(dir, core.Event{Type: typ, CausalParents: []string{n.LeaseEventID}, BaseRevision: n.Revision, ExpectedRevision: n.Revision + 1, LeaseID: n.LeaseID, FencingToken: n.FencingToken, Payload: pb})
+	ev, _ := appendEvent(dir, core.Event{Type: typ, CausalParents: parents, BaseRevision: n.Revision, ExpectedRevision: n.Revision + 1, LeaseID: n.LeaseID, FencingToken: n.FencingToken, Payload: pb})
+	requireApplied(dir, ev.EventID)
 	return ev
 }
 
