@@ -3,7 +3,7 @@
 **Audit date:** 2026-11-16
 **Commit:** audited at `1a6acc5`; since then WS-001 (`init --attach`), the packet
 content work (ST-001/002/005, RST-001/010) and workspace-carrying export/import
-(WS-007) landed. 36 Go files / ~9,900 LOC / 101 Go test functions.
+(WS-007) landed. 36 Go files / ~9,900 LOC / 102 Go test functions.
 The authoritative per-requirement status is the ledger in §5.
 **Method:** read-only code audit. `go build ./...` OK; `go test ./... -count=1` and
 `go test -race ./...` pass for `cmd/anchor`, `internal/{core,adapter,handoff,recovery}`
