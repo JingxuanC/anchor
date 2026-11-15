@@ -56,16 +56,17 @@ type TreeSummary struct {
 }
 
 type Packet struct {
-	SchemaVersion        int         `json:"schema_version"`
-	HandoffID            string      `json:"handoff_id"`
-	CreatedAt            time.Time   `json:"created_at"`
-	Summary              string      `json:"summary"`
-	Tree                 TreeSummary `json:"tree"`
-	CodeState            CodeState   `json:"code_state"`
-	ArtifactAvailability string      `json:"artifact_availability"` // metadata_only | bytes_present | missing
-	RecoveryStatus       string      `json:"recovery_status"`
-	Warnings             []string    `json:"warnings,omitempty"`
-	ContentHash          string      `json:"content_hash,omitempty"`
+	SchemaVersion        int               `json:"schema_version"`
+	HandoffID            string            `json:"handoff_id"`
+	CreatedAt            time.Time         `json:"created_at"`
+	Summary              string            `json:"summary"`
+	Tree                 TreeSummary       `json:"tree"`
+	CodeState            CodeState         `json:"code_state"`
+	ArtifactAvailability string            `json:"artifact_availability"` // metadata_only | bytes_present | missing
+	RecoveryStatus       string            `json:"recovery_status"`
+	Warnings             []string          `json:"warnings,omitempty"`
+	Quarantined          []core.Quarantine `json:"quarantined,omitempty"`
+	ContentHash          string            `json:"content_hash,omitempty"`
 }
 
 type Evaluation struct {
@@ -223,10 +224,11 @@ func Prepare(dir, repo string) (Packet, string, error) {
 	if err != nil {
 		return Packet{}, "", err
 	}
-	events, err := store.Load()
+	report, err := store.LoadReport()
 	if err != nil {
 		return Packet{}, "", err
 	}
+	events := report.Events
 	replay := core.Replay(events)
 	cs, err := codeState(repo)
 	if err != nil {
@@ -234,8 +236,12 @@ func Prepare(dir, repo string) (Packet, string, error) {
 	}
 	p := Packet{SchemaVersion: 1, HandoffID: newID(), CreatedAt: time.Now().UTC(),
 		Summary: "Structured handoff snapshot. This summary is not a substitute for code and evidence verification.",
-		Tree:    treeSummary(events, replay), CodeState: cs, ArtifactAvailability: "metadata_only"}
+		Tree:    treeSummary(events, replay), CodeState: cs, ArtifactAvailability: "metadata_only", Quarantined: report.Quarantined}
 	p.RecoveryStatus = StatusComplete
+	if len(report.Quarantined) > 0 {
+		p.RecoveryStatus = StatusIncomplete
+		p.Warnings = append(p.Warnings, "some event files are quarantined; recovery is incomplete")
+	}
 	if replay.RecoveryStatus != "complete" {
 		p.RecoveryStatus = StatusIncomplete
 		p.Warnings = append(p.Warnings, "projection has pending events or conflicts")
@@ -316,12 +322,17 @@ func Evaluate(dir, repo string, p *Packet) Evaluation {
 		ev.Reasons = append(ev.Reasons, "cannot open workspace: "+err.Error())
 		return ev
 	}
-	events, err := store.Load()
+	report, err := store.LoadReport()
 	if err != nil {
 		ev.Reasons = append(ev.Reasons, "cannot load events: "+err.Error())
 		return ev
 	}
-	replay := core.Replay(events)
+	if len(report.Quarantined) > 0 {
+		ev.Status = StatusIncomplete
+		ev.Reasons = append(ev.Reasons, "some event files are quarantined; recovery is incomplete")
+		return ev
+	}
+	replay := core.Replay(report.Events)
 	if replay.RecoveryStatus != "complete" {
 		ev.Reasons = append(ev.Reasons, "projection is incomplete (pending/conflicts)")
 	}

@@ -150,3 +150,29 @@ func TestContentHashMismatchRejected(t *testing.T) {
 	}
 	_ = p
 }
+
+func TestQuarantinedEventForcesIncompleteHandoff(t *testing.T) {
+	repo := initRepo(t)
+	dir := t.TempDir()
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+	// A corrupt event file must not be treated as a complete workspace.
+	if err := os.MkdirAll(filepath.Join(dir, "events"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "events", "bad.json"), []byte("{bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, _, err := Prepare(dir, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.RecoveryStatus != StatusIncomplete || len(p.Quarantined) != 1 {
+		t.Fatalf("quarantine not reflected: %+v", p)
+	}
+	ev := Evaluate(dir, repo, &p)
+	if ev.Status != StatusIncomplete {
+		t.Fatalf("quarantined evaluation must be incomplete: %+v", ev)
+	}
+}
