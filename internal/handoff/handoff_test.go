@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/JingxuanC/anchor/internal/core"
 )
 
 func initRepo(t *testing.T) string {
@@ -29,9 +31,17 @@ func initRepo(t *testing.T) string {
 	return repo
 }
 
+func initWorkspace(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := core.InitWorkspace(dir, "ws-test", "dev-test"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPrepareCleanRepoIsComplete(t *testing.T) {
 	repo := initRepo(t)
 	dir := t.TempDir()
+	initWorkspace(t, dir)
 	p, path, err := Prepare(dir, repo)
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +71,7 @@ func TestDirtyRepoIsIncompleteAndSecretNotInPacket(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	initWorkspace(t, dir)
 	p, path, err := Prepare(dir, repo)
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +114,7 @@ func TestDirtyRepoIsIncompleteAndSecretNotInPacket(t *testing.T) {
 func TestEvaluateDetectsStaleCodeWithoutOverwriting(t *testing.T) {
 	repo := initRepo(t)
 	dir := t.TempDir()
+	initWorkspace(t, dir)
 	p, _, err := Prepare(dir, repo)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +131,9 @@ func TestEvaluateDetectsStaleCodeWithoutOverwriting(t *testing.T) {
 }
 
 func TestNoPacketIsIncompleteAndPathsAreSafe(t *testing.T) {
-	ev := Evaluate(t.TempDir(), t.TempDir(), nil)
+	dir := t.TempDir()
+	initWorkspace(t, dir)
+	ev := Evaluate(dir, t.TempDir(), nil)
 	if ev.Status != StatusIncomplete {
 		t.Fatalf("want incomplete, got %+v", ev)
 	}
@@ -136,6 +150,7 @@ func TestNoPacketIsIncompleteAndPathsAreSafe(t *testing.T) {
 func TestContentHashMismatchRejected(t *testing.T) {
 	repo := initRepo(t)
 	dir := t.TempDir()
+	initWorkspace(t, dir)
 	p, path, err := Prepare(dir, repo)
 	if err != nil {
 		t.Fatal(err)
@@ -154,13 +169,8 @@ func TestContentHashMismatchRejected(t *testing.T) {
 func TestQuarantinedEventForcesIncompleteHandoff(t *testing.T) {
 	repo := initRepo(t)
 	dir := t.TempDir()
-	if _, err := os.Stat(dir); err != nil {
-		t.Fatal(err)
-	}
+	initWorkspace(t, dir)
 	// A corrupt event file must not be treated as a complete workspace.
-	if err := os.MkdirAll(filepath.Join(dir, "events"), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(dir, "events", "bad.json"), []byte("{bad"), 0o600); err != nil {
 		t.Fatal(err)
 	}

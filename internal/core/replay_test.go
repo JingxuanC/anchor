@@ -48,7 +48,7 @@ func seed(t *testing.T, s *Store) (claim Event, created Event) {
 }
 
 func TestDeterministicReplayIndependentOfSliceOrder(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s := initTest(t)
 	claim, created := seed(t, s)
 	hb := mustAppend(t, s, ownType(EvOwnershipHeartbeat, "n1", "l1", "agent", 1, claim.EventID))
 	mustAppend(t, s, status("n1", StatusInProgress, 1, "l1", 1, created.EventID, hb.EventID))
@@ -70,7 +70,7 @@ func TestDeterministicReplayIndependentOfSliceOrder(t *testing.T) {
 }
 
 func TestMissingParentStagesThenReplays(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s := initTest(t)
 	claim, created := seed(t, s)
 	mut := status("n1", StatusInProgress, 1, "l1", 1, created.EventID, "missing_ownership")
 	mut.EventID = "mut"
@@ -97,7 +97,7 @@ func TestMissingParentStagesThenReplays(t *testing.T) {
 }
 
 func TestConcurrentOwnershipIsolatesWholeMutation(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s := initTest(t)
 	claim, created := seed(t, s)
 	events := eventsOrFail(t, s)
 	mut := status("n1", StatusInProgress, 1, "l1", 1, created.EventID)
@@ -127,7 +127,7 @@ func TestConcurrentOwnershipIsolatesWholeMutation(t *testing.T) {
 }
 
 func TestSameRevisionConcurrentMutationsBothIsolate(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s := initTest(t)
 	_, created := seed(t, s)
 	events := eventsOrFail(t, s)
 	a := status("n1", StatusInProgress, 1, "l1", 1, created.EventID)
@@ -152,7 +152,7 @@ func TestSameRevisionConcurrentMutationsBothIsolate(t *testing.T) {
 }
 
 func TestDeviceSeqMonotonic(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s := initTest(t)
 	e := own("n1", "l1", "agent", 1)
 	e.DeviceID = "d1"
 	e.DeviceSeq = 2

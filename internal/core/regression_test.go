@@ -31,10 +31,7 @@ func withID(e Event, id, device string, seq uint64) Event {
 func TestP0EventIDTraversalRejected(t *testing.T) {
 	root := t.TempDir()
 	ws := filepath.Join(root, "ws")
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	e := rawOwn("n1", "l1", "a", 1)
 	e.EventID = "../../escaped"
 	if _, _, err := s.Append(e); err == nil {
@@ -139,7 +136,8 @@ func TestEventDirSymlinkRejectedAndDuplicateID(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	ws := filepath.Join(root, "ws")
-	if err := os.MkdirAll(ws, 0o700); err != nil {
+	initAt(t, ws)
+	if err := os.Rename(filepath.Join(ws, "events"), filepath.Join(ws, "events-real")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(ws, "events")); err != nil {
@@ -149,10 +147,7 @@ func TestEventDirSymlinkRejectedAndDuplicateID(t *testing.T) {
 		t.Fatal("symlinked events directory accepted")
 	}
 	ws2 := filepath.Join(root, "ws2")
-	s, err := Open(ws2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws2)
 	e := rawOwn("n1", "l1", "a", 1)
 	e.EventID = "dup"
 	if _, _, err := s.Append(e); err != nil {
@@ -214,10 +209,7 @@ func TestDoneRequiresEvidenceOrAttestedUserOverride(t *testing.T) {
 
 func TestLoadReportQuarantinesBadHash(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	e := rawOwn("n1", "l1", "a", 1)
 	e.EventID = "good"
 	if _, _, err := s.Append(e); err != nil {
@@ -275,10 +267,7 @@ func TestExplicitMutationChainSurvivesReversedIDs(t *testing.T) {
 // Raw Append must not accept a mutation that omits the latest node event, nor a
 // zero expected_revision wildcard. Rejected input must not create a file.
 func TestRawAppendRejectsCausalBypassAndZeroExpectedRevision(t *testing.T) {
-	s, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initTest(t)
 	goalClaim := mustAppend(t, s, withID(rawOwn("g1", "lg", "a", 1), "gclaim", "d1", 1))
 	goalCreated := mustAppend(t, s, withID(rawCreated("g1", "goal", "", "lg", 1, goalClaim.EventID), "gcreated", "d1", 2))
 	claim := mustAppend(t, s, withID(rawOwn("n1", "l1", "a", 1, goalCreated.EventID), "claim", "d1", 3))
@@ -330,10 +319,7 @@ func TestExplicitMutationChainAcrossDevicesReversedIDs(t *testing.T) {
 // whole file, and a truncated/uncommitted batch must never contribute events.
 func TestTransactionBatchIsAllOrNothing(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	e1 := withID(rawOwn("n1", "l1", "a", 1), "batch-a", "d1", 1)
 	if err := e1.Seal(); err != nil {
 		t.Fatal(err)
@@ -368,10 +354,7 @@ func TestTransactionBatchIsAllOrNothing(t *testing.T) {
 
 func TestBatchManifestCountAndHashValidated(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	e1 := withID(rawOwn("manifest-a", "l1", "a", 1), "manifest-a", "d1", 1)
 	if err := e1.Seal(); err != nil {
 		t.Fatal(err)
@@ -429,14 +412,7 @@ func TestBatchManifestCountAndHashValidated(t *testing.T) {
 // formats are read-only audit diagnostics, never silently applied.
 func TestTamperedEnvelopeCannotDowngradeToLegacy(t *testing.T) {
 	ws := t.TempDir()
-	manifest := `{"schema_version":1,"event_log_version":2,"workspace_id":"ws1","device_id":"d1"}`
-	if err := os.WriteFile(filepath.Join(ws, "manifest.json"), []byte(manifest), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	e1 := withID(rawOwn("down-a", "l1", "a", 1), "down-a", "d1", 1)
 	e2 := withID(rawOwn("down-b", "l2", "a", 1), "down-b", "d1", 2)
 	if _, err := s.Transact(func(tx *Tx) error {

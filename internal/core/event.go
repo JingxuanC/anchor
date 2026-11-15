@@ -79,16 +79,18 @@ type EvidencePayload struct {
 }
 
 type AdapterSessionPayload struct {
-	SessionID  string `json:"session_id"`
-	SessionRef string `json:"session_ref"`
-	NodeID     string `json:"node_id"`
-	Adapter    string `json:"adapter"`
-	HookEvent  string `json:"hook_event"`
-	Tool       string `json:"tool,omitempty"`
-	CwdRef     string `json:"cwd_ref,omitempty"`
-	Timestamp  string `json:"timestamp,omitempty"`
-	Source     string `json:"source"`
-	TrustLevel string `json:"trust_level"`
+	SessionID      string `json:"session_id"`
+	SessionRef     string `json:"session_ref"`
+	NodeID         string `json:"node_id"`
+	Adapter        string `json:"adapter"`
+	HookEvent      string `json:"hook_event"`
+	Tool           string `json:"tool,omitempty"`
+	CwdRef         string `json:"cwd_ref,omitempty"`
+	Timestamp      string `json:"timestamp,omitempty"`
+	Source         string `json:"source"`
+	TrustLevel     string `json:"trust_level"`
+	SourceEventRef string `json:"source_event_ref"`
+	SourceSeq      uint64 `json:"source_seq,omitempty"`
 }
 
 type OwnershipPayload struct {

@@ -53,18 +53,21 @@ type EvidenceEntry struct {
 }
 
 type Session struct {
-	ID            string `json:"id"`
-	SessionRef    string `json:"session_ref"`
-	Adapter       string `json:"adapter"`
-	NodeID        string `json:"node_id"`
-	Source        string `json:"source"`
-	TrustLevel    string `json:"trust_level"`
-	FirstEventID  string `json:"first_event_id"`
-	LastEventID   string `json:"last_event_id"`
-	LastHookEvent string `json:"last_hook_event,omitempty"`
-	LastTimestamp string `json:"last_timestamp,omitempty"`
-	Ended         bool   `json:"ended"`
-	EndEventID    string `json:"end_event_id,omitempty"`
+	ID                     string `json:"id"`
+	SessionRef             string `json:"session_ref"`
+	Adapter                string `json:"adapter"`
+	NodeID                 string `json:"node_id"`
+	Source                 string `json:"source"`
+	TrustLevel             string `json:"trust_level"`
+	FirstEventID           string `json:"first_event_id"`
+	LastEventID            string `json:"last_event_id"`
+	LastHookEvent          string `json:"last_hook_event,omitempty"`
+	LastTimestamp          string `json:"last_timestamp,omitempty"`
+	LastSourceEventRef     string `json:"last_source_event_ref,omitempty"`
+	LastSourceSeq          uint64 `json:"last_source_seq,omitempty"`
+	HistoricalObservations int    `json:"historical_observations,omitempty"`
+	Ended                  bool   `json:"ended"`
+	EndEventID             string `json:"end_event_id,omitempty"`
 }
 
 type Tree struct {

@@ -26,10 +26,7 @@ func evidencePayload(id, node, digest string, size int64) json.RawMessage {
 
 func TestEvidenceArtifactRehashAndPathSafety(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	data := "clean fixture bytes\n"
 	path := writeArtifact(t, data)
 	art, err := s.PutEvidenceFile(path, "", []string{"ev1", "n1", "test"})
@@ -70,10 +67,7 @@ func TestEvidenceArtifactRehashAndPathSafety(t *testing.T) {
 
 func TestEvidencePutRejectsSecretsSymlinksAndStoreEscape(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	fakeAWS := "AKIAIOSFODNN7EXAMPLE"
 	fakeGH := "ghp_1234567890abcdefghijklmnopqrstuvwx"
 	cases := []struct {
@@ -112,16 +106,10 @@ func TestEvidencePutRejectsSecretsSymlinksAndStoreEscape(t *testing.T) {
 	}
 	outside := t.TempDir()
 	ws2 := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(ws2, "events"), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Symlink(outside, filepath.Join(ws2, "evidence")); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := Open(ws2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s2 := initAt(t, ws2)
 	if _, err := s2.PutEvidenceFile(clean, "", nil); err == nil {
 		t.Fatal("symlinked evidence directory accepted")
 	}
@@ -129,10 +117,7 @@ func TestEvidencePutRejectsSecretsSymlinksAndStoreEscape(t *testing.T) {
 
 func TestDoneGateRequiresPersistedArtifactAndOwnership(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	_, created := seed(t, s)
 	path := writeArtifact(t, "verified fixture\n")
 	art, err := s.PutEvidenceFile(path, "", []string{"ev1", "n1", "test"})
@@ -209,10 +194,7 @@ func TestDoneGateRequiresPersistedArtifactAndOwnership(t *testing.T) {
 
 func TestEvidenceEventWithoutBytesRejected(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	_, created := seed(t, s)
 	before, _ := s.LoadReport()
 	fake := strings.Repeat("a", 64)
@@ -227,10 +209,7 @@ func TestEvidenceEventWithoutBytesRejected(t *testing.T) {
 
 func TestLegacyEvidenceSchemaRejectedAndAudited(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	_, created := seed(t, s)
 	legacyPayload := json.RawMessage(`{"evidence_id":"legacy-ev","node_id":"n1","kind":"test","sha256":"` + strings.Repeat("a", 64) + `","size":0}`)
 	ev := Event{
@@ -276,10 +255,7 @@ func TestLegacyEvidenceSchemaRejectedAndAudited(t *testing.T) {
 
 func TestEvidenceAuditReportsOrphansWithoutDeleting(t *testing.T) {
 	ws := t.TempDir()
-	s, err := Open(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, ws)
 	_, created := seed(t, s)
 	art, err := s.PutEvidenceFile(writeArtifact(t, "audited fixture\n"), "", []string{"ev1", "n1", "test"})
 	if err != nil {

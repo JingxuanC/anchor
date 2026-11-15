@@ -27,6 +27,9 @@ func validateAdapterSessionPayload(tree *Tree, e Event, p AdapterSessionPayload,
 	if p.SessionID == "" || p.SessionRef == "" || p.NodeID == "" || p.Adapter == "" || p.HookEvent == "" {
 		return fmt.Errorf("adapter session requires session_id, session_ref, node_id, adapter and hook_event")
 	}
+	if p.SourceEventRef == "" || !validHashRef(p.SourceEventRef) {
+		return fmt.Errorf("adapter source_event_ref must be a sha256 hash of a stable source event identity")
+	}
 	if !validHashRef(p.SessionRef) {
 		return fmt.Errorf("adapter session_ref must be a sha256 hash")
 	}
@@ -39,7 +42,7 @@ func validateAdapterSessionPayload(tree *Tree, e Event, p AdapterSessionPayload,
 	if p.TrustLevel != "unverified_adapter" {
 		return fmt.Errorf("adapter trust_level must be unverified_adapter")
 	}
-	for _, s := range []string{p.SessionID, p.SessionRef, p.NodeID, p.Adapter, p.HookEvent, p.Tool, p.CwdRef, p.Timestamp, p.Source, p.TrustLevel} {
+	for _, s := range []string{p.SessionID, p.SessionRef, p.NodeID, p.Adapter, p.HookEvent, p.Tool, p.CwdRef, p.Timestamp, p.Source, p.TrustLevel, p.SourceEventRef} {
 		if err := ScanSecrets([]byte(s)); err != nil {
 			return fmt.Errorf("adapter metadata rejected: %w", err)
 		}

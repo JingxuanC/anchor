@@ -425,12 +425,61 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 		if sess.ID == "" {
 			sess = Session{ID: p.SessionID, SessionRef: p.SessionRef, Adapter: p.Adapter, NodeID: p.NodeID, Source: p.Source, TrustLevel: p.TrustLevel, FirstEventID: e.EventID}
 		}
+		if ending {
+			if sess.LastSourceSeq > 0 && p.SourceSeq == 0 {
+				return fmt.Errorf("session_end requires source_seq after sequenced observations")
+			}
+			if sess.LastSourceSeq > 0 && p.SourceSeq <= sess.LastSourceSeq {
+				return fmt.Errorf("session_end source_seq %d is not newer than latest observed %d", p.SourceSeq, sess.LastSourceSeq)
+			}
+			sess.Ended = true
+			sess.EndEventID = e.EventID
+			sess.LastEventID = e.EventID
+			sess.LastHookEvent = p.HookEvent
+			sess.LastTimestamp = p.Timestamp
+			if p.SourceSeq > 0 {
+				sess.LastSourceSeq = p.SourceSeq
+				sess.LastSourceEventRef = p.SourceEventRef
+			}
+			tree.Sessions[p.SessionID] = sess
+			return nil
+		}
+		if sess.Ended {
+			// A closed session never reopens. A lower source_seq is immutable
+			// history and cannot move last_*; an unsequenced or newer event is a
+			// late observation that must be rejected.
+			if p.SourceSeq == 0 {
+				return fmt.Errorf("late observation after session_end has no source_seq; rejected")
+			}
+			if sess.LastSourceSeq > 0 && p.SourceSeq < sess.LastSourceSeq {
+				sess.HistoricalObservations++
+				tree.Sessions[p.SessionID] = sess
+				return nil
+			}
+			if sess.LastSourceSeq > 0 && p.SourceSeq == sess.LastSourceSeq {
+				return fmt.Errorf("source_seq %d collides with latest observation and cannot be ordered", p.SourceSeq)
+			}
+			return fmt.Errorf("late observation after session_end (source_seq %d > %d); rejected", p.SourceSeq, sess.LastSourceSeq)
+		}
+		if p.SourceSeq > 0 && sess.LastSourceSeq > 0 {
+			if p.SourceSeq < sess.LastSourceSeq {
+				sess.HistoricalObservations++
+				tree.Sessions[p.SessionID] = sess
+				return nil
+			}
+			if p.SourceSeq == sess.LastSourceSeq {
+				return fmt.Errorf("source_seq %d collides with latest observation and cannot be ordered", p.SourceSeq)
+			}
+		}
+		if p.SourceSeq == 0 && sess.LastSourceSeq > 0 {
+			return fmt.Errorf("sequenced session requires source_seq for new observations")
+		}
 		sess.LastEventID = e.EventID
 		sess.LastHookEvent = p.HookEvent
 		sess.LastTimestamp = p.Timestamp
-		if ending {
-			sess.Ended = true
-			sess.EndEventID = e.EventID
+		if p.SourceSeq > 0 {
+			sess.LastSourceSeq = p.SourceSeq
+			sess.LastSourceEventRef = p.SourceEventRef
 		}
 		tree.Sessions[p.SessionID] = sess
 		return nil

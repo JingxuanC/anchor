@@ -151,6 +151,9 @@ func adapterIngest(args []string) {
 	if result.SessionRef == "" {
 		die(fmt.Errorf("capture has no session_id; explicit session mapping is required"))
 	}
+	if result.SourceEventRef == "" {
+		die(fmt.Errorf("capture has no stable source identity; source_event_id or source_seq is required"))
+	}
 	sessionID := adapter.SessionID(*id, result.SessionRef)
 	key, err := adapter.IdempotencyKey(*id, *node, *source, result)
 	if err != nil {
@@ -173,20 +176,41 @@ func adapterIngest(args []string) {
 			return fmt.Errorf("mapping node %s is tombstoned", *node)
 		}
 		parents := appendParent(nil, n.LastEventID)
-		if ending {
-			sess, ok := tx.Tree().Sessions[sessionID]
-			if !ok {
-				return fmt.Errorf("session %s has no observed event; refusing session_end before session_seen", sessionID)
+		if sess, ok := tx.Tree().Sessions[sessionID]; ok {
+			if ending {
+				if sess.Ended {
+					return fmt.Errorf("session %s is already ended", sessionID)
+				}
+				if sess.LastSourceSeq > 0 && (result.SourceSeq == 0 || result.SourceSeq <= sess.LastSourceSeq) {
+					return fmt.Errorf("session_end requires source_seq newer than latest observed %d", sess.LastSourceSeq)
+				}
+				parents = appendParent(parents, sess.LastEventID)
+			} else if sess.Ended {
+				if result.SourceSeq == 0 {
+					return fmt.Errorf("late observation after session_end has no source_seq; rejected for manual review")
+				}
+				if sess.LastSourceSeq > 0 && result.SourceSeq == sess.LastSourceSeq {
+					return fmt.Errorf("source_seq %d collides with latest observation", result.SourceSeq)
+				}
+				if sess.LastSourceSeq > 0 && result.SourceSeq > sess.LastSourceSeq {
+					return fmt.Errorf("late observation after session_end source_seq %d > %d; rejected for manual review", result.SourceSeq, sess.LastSourceSeq)
+				}
+			} else if sess.LastSourceSeq > 0 {
+				if result.SourceSeq == 0 {
+					return fmt.Errorf("sequenced session requires source_seq for new observations")
+				}
+				if result.SourceSeq == sess.LastSourceSeq {
+					return fmt.Errorf("source_seq %d collides with latest observation", result.SourceSeq)
+				}
 			}
-			if sess.Ended {
-				return fmt.Errorf("session %s is already ended", sessionID)
-			}
-			parents = appendParent(parents, sess.LastEventID)
+		} else if ending {
+			return fmt.Errorf("session %s has no observed event; refusing session_end before session_seen", sessionID)
 		}
 		payload := core.AdapterSessionPayload{
 			SessionID: sessionID, SessionRef: result.SessionRef, NodeID: *node,
 			Adapter: *id, HookEvent: result.Event, Tool: result.Tool, CwdRef: result.CwdRef,
 			Timestamp: result.Timestamp, Source: *source, TrustLevel: "unverified_adapter",
+			SourceEventRef: result.SourceEventRef, SourceSeq: result.SourceSeq,
 		}
 		pb, _ := json.Marshal(payload)
 		typ := core.EvAdapterSessionSeen
@@ -212,6 +236,7 @@ func adapterIngest(args []string) {
 		"event_id": out.EventID, "created": created, "idempotent_reuse": !created,
 		"session_id": sessionID, "session_ref": result.SessionRef, "node_id": *node,
 		"source": *source, "trust_level": "unverified_adapter",
+		"source_event_ref": result.SourceEventRef, "source_seq": result.SourceSeq,
 		"session_end_is_task_done": false, "auto_install": false, "upload": false,
 	}
 	if *asJSON {

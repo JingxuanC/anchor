@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -829,7 +831,7 @@ func TestCLIAdapterIngestSessionMappingIdempotencyAndSafety(t *testing.T) {
 	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
 	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
 	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
-	fixture := writeFixture(t, filepath.Join(root, "hook.json"), `{"hook_event_name":"PostToolUse","session_id":"raw-session-id","cwd":"/tmp/raw-cwd/project","tool_name":"Bash","timestamp":"2026-11-15T00:00:00Z","prompt":"must-not-be-copied","tool_input":{"command":"echo must-not-be-copied"}}`)
+	fixture := writeFixture(t, filepath.Join(root, "hook.json"), `{"hook_event_name":"PostToolUse","session_id":"raw-session-id","cwd":"/tmp/raw-cwd/project","tool_name":"Bash","timestamp":"2026-11-15T00:00:00Z","source_event_id":"source-event-1","source_seq":1,"prompt":"must-not-be-copied","tool_input":{"command":"echo must-not-be-copied"}}`)
 	before := len(eventFiles(t, ws))
 	out, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", fixture, "--source", "fixture", "--json")
 	if code != 0 {
@@ -900,8 +902,8 @@ func TestCLIAdapterIngestSessionMappingIdempotencyAndSafety(t *testing.T) {
 	}
 
 	// Out-of-order observations with different timestamps both apply to one session.
-	event2 := writeFixture(t, filepath.Join(root, "hook2.json"), `{"hook_event_name":"PostToolUse","session_id":"raw-session-id","cwd":"/tmp/raw-cwd/project","tool_name":"Read","timestamp":"2026-11-15T00:00:02Z"}`)
-	event3 := writeFixture(t, filepath.Join(root, "hook3.json"), `{"hook_event_name":"PostToolUse","session_id":"raw-session-id","cwd":"/tmp/raw-cwd/project","tool_name":"Grep","timestamp":"2026-11-14T00:00:00Z"}`)
+	event2 := writeFixture(t, filepath.Join(root, "hook2.json"), `{"hook_event_name":"PostToolUse","session_id":"raw-session-id","cwd":"/tmp/raw-cwd/project","tool_name":"Read","timestamp":"2026-11-15T00:00:02Z","source_event_id":"source-event-2","source_seq":2}`)
+	event3 := writeFixture(t, filepath.Join(root, "hook3.json"), `{"hook_event_name":"PreToolUse","session_id":"raw-session-id","cwd":"/tmp/raw-cwd/project","tool_name":"Grep","timestamp":"2026-11-14T00:00:00Z","source_event_id":"source-event-3","source_seq":1}`)
 	for _, f := range []string{event2, event3} {
 		if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", f, "--source", "fixture"); code != 0 {
 			t.Fatalf("out-of-order ingest failed: %s", stderr)
@@ -913,7 +915,7 @@ func TestCLIAdapterIngestSessionMappingIdempotencyAndSafety(t *testing.T) {
 	}
 
 	// SessionEnd before a session_seen is rejected.
-	endUnknown := writeFixture(t, filepath.Join(root, "end-unknown.json"), `{"hook_event_name":"SessionEnd","session_id":"unknown-session","cwd":"/tmp/raw-cwd/project","timestamp":"2026-11-15T00:01:00Z"}`)
+	endUnknown := writeFixture(t, filepath.Join(root, "end-unknown.json"), `{"hook_event_name":"SessionEnd","session_id":"unknown-session","cwd":"/tmp/raw-cwd/project","timestamp":"2026-11-15T00:01:00Z","source_event_id":"source-end-unknown","source_seq":1}`)
 	beforeBad := len(eventFiles(t, ws))
 	if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", endUnknown, "--source", "fixture"); code == 0 {
 		t.Fatalf("session_end before session_seen accepted: %s", stderr)
@@ -923,7 +925,7 @@ func TestCLIAdapterIngestSessionMappingIdempotencyAndSafety(t *testing.T) {
 	}
 
 	// SessionEnd is a lightweight marker: it must not mark the task done.
-	end := writeFixture(t, filepath.Join(root, "end.json"), `{"hook_event_name":"SessionEnd","session_id":"raw-session-id","cwd":"/tmp/raw-cwd/project","timestamp":"2026-11-15T00:03:00Z"}`)
+	end := writeFixture(t, filepath.Join(root, "end.json"), `{"hook_event_name":"SessionEnd","session_id":"raw-session-id","cwd":"/tmp/raw-cwd/project","timestamp":"2026-11-15T00:03:00Z","source_event_id":"source-end-1","source_seq":3}`)
 	out, stderr, code = runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", end, "--source", "fixture", "--json")
 	if code != 0 || !strings.Contains(out, `"session_end_is_task_done": false`) {
 		t.Fatalf("session_end ingest failed: %s%s", out, stderr)
@@ -944,15 +946,15 @@ func TestCLIAdapterIngestSessionMappingIdempotencyAndSafety(t *testing.T) {
 	if _, _, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "missing-node", "--event", fixture); code == 0 {
 		t.Fatal("missing mapping node accepted")
 	}
-	noSession := writeFixture(t, filepath.Join(root, "no-session.json"), `{"hook_event_name":"PostToolUse","tool_name":"Bash"}`)
+	noSession := writeFixture(t, filepath.Join(root, "no-session.json"), `{"hook_event_name":"PostToolUse","tool_name":"Bash","source_event_id":"source-no-session"}`)
 	if _, _, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", noSession); code == 0 {
 		t.Fatal("missing session_id accepted")
 	}
-	badSource := writeFixture(t, filepath.Join(root, "bad-source.json"), `{"hook_event_name":"PostToolUse","session_id":"s","tool_name":"Bash"}`)
+	badSource := writeFixture(t, filepath.Join(root, "bad-source.json"), `{"hook_event_name":"PostToolUse","session_id":"s","tool_name":"Bash","source_event_id":"source-bad-source"}`)
 	if _, _, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", badSource, "--source", "native"); code == 0 {
 		t.Fatal("unverified native source accepted")
 	}
-	secretFile := writeFixture(t, filepath.Join(root, "secret-hook.json"), `{"hook_event_name":"PostToolUse","session_id":"secret-session","tool_name":"Bash","prompt":"AKIAIOSFODNN7EXAMPLE"}`)
+	secretFile := writeFixture(t, filepath.Join(root, "secret-hook.json"), `{"hook_event_name":"PostToolUse","session_id":"secret-session","tool_name":"Bash","source_event_id":"source-secret","prompt":"AKIAIOSFODNN7EXAMPLE"}`)
 	if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", secretFile); code == 0 {
 		t.Fatal("secret-bearing ingest accepted")
 	} else if strings.Contains(stderr, "AKIAIOSFODNN7EXAMPLE") {
@@ -971,7 +973,7 @@ func TestCLIAdapterIngestNeverExecutesHookInput(t *testing.T) {
 	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
 	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
 	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
-	fixture := writeFixture(t, filepath.Join(root, "hook-exec.json"), `{"hook_event_name":"PostToolUse","session_id":"session-exec","cwd":"/tmp/fixture","tool_name":"Bash","tool_input":{"command":"touch `+pwn+`"}}`)
+	fixture := writeFixture(t, filepath.Join(root, "hook-exec.json"), `{"hook_event_name":"PostToolUse","session_id":"session-exec","cwd":"/tmp/fixture","tool_name":"Bash","source_event_id":"source-exec","source_seq":1,"tool_input":{"command":"touch `+pwn+`"}}`)
 	if out, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", fixture, "--source", "fixture"); code != 0 {
 		t.Fatalf("ingest failed: %s%s", out, stderr)
 	}
@@ -1205,7 +1207,7 @@ func TestCLIAdapterIngestWorkspaceIsolationAndUnverifiedSource(t *testing.T) {
 	runCLI(t, root, "node", "create", "--dir", ws1, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T1")
 	runCLI(t, root, "node", "create", "--dir", ws2, "--id", "goal1", "--type", "goal", "--title", "G")
 	runCLI(t, root, "node", "create", "--dir", ws2, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "T2")
-	fixture := writeFixture(t, filepath.Join(root, "shared-hook.json"), `{"hook_event_name":"PostToolUse","session_id":"shared-session","cwd":"/tmp/shared","tool_name":"Bash","timestamp":"2026-11-15T00:00:00Z"}`)
+	fixture := writeFixture(t, filepath.Join(root, "shared-hook.json"), `{"hook_event_name":"PostToolUse","session_id":"shared-session","cwd":"/tmp/shared","tool_name":"Bash","timestamp":"2026-11-15T00:00:00Z","source_event_id":"source-shared-1","source_seq":1}`)
 	out1, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "codex", "--dir", ws1, "--node", "task1", "--event", fixture, "--source", "fixture", "--json")
 	if code != 0 {
 		t.Fatalf("ws1 ingest failed: %s%s", out1, stderr)
@@ -1233,5 +1235,218 @@ func TestCLIAdapterIngestWorkspaceIsolationAndUnverifiedSource(t *testing.T) {
 	}
 	if strings.Count(status1, `"adapter": "codex"`) != 1 || strings.Count(status2, `"adapter": "codex"`) != 1 {
 		t.Fatalf("session registry not workspace-local: ws1=%s ws2=%s", status1, status2)
+	}
+}
+
+func TestCLIAdapterIngestSourceOrderAndClosedSessionPolicy(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	seen2 := writeFixture(t, filepath.Join(root, "seen2.json"), `{"hook_event_name":"PostToolUse","session_id":"ordered-session","cwd":"/tmp/ordered","tool_name":"Bash","timestamp":"2026-11-15T00:00:02Z","source_event_id":"ordered-2","source_seq":2}`)
+	seen1 := writeFixture(t, filepath.Join(root, "seen1.json"), `{"hook_event_name":"PreToolUse","session_id":"ordered-session","cwd":"/tmp/ordered","tool_name":"Read","timestamp":"2026-11-15T00:00:01Z","source_event_id":"ordered-1","source_seq":1}`)
+	end := writeFixture(t, filepath.Join(root, "end.json"), `{"hook_event_name":"SessionEnd","session_id":"ordered-session","cwd":"/tmp/ordered","timestamp":"2026-11-15T00:00:03Z","source_event_id":"ordered-end","source_seq":3}`)
+	if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", seen2, "--source", "fixture"); code != 0 {
+		t.Fatalf("seen2 failed: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", seen1, "--source", "fixture"); code != 0 {
+		t.Fatalf("out-of-order seen1 failed: %s", stderr)
+	}
+	beforeEnd := len(eventFiles(t, ws))
+	if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", end, "--source", "fixture"); code != 0 {
+		t.Fatalf("session_end failed: %s", stderr)
+	}
+	statusAfterEnd, _, _ := runCLI(t, root, "status", "--dir", ws, "--json")
+	if !strings.Contains(statusAfterEnd, `"ended": true`) || !strings.Contains(statusAfterEnd, `"last_source_seq": 3`) || !strings.Contains(statusAfterEnd, `"historical_observations": 1`) || !strings.Contains(statusAfterEnd, `"status": "todo"`) {
+		t.Fatalf("closed-session projection wrong: %s", statusAfterEnd)
+	}
+	history := writeFixture(t, filepath.Join(root, "history.json"), `{"hook_event_name":"PreToolUse","session_id":"ordered-session","cwd":"/tmp/ordered","tool_name":"Glob","timestamp":"2026-11-15T00:00:00Z","source_event_id":"ordered-history","source_seq":1}`)
+	if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", history, "--source", "fixture"); code != 0 {
+		t.Fatalf("historical lower-seq observation after end should be retained as history: %s", stderr)
+	}
+	statusHistory, _, _ := runCLI(t, root, "status", "--dir", ws, "--json")
+	if !strings.Contains(statusHistory, `"ended": true`) || !strings.Contains(statusHistory, `"last_source_seq": 3`) || !strings.Contains(statusHistory, `"historical_observations": 2`) || !strings.Contains(statusHistory, `"status": "todo"`) {
+		t.Fatalf("historical observation changed closed-session projection: %s", statusHistory)
+	}
+	late := writeFixture(t, filepath.Join(root, "late.json"), `{"hook_event_name":"PostToolUse","session_id":"ordered-session","cwd":"/tmp/ordered","tool_name":"Grep","timestamp":"2026-11-15T00:00:04Z","source_event_id":"ordered-late","source_seq":4}`)
+	beforeLate := len(eventFiles(t, ws))
+	if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", late, "--source", "fixture"); code == 0 {
+		t.Fatalf("late observation reopened/updated closed session: %s", stderr)
+	} else if !strings.Contains(stderr, "late observation after session_end") {
+		t.Fatalf("late observation error not explicit: %s", stderr)
+	}
+	if len(eventFiles(t, ws)) != beforeLate || len(eventFiles(t, ws)) != beforeEnd+2 {
+		t.Fatalf("late observation wrote an event: before_end=%d after_end=%d", beforeEnd, len(eventFiles(t, ws)))
+	}
+	// Re-ingesting the same pre-end source event is idempotent and must not
+	// reopen or advance the closed session.
+	out, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", seen2, "--source", "fixture", "--json")
+	if code != 0 || !strings.Contains(out, `"idempotent_reuse": true`) {
+		t.Fatalf("duplicate pre-end source not idempotent: %s%s", out, stderr)
+	}
+	if len(eventFiles(t, ws)) != beforeLate {
+		t.Fatal("duplicate pre-end source wrote an event")
+	}
+	statusAgain, _, _ := runCLI(t, root, "status", "--dir", ws, "--json")
+	if !strings.Contains(statusAgain, `"ended": true`) || !strings.Contains(statusAgain, `"last_source_seq": 3`) || !strings.Contains(statusAgain, `"status": "todo"`) {
+		t.Fatalf("duplicate ingest changed closed-session projection: %s", statusAgain)
+	}
+	// Replaying the same event set in reverse slice order must produce the same
+	// session projection.
+	store, err := core.Open(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.LoadReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := report.Events
+	r1 := core.Replay(events)
+	rev := append([]core.Event(nil), events...)
+	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
+		rev[i], rev[j] = rev[j], rev[i]
+	}
+	r2 := core.Replay(rev)
+	b1, _ := json.Marshal(r1.Tree.Sessions)
+	b2, _ := json.Marshal(r2.Tree.Sessions)
+	if string(b1) != string(b2) {
+		t.Fatalf("session replay depends on slice order:\n%s\n%s", b1, b2)
+	}
+}
+
+func TestCLIAdapterIngestRequiresStableSourceIdentity(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	base := `{"hook_event_name":"PostToolUse","session_id":"same-meta-session","cwd":"/tmp/same","tool_name":"Bash","prompt":"%s","source_event_id":"%s"}`
+	a := writeFixture(t, filepath.Join(root, "a.json"), fmt.Sprintf(base, "prompt-a", "delivery-a"))
+	b := writeFixture(t, filepath.Join(root, "b.json"), fmt.Sprintf(base, "prompt-b", "delivery-b"))
+	before := len(eventFiles(t, ws))
+	for _, f := range []string{a, b} {
+		if out, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", f, "--source", "fixture", "--json"); code != 0 {
+			t.Fatalf("distinct source id ingest failed: %s%s", out, stderr)
+		}
+	}
+	if len(eventFiles(t, ws)) != before+2 {
+		t.Fatalf("distinct source ids were merged: before=%d after=%d", before, len(eventFiles(t, ws)))
+	}
+	out, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", a, "--source", "fixture", "--json")
+	if code != 0 || !strings.Contains(out, `"idempotent_reuse": true`) {
+		t.Fatalf("same source id not idempotent: %s%s", out, stderr)
+	}
+	if len(eventFiles(t, ws)) != before+2 {
+		t.Fatal("same source id wrote a second event")
+	}
+	missing := writeFixture(t, filepath.Join(root, "missing.json"), `{"hook_event_name":"PostToolUse","session_id":"same-meta-session","cwd":"/tmp/same","tool_name":"Bash","prompt":"prompt-c"}`)
+	if _, stderr, code := runCLI(t, root, "adapter", "ingest", "--adapter", "claude-code", "--dir", ws, "--node", "task1", "--event", missing, "--source", "fixture"); code == 0 {
+		t.Fatal("missing stable source identity accepted")
+	} else if !strings.Contains(stderr, "stable source identity") {
+		t.Fatalf("missing identity error not explicit: %s", stderr)
+	}
+	if len(eventFiles(t, ws)) != before+2 {
+		t.Fatal("missing identity wrote an event")
+	}
+	status, _, _ := runCLI(t, root, "status", "--dir", ws, "--json")
+	if !strings.Contains(status, `"adapter": "claude-code"`) || strings.Count(status, `"adapter": "claude-code"`) != 1 {
+		t.Fatalf("stable source id created multiple sessions: %s", status)
+	}
+	assertNoRawCaptureData(t, ws, "delivery-a", "delivery-b", "prompt-a", "prompt-b", "prompt-c", "same-meta-session")
+}
+
+func cliSnapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		switch {
+		case d.Type()&os.ModeSymlink != 0:
+			target, _ := os.Readlink(path)
+			out[rel] = "symlink:" + target
+		case d.IsDir():
+			out[rel] = "dir"
+		default:
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(b)
+			out[rel] = "file:" + hex.EncodeToString(sum[:])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestCLIRejectsSharedAgentPathsWithoutSideEffects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	claude := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claude, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claude, "settings.json"), []byte(`{"real":"config"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(home, ".config", "claude", "nested")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "settings.json"), []byte(`{"nested":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	codex := filepath.Join(home, ".codex")
+	alias := filepath.Join(home, "alias")
+	if err := os.Symlink(claude, alias); err != nil {
+		t.Fatal(err)
+	}
+	linkHome := filepath.Join(home, "link-home")
+	if err := os.Symlink(home, linkHome); err != nil {
+		t.Fatal(err)
+	}
+	fixture := writeFixture(t, filepath.Join(t.TempDir(), "hook.json"), `{"hook_event_name":"PostToolUse","session_id":"shared-path-session","source_event_id":"shared-path-source"}`)
+	before := cliSnapshotTree(t, home)
+	for _, dir := range []string{claude, codex, alias, filepath.Join(claude, "nested"), filepath.Join(linkHome, ".claude"), nested} {
+		if _, _, code := runCLI(t, t.TempDir(), "adapter", "ingest", "--adapter", "claude-code", "--dir", dir, "--node", "task1", "--event", fixture); code == 0 {
+			t.Fatalf("ingest accepted shared/path-alias %s", dir)
+		}
+		if _, _, code := runCLI(t, t.TempDir(), "init", "--dir", dir, "--workspace", "ws1", "--device", "dev1"); code == 0 {
+			t.Fatalf("init accepted shared/path-alias %s", dir)
+		}
+		if _, _, code := runCLI(t, t.TempDir(), "status", "--dir", dir, "--json"); code == 0 {
+			t.Fatalf("status accepted shared/path-alias %s", dir)
+		}
+	}
+	after := cliSnapshotTree(t, home)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("shared path commands changed fake HOME\nbefore=%v\nafter=%v", before, after)
+	}
+	if _, err := os.Stat(codex); !os.IsNotExist(err) {
+		t.Fatal("nonexistent ~/.codex was created")
+	}
+	for _, dir := range []string{claude, alias} {
+		if _, err := os.Stat(filepath.Join(dir, "events")); !os.IsNotExist(err) {
+			t.Fatalf("events directory created under %s", dir)
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".anchor.lock")); !os.IsNotExist(err) {
+			t.Fatalf("lock created under %s", dir)
+		}
+	}
+	// Ordinary nonexistent workspaces are not created by Open/status/ingest.
+	missing := filepath.Join(home, "missing-workspace")
+	if _, _, code := runCLI(t, home, "status", "--dir", missing, "--json"); code == 0 {
+		t.Fatal("status accepted a missing workspace")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatal("failed Open/status created a missing workspace")
 	}
 }

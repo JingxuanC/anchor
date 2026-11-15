@@ -106,3 +106,40 @@ func TestWriteRefusesSharedConfigAndOverwrite(t *testing.T) {
 		t.Fatal("second render overwrote existing files")
 	}
 }
+
+func TestCaptureSourceIdentityAndIdempotency(t *testing.T) {
+	base := `{"hook_event_name":"PostToolUse","session_id":"s","cwd":"/tmp/c","tool_name":"Bash","source_event_id":"%s","source_seq":7}`
+	a, err := Capture("claude-code", []byte(strings.Replace(base, "%s", "delivery-a", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(a.SourceEventRef, "sha256:") || a.SourceSeq != 7 {
+		t.Fatalf("source identity missing: %+v", a)
+	}
+	if strings.Contains(a.SourceEventRef, "delivery-a") {
+		t.Fatal("raw source event id leaked into hash field")
+	}
+	b, err := Capture("claude-code", []byte(strings.Replace(base, "%s", "delivery-b", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ka, err := IdempotencyKey("claude-code", "task1", "fixture", a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ka2, _ := IdempotencyKey("claude-code", "task1", "fixture", a)
+	kb, _ := IdempotencyKey("claude-code", "task1", "fixture", b)
+	if ka != ka2 {
+		t.Fatal("same source identity produced different idempotency keys")
+	}
+	if ka == kb {
+		t.Fatal("different source identities produced the same idempotency key")
+	}
+	a2 := a
+	a2.SourceSeq = 8
+	a2.Tool = "Read"
+	ka3, _ := IdempotencyKey("claude-code", "task1", "fixture", a2)
+	if ka3 != ka {
+		t.Fatal("same source identity with changed metadata/seq produced a different key")
+	}
+}

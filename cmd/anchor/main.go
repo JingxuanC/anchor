@@ -90,18 +90,7 @@ func cmdInit(args []string) {
 	if *ws == "" || *dev == "" {
 		die(fmt.Errorf("--workspace and --device are required"))
 	}
-	if _, err := os.Stat(filepath.Join(*dir, "manifest.json")); err == nil {
-		die(fmt.Errorf("workspace already initialized at %s", *dir))
-	}
-	if err := os.MkdirAll(*dir, 0o700); err != nil {
-		die(err)
-	}
-	if _, err := core.Open(*dir); err != nil {
-		die(err)
-	}
-	m := manifest{SchemaVersion: core.SchemaVersion, EventLogVersion: core.CurrentEventLogVersion, WorkspaceID: *ws, DeviceID: *dev, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
-	b, _ := json.MarshalIndent(m, "", "  ")
-	if err := os.WriteFile(filepath.Join(*dir, "manifest.json"), b, 0o600); err != nil {
+	if _, err := core.InitWorkspace(*dir, *ws, *dev); err != nil {
 		die(err)
 	}
 	fmt.Printf("initialized %s (workspace %s, device %s)\n", *dir, *ws, *dev)

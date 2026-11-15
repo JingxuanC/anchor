@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/JingxuanC/anchor/internal/pathguard"
 )
 
 type Quarantine struct {
@@ -33,29 +35,86 @@ type Store struct {
 }
 
 func Open(dir string) (*Store, error) {
-	eventsDir := filepath.Join(dir, "events")
-	if info, err := os.Lstat(eventsDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("events directory must not be a symlink")
-	}
-	if err := os.MkdirAll(eventsDir, 0o700); err != nil {
+	canonical, err := pathguard.ValidateExistingDir(dir)
+	if err != nil {
 		return nil, err
 	}
-	version := 0
-	if b, err := os.ReadFile(filepath.Join(dir, "manifest.json")); err == nil {
-		var m struct {
-			EventLogVersion int `json:"event_log_version"`
+	eventsDir := filepath.Join(canonical, "events")
+	if info, err := os.Lstat(eventsDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("workspace is not initialized: events directory is missing")
 		}
-		if err := json.Unmarshal(b, &m); err != nil {
-			return nil, fmt.Errorf("invalid workspace manifest: %w", err)
+		return nil, err
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("events directory must be a real directory")
+	}
+	manifestPath := filepath.Join(canonical, "manifest.json")
+	info, err := os.Lstat(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("workspace is not initialized: manifest.json is missing")
 		}
-		version = m.EventLogVersion
-	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("workspace manifest must be a regular file, not a symlink")
+	}
+	b, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, err
+	}
+	var m struct {
+		EventLogVersion int `json:"event_log_version"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, fmt.Errorf("invalid workspace manifest: %w", err)
+	}
+	version := m.EventLogVersion
 	if version < 0 || version > CurrentEventLogVersion {
 		return nil, fmt.Errorf("unsupported workspace event_log_version %d (supported up to %d)", version, CurrentEventLogVersion)
 	}
-	return &Store{Dir: dir, EventLogVersion: version}, nil
+	return &Store{Dir: canonical, EventLogVersion: version}, nil
+}
+
+// InitWorkspace is the only creating entry point. Path validation happens
+// before any directory, event file, or lock is created.
+func InitWorkspace(dir, workspaceID, deviceID string) (*Store, error) {
+	canonical, err := pathguard.ValidateCreateDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(filepath.Join(canonical, "manifest.json")); err == nil {
+		return nil, fmt.Errorf("workspace already initialized at %s", canonical)
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.MkdirAll(canonical, 0o700); err != nil {
+		return nil, err
+	}
+	eventsPath := filepath.Join(canonical, "events")
+	if err := os.Mkdir(eventsPath, 0o700); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	if info, err := os.Lstat(eventsPath); err != nil {
+		return nil, err
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("events directory must be a real directory")
+	}
+	manifest := struct {
+		SchemaVersion   int    `json:"schema_version"`
+		EventLogVersion int    `json:"event_log_version"`
+		WorkspaceID     string `json:"workspace_id"`
+		DeviceID        string `json:"device_id"`
+		CreatedAt       string `json:"created_at"`
+	}{SchemaVersion: SchemaVersion, EventLogVersion: CurrentEventLogVersion, WorkspaceID: workspaceID, DeviceID: deviceID, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	b, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(canonical, "manifest.json"), b, 0o600); err != nil {
+		return nil, err
+	}
+	return Open(canonical)
 }
 
 func validateEventID(id string) error {

@@ -23,6 +23,7 @@ func TestWorkspaceLockHelper(t *testing.T) {
 
 func TestWorkspaceLockAcrossProcesses(t *testing.T) {
 	dir := t.TempDir()
+	initAt(t, dir)
 	cmd := exec.Command(os.Args[0], "-test.run=TestWorkspaceLockHelper")
 	cmd.Env = append(os.Environ(), "ANCHOR_LOCK_HELPER=1", "ANCHOR_LOCK_DIR="+dir)
 	if err := cmd.Start(); err != nil {
@@ -63,10 +64,7 @@ func TestWorkspaceLockAcrossProcesses(t *testing.T) {
 
 func TestStaleWorkspaceLockRecovered(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := initAt(t, dir)
 	lock := filepath.Join(dir, ".anchor.lock")
 	if err := os.WriteFile(lock, []byte("dead"), 0o600); err != nil {
 		t.Fatal(err)
@@ -101,6 +99,7 @@ func TestAppendHelper(t *testing.T) {
 
 func TestConcurrentAppenderAllocateUniqueSequence(t *testing.T) {
 	dir := t.TempDir()
+	initAt(t, dir)
 	var cmds []*exec.Cmd
 	for i := 0; i < 4; i++ {
 		cmd := exec.Command(os.Args[0], "-test.run=TestAppendHelper")
@@ -156,6 +155,7 @@ func TestWorkspaceLockCrashHelper(t *testing.T) {
 
 func TestWorkspaceLockReleasedOnProcessCrash(t *testing.T) {
 	dir := t.TempDir()
+	initAt(t, dir)
 	cmd := exec.Command(os.Args[0], "-test.run=TestWorkspaceLockCrashHelper")
 	cmd.Env = append(os.Environ(), "ANCHOR_LOCK_CRASH_HELPER=1", "ANCHOR_LOCK_CRASH_DIR="+dir)
 	if err := cmd.Start(); err != nil {
