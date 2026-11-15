@@ -1,7 +1,8 @@
 # Implementation Status (audited)
 
 **Audit date:** 2026-11-16
-**Commit:** `1a6acc5` (`feature/core-events`), 34 Go files / ~8,258 LOC / 79 Go tests
+**Commit:** audited at `1a6acc5`; WS-001 closed afterwards (see §4 note), 35 Go files /
+~8,700 LOC / 90 Go test functions
 **Method:** read-only code audit. `go build ./...` OK; `go test ./... -count=1` and
 `go test -race ./...` pass for `cmd/anchor`, `internal/{core,adapter,handoff,recovery}`
 (`internal/pathguard` has no test files). Cross-compilation verified for
@@ -31,7 +32,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 
 | Domain | Implemented | Partial | Missing | Deferred | Total |
 |---|---:|---:|---:|---:|---:|
-| WS workspace/store | 2 | 5 | 1 | 0 | 8 |
+| WS workspace/store | 3 | 4 | 1 | 0 | 8 |
 | ST session tree | 3 | 6 | 4 | 0 | 13 |
 | CAP capture | 4 | 5 | 0 | 0 | 9 |
 | RST restore/handoff | 2 | 5 | 4 | 0 | 11 |
@@ -47,7 +48,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | SEC security | 0 | 4 | 3 | 0 | 7 |
 | NFR non-functional | 2 | 2 | 3 | 0 | 7 |
 | OPS operations | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **18** | **62** | **59** | **1** | **140** |
+| **Total** | **19** | **61** | **59** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -83,7 +84,7 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
 
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
-| WS-001 | partial | `internal/core/store.go:81`; `TestCLIWorkflowRecoveryAndRestoreBoundary` | `init` refuses any non-empty dir (`store.go:94`); no `attach`, so Anchor cannot be adopted inside an existing project. |
+| WS-001 | implemented | `internal/core/store.go:81` (in-place) + `StateDir`/`InitAttached` (attach); `TestCLIInitAttachInExistingProject`, `TestInitAttachedLeavesProjectFilesUntouched`, `TestStateDirResolvesAttachedWorkspace` | `init --attach` adopts an existing project with state in `<project>/.anchor`, ignores it in the project `.gitignore`, and fails closed on re-attach or half-initialized state. Remaining niceties: no interactive prompt, no multi-workspace-per-project. |
 | WS-002 | partial | `internal/core/transaction.go:231`, `replay.go:42`; `TestDeterministicReplayIndependentOfSliceOrder` | No `TREE.md`/`state.json` projections; event batches are random-named one-line JSON, so diffs are coarse. No Git-merge test. |
 | WS-003 | partial | `internal/core/event_format_audit.go:83`, `store.go:73`; `TestCLIEventFormatDowngradeRejectedAndAudited` | Read-only audit only: no migrate, no backup, no dry-run plan, no rollback. |
 | WS-004 | implemented | `internal/core/transaction.go:143,231`, `lock_unix.go:16`; `TestTransactionBatchIsAllOrNothing`, `TestWorkspaceLockReleasedOnProcessCrash` | Directory fsync is best-effort (`_ = d.Sync()`). |
@@ -299,8 +300,9 @@ Ranked by "what blocks a usable local segment":
 6. **Wire real capture** (CAP-001, AD-001/005/009). Detect installed CLI/version,
    install/merge a real Claude hook (backup + trust instructions), surface capture
    failures in `doctor`, add `anchor wrap` fallback.
-7. **Fix adoption: `init --attach`** (WS-001). Allow attaching inside an existing
-   project without touching user files.
+7. ~~**Fix adoption: `init --attach`** (WS-001).~~ **Done** — state lives in
+   `<project>/.anchor`, user files are untouched, and every command resolves the
+   attached state root from the project directory.
 8. **Human-readable projections + `tree` view** (WS-002, UI-001). Deterministic
    `TREE.md` + `state.json`, `anchor tree [--json]`, and a `branch` command.
 9. **Expose Anchor tools over MCP** (AD-010) before the memory bridge. Minimal stdio

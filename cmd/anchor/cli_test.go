@@ -1710,3 +1710,131 @@ func TestCLIHandoffExportImportDryRunAndBytes(t *testing.T) {
 		t.Fatal("secret export left a package")
 	}
 }
+
+// TestCLIInitAttachInExistingProject covers REQ-WS-001: Anchor must be adoptable
+// in an existing project without touching user files.
+func TestCLIInitAttachInExistingProject(t *testing.T) {
+	project := initRepo(t)
+	tracked := filepath.Join(project, "tracked.txt")
+	before, err := os.ReadFile(tracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appFile := filepath.Join(project, "app.go")
+	if err := os.WriteFile(appFile, []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, stderr, code := runCLI(t, project, "init", "--attach", "--dir", project, "--workspace", "ws1", "--device", "dev1")
+	if code != 0 {
+		t.Fatalf("attach failed code=%d stderr=%s stdout=%s", code, stderr, out)
+	}
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(canonical, ".anchor")
+	if _, err := os.Stat(filepath.Join(state, "manifest.json")); err != nil {
+		t.Fatalf("attached manifest missing: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(state, "events")); err != nil || !info.IsDir() {
+		t.Fatalf("attached events directory missing: %v", err)
+	}
+
+	// User files must be untouched.
+	after, err := os.ReadFile(tracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("attach modified a project file: %q -> %q", before, after)
+	}
+	if b, err := os.ReadFile(appFile); err != nil || string(b) != "package main\n" {
+		t.Fatalf("attach modified app.go: %q %v", b, err)
+	}
+
+	// Attached state must be kept out of the project repository.
+	ignore, err := os.ReadFile(filepath.Join(project, ".gitignore"))
+	if err != nil {
+		t.Fatalf("expected .gitignore update: %v", err)
+	}
+	if !strings.Contains(string(ignore), ".anchor/") {
+		t.Fatalf(".gitignore does not ignore attached state: %q", ignore)
+	}
+	status := exec.Command("git", "-C", project, "status", "--porcelain")
+	statusOut, err := status.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(statusOut), ".anchor") {
+		t.Fatalf("attached state is visible to the project repo: %s", statusOut)
+	}
+
+	// Every command must work with the project directory rather than the state dir.
+	out, _, code = runCLI(t, project, "status", "--dir", project, "--repo", project, "--json")
+	if code != 0 {
+		t.Fatalf("status failed: %s", out)
+	}
+	var st struct {
+		WorkspaceDir string `json:"workspace_dir"`
+		Projection   string `json:"projection_status"`
+	}
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.WorkspaceDir != state || st.Projection != "complete" {
+		t.Fatalf("status did not resolve attached state: %+v", st)
+	}
+	if out, stderr, code = runCLI(t, project, "node", "create", "--dir", project, "--id", "goal1", "--type", "goal", "--title", "Ship"); code != 0 {
+		t.Fatalf("node create via project dir failed: %s %s", out, stderr)
+	}
+	if entries, err := os.ReadDir(filepath.Join(state, "events")); err != nil || len(entries) == 0 {
+		t.Fatalf("events were not written into attached state: %v %d", err, len(entries))
+	}
+	if out, stderr, code = runCLI(t, project, "doctor", "--dir", project, "--repo", project, "--json"); code != 0 {
+		t.Fatalf("doctor failed: %s %s", out, stderr)
+	}
+
+	// Re-attaching must fail closed instead of re-initializing identity.
+	if _, stderr, code = runCLI(t, project, "init", "--attach", "--dir", project, "--workspace", "ws2", "--device", "dev2"); code == 0 {
+		t.Fatalf("second attach was accepted: %s", stderr)
+	} else if !strings.Contains(stderr, "already has Anchor state") {
+		t.Fatalf("unexpected re-attach diagnostic: %s", stderr)
+	}
+
+	// Plain init still refuses non-empty directories.
+	if _, stderr, code = runCLI(t, project, "init", "--dir", project, "--workspace", "ws3", "--device", "dev3"); code == 0 {
+		t.Fatalf("plain init over a project directory was accepted")
+	}
+}
+
+func TestCLIInitAttachWithoutGitRepoDoesNotTouchGitignore(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "notes.txt"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runCLI(t, project, "init", "--attach", "--dir", project, "--workspace", "ws1", "--device", "dev1"); code != 0 {
+		t.Fatalf("attach without git repo failed: %s", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf("attach created .gitignore in a non-git directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".anchor", "manifest.json")); err != nil {
+		t.Fatalf("attached state missing: %v", err)
+	}
+}
+
+func TestCLIInitAttachRequiresExistingProject(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "absent")
+	_, stderr, code := runCLI(t, root, "init", "--attach", "--dir", missing, "--workspace", "ws1", "--device", "dev1")
+	if code == 0 {
+		t.Fatalf("attach to a missing project was accepted")
+	}
+	if !strings.Contains(stderr, "no such file") && !strings.Contains(stderr, "not exist") {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("attach created the missing project directory: %v", err)
+	}
+}

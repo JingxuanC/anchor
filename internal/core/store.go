@@ -34,8 +34,51 @@ type Store struct {
 	mu              sync.Mutex
 }
 
-func Open(dir string) (*Store, error) {
+// StateDir resolves the Anchor state root for a caller-supplied directory.
+// `anchor init --attach` stores state in <project>/.anchor; plain `anchor init`
+// uses the given directory itself. Resolution is read-only and prefers the
+// attached layout when <dir>/.anchor/manifest.json exists.
+func StateDir(dir string) (string, error) {
 	canonical, err := pathguard.ValidateExistingDir(dir)
+	if err != nil {
+		return "", err
+	}
+	attached := filepath.Join(canonical, ".anchor")
+	info, err := os.Lstat(attached)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return canonical, nil
+		}
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("%s exists but is not a real directory", attached)
+	}
+	manifestPath := filepath.Join(attached, "manifest.json")
+	manifestInfo, err := os.Lstat(manifestPath)
+	if err == nil {
+		if manifestInfo.Mode()&os.ModeSymlink != 0 || !manifestInfo.Mode().IsRegular() {
+			return "", fmt.Errorf("%s must be a regular file, not a symlink", manifestPath)
+		}
+		return attached, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	// A populated .anchor without a manifest is half-initialized state: guess
+	// nothing about workspace identity.
+	entries, err := os.ReadDir(attached)
+	if err != nil {
+		return "", err
+	}
+	if len(entries) > 0 {
+		return "", fmt.Errorf("state directory %s has no manifest.json; refusing to guess workspace identity", attached)
+	}
+	return canonical, nil
+}
+
+func Open(dir string) (*Store, error) {
+	canonical, err := StateDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +194,39 @@ func InitWorkspace(dir, workspaceID, deviceID string) (*Store, error) {
 		return nil, err
 	}
 	return Open(canonical)
+}
+
+// InitAttached adopts an existing project directory without modifying user
+// files: state is created in <project>/.anchor. It refuses projects that
+// already hold Anchor state instead of silently re-initializing them.
+func InitAttached(projectDir, workspaceID, deviceID string) (*Store, string, error) {
+	project, err := pathguard.ValidateExistingDir(projectDir)
+	if err != nil {
+		return nil, "", err
+	}
+	state := filepath.Join(project, ".anchor")
+	if info, err := os.Lstat(state); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, "", fmt.Errorf("state path %s is not a real directory", state)
+		}
+		entries, err := os.ReadDir(state)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(entries) > 0 {
+			return nil, "", fmt.Errorf("project %s already has Anchor state in %s; open the existing workspace instead of re-initializing", project, state)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, "", err
+	}
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		return nil, "", err
+	}
+	store, err := InitWorkspace(state, workspaceID, deviceID)
+	if err != nil {
+		return nil, "", err
+	}
+	return store, store.Dir, nil
 }
 
 func validateEventID(id string) error {

@@ -59,7 +59,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `Anchor core (first local segment)
-  anchor init --dir DIR --workspace ID --device ID
+  anchor init --dir DIR --workspace ID --device ID [--attach]
   anchor event append --dir DIR --file EVENT.json
   anchor event audit --dir DIR [--json]
   anchor node create --dir DIR --id ID --type goal|decision|task|branch|question|note --title T [--parent ID]
@@ -89,9 +89,30 @@ func cmdInit(args []string) {
 	dir := fs.String("dir", ".", "workspace directory")
 	ws := fs.String("workspace", "", "workspace id")
 	dev := fs.String("device", "", "device id")
+	attach := fs.Bool("attach", false, "adopt an existing project directory, storing state in <dir>/.anchor")
 	_ = fs.Parse(args)
 	if *ws == "" || *dev == "" {
 		die(fmt.Errorf("--workspace and --device are required"))
+	}
+	if *attach {
+		project, err := filepath.Abs(*dir)
+		if err != nil {
+			die(err)
+		}
+		_, stateDir, err := core.InitAttached(project, *ws, *dev)
+		if err != nil {
+			die(err)
+		}
+		// The state root is canonical; its parent is the canonical project path.
+		project = filepath.Dir(stateDir)
+		fmt.Printf("attached %s (state %s, workspace %s, device %s)\n", project, stateDir, *ws, *dev)
+		changed, err := ensureProjectIgnore(project)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "anchor: warning: could not update the project .gitignore: %v\n", err)
+		} else if changed {
+			fmt.Println("ignored .anchor/ in the project .gitignore")
+		}
+		return
 	}
 	if _, err := core.InitWorkspace(*dir, *ws, *dev); err != nil {
 		die(err)
@@ -99,8 +120,39 @@ func cmdInit(args []string) {
 	fmt.Printf("initialized %s (workspace %s, device %s)\n", *dir, *ws, *dev)
 }
 
+// ensureProjectIgnore keeps attached state out of the project repository. It
+// only ever appends a marked block to .gitignore and does nothing when the
+// project is not a Git work tree.
+func ensureProjectIgnore(project string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(project, ".git")); err != nil {
+		return false, nil
+	}
+	path := filepath.Join(project, ".gitignore")
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	for _, line := range strings.Split(string(existing), "\n") {
+		switch strings.TrimSpace(line) {
+		case ".anchor/", "/.anchor/", ".anchor", "/.anchor":
+			return false, nil
+		}
+	}
+	var b strings.Builder
+	b.Write(existing)
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("# Anchor workspace state (device-local; not part of the project repo)\n.anchor/\n")
+	return true, os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
 func readManifest(dir string) (manifest, error) {
-	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	stateDir, err := core.StateDir(dir)
+	if err != nil {
+		return manifest{}, err
+	}
+	b, err := os.ReadFile(filepath.Join(stateDir, "manifest.json"))
 	if err != nil {
 		return manifest{}, err
 	}
@@ -454,6 +506,10 @@ func cmdStatus(args []string) {
 	repo := fs.String("repo", ".", "git working tree for recovery evaluation")
 	asJSON := fs.Bool("json", false, "JSON output")
 	_ = fs.Parse(args)
+	stateDir, err := core.StateDir(*dir)
+	if err != nil {
+		die(err)
+	}
 	r := replayDir(*dir)
 	var packet *handoff.Packet
 	if p, _, err := handoff.Latest(*dir); err == nil {
@@ -472,6 +528,7 @@ func cmdStatus(args []string) {
 	}
 	if *asJSON {
 		out := map[string]any{
+			"workspace_dir":     stateDir,
 			"projection_status": r.RecoveryStatus, "recovery_status": eval.Status,
 			"recovery_reasons": eval.Reasons, "handoff_id": eval.PacketID, "quarantined": quarantined,
 			"tree": r.Tree, "applied": r.Applied, "pending": r.Pending, "conflicts": r.Conflicts,
@@ -480,6 +537,7 @@ func cmdStatus(args []string) {
 		fmt.Println(string(b))
 		return
 	}
+	fmt.Printf("workspace_dir: %s\n", stateDir)
 	fmt.Printf("projection_status: %s\n", r.RecoveryStatus)
 	fmt.Printf("recovery_status: %s (a projection alone is not a complete recovery)\n", eval.Status)
 	for _, reason := range eval.Reasons {
@@ -716,9 +774,25 @@ func cmdDoctor(args []string) {
 	checks := []map[string]any{}
 	hardFail := false
 	checks = append(checks, map[string]any{"check": "manifest", "status": "ok"})
-	if _, err := os.Stat(filepath.Join(*dir, "manifest.json")); err != nil {
+	stateDir, stateErr := core.StateDir(*dir)
+	if stateErr != nil {
+		checks[len(checks)-1] = map[string]any{"check": "manifest", "status": "fail", "detail": stateErr.Error()}
+		hardFail = true
+	} else if _, err := os.Stat(filepath.Join(stateDir, "manifest.json")); err != nil {
 		checks[len(checks)-1] = map[string]any{"check": "manifest", "status": "fail", "detail": err.Error()}
 		hardFail = true
+	}
+	if hardFail {
+		out := map[string]any{"checks": checks, "workspace_dir": stateDir, "projection_status": "incomplete", "recovery_status": "incomplete"}
+		if *asJSON {
+			b, _ := json.MarshalIndent(out, "", "  ")
+			fmt.Println(string(b))
+		} else {
+			for _, c := range checks {
+				fmt.Printf("%v\n", c)
+			}
+		}
+		os.Exit(1)
 	}
 	r := replayDir(*dir)
 	q := quarantineDir(*dir)
@@ -733,17 +807,14 @@ func cmdDoctor(args []string) {
 		eval = handoff.Evaluate(*dir, *repo, &p)
 	}
 	checks = append(checks, map[string]any{"check": "recovery", "status": eval.Status, "reasons": eval.Reasons, "handoff_id": eval.PacketID})
-	out := map[string]any{"checks": checks, "projection_status": r.RecoveryStatus, "recovery_status": eval.Status, "recovery_is_not_implied_by_projection": true}
+	out := map[string]any{"checks": checks, "workspace_dir": stateDir, "projection_status": r.RecoveryStatus, "recovery_status": eval.Status, "recovery_is_not_implied_by_projection": true}
 	if *asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
 	} else {
-		fmt.Printf("projection_status: %s\nrecovery_status: %s\n", r.RecoveryStatus, eval.Status)
+		fmt.Printf("workspace_dir: %s\nprojection_status: %s\nrecovery_status: %s\n", stateDir, r.RecoveryStatus, eval.Status)
 		for _, c := range checks {
 			fmt.Printf("%v\n", c)
 		}
-	}
-	if hardFail {
-		os.Exit(1)
 	}
 }
