@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -64,4 +66,30 @@ func Capture(adapterID string, input []byte) (CaptureResult, error) {
 		NativeHookVerified:    false,
 		DoesNotRestoreOrBlock: true,
 	}, nil
+}
+
+func SessionID(adapterID, sessionRef string) string {
+	return core.AdapterSessionID(adapterID, sessionRef)
+}
+
+func IsSessionEnd(event string) bool {
+	n := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(strings.TrimSpace(event)))
+	return n == "sessionend"
+}
+
+// IdempotencyKey binds the normalized capture, explicit node mapping, and
+// source. The key is a hash, so it does not store raw session ids or content.
+func IdempotencyKey(adapterID, nodeID, source string, result CaptureResult) (string, error) {
+	payload := struct {
+		Adapter string        `json:"adapter"`
+		NodeID  string        `json:"node_id"`
+		Source  string        `json:"source"`
+		Capture CaptureResult `json:"capture"`
+	}{adapterID, nodeID, source, result}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return "adapter_capture:" + hex.EncodeToString(sum[:]), nil
 }

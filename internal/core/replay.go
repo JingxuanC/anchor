@@ -412,6 +412,29 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 		tree.Evidence[p.EvidenceID] = entry
 		return nil
 	}
+	if e.Type == EvAdapterSessionSeen || e.Type == EvAdapterSessionEnded {
+		var p AdapterSessionPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return err
+		}
+		ending := e.Type == EvAdapterSessionEnded
+		if err := validateAdapterSessionPayload(tree, e, p, ending); err != nil {
+			return err
+		}
+		sess := tree.Sessions[p.SessionID]
+		if sess.ID == "" {
+			sess = Session{ID: p.SessionID, SessionRef: p.SessionRef, Adapter: p.Adapter, NodeID: p.NodeID, Source: p.Source, TrustLevel: p.TrustLevel, FirstEventID: e.EventID}
+		}
+		sess.LastEventID = e.EventID
+		sess.LastHookEvent = p.HookEvent
+		sess.LastTimestamp = p.Timestamp
+		if ending {
+			sess.Ended = true
+			sess.EndEventID = e.EventID
+		}
+		tree.Sessions[p.SessionID] = sess
+		return nil
+	}
 	if e.Type.IsOwnership() {
 		id, err := e.OwnershipNodeID()
 		if err != nil {

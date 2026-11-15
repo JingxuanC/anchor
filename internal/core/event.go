@@ -13,16 +13,18 @@ const SchemaVersion = 1
 type EventType string
 
 const (
-	EvOwnershipClaimed   EventType = "ownership_claimed"
-	EvOwnershipHeartbeat EventType = "ownership_heartbeat"
-	EvOwnershipReleased  EventType = "ownership_released"
-	EvOwnershipTakenOver EventType = "ownership_taken_over"
-	EvNodeCreated        EventType = "node_created"
-	EvNodeUpdated        EventType = "node_updated"
-	EvStatusChanged      EventType = "status_changed"
-	EvNoteUpdated        EventType = "note_updated"
-	EvNodeTombstoned     EventType = "node_tombstoned"
-	EvEvidenceAdded      EventType = "evidence_added"
+	EvOwnershipClaimed    EventType = "ownership_claimed"
+	EvOwnershipHeartbeat  EventType = "ownership_heartbeat"
+	EvOwnershipReleased   EventType = "ownership_released"
+	EvOwnershipTakenOver  EventType = "ownership_taken_over"
+	EvNodeCreated         EventType = "node_created"
+	EvNodeUpdated         EventType = "node_updated"
+	EvStatusChanged       EventType = "status_changed"
+	EvNoteUpdated         EventType = "note_updated"
+	EvNodeTombstoned      EventType = "node_tombstoned"
+	EvEvidenceAdded       EventType = "evidence_added"
+	EvAdapterSessionSeen  EventType = "adapter_session_seen"
+	EvAdapterSessionEnded EventType = "adapter_session_ended"
 )
 
 var ownershipTypes = map[EventType]bool{
@@ -74,6 +76,19 @@ type EvidencePayload struct {
 	SHA256         string `json:"sha256"`
 	Size           int64  `json:"size"`
 	ArtifactSchema int    `json:"artifact_schema"`
+}
+
+type AdapterSessionPayload struct {
+	SessionID  string `json:"session_id"`
+	SessionRef string `json:"session_ref"`
+	NodeID     string `json:"node_id"`
+	Adapter    string `json:"adapter"`
+	HookEvent  string `json:"hook_event"`
+	Tool       string `json:"tool,omitempty"`
+	CwdRef     string `json:"cwd_ref,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
+	Source     string `json:"source"`
+	TrustLevel string `json:"trust_level"`
 }
 
 type OwnershipPayload struct {

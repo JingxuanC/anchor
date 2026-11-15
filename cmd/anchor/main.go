@@ -72,6 +72,7 @@ func usage() {
   anchor adapter capabilities [--json]
   anchor adapter render --adapter ID (--target DIR | --print)
   anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print)
+  anchor adapter ingest --adapter ID --dir WS --node NODE (--event FILE | --stdin) [--source fixture|hook_unverified] [--json]
   anchor status --dir DIR --repo REPO [--json]
   anchor doctor --dir DIR --repo REPO [--json]`)
 }
@@ -461,6 +462,9 @@ func cmdStatus(args []string) {
 	}
 	for _, n := range r.Tree.SortedNodes() {
 		fmt.Printf("%-24s %-9s %-12s owner=%s rev=%d\n", n.ID, n.Type, n.Status, n.Owner, n.Revision)
+	}
+	for _, s := range r.Tree.SortedSessions() {
+		fmt.Printf("session %-20s adapter=%s node=%s ended=%v trust=%s\n", s.ID, s.Adapter, s.NodeID, s.Ended, s.TrustLevel)
 	}
 	for _, c := range r.Conflicts {
 		fmt.Printf("conflict %s node=%s: %s\n", c.EventID, c.NodeID, c.Reason)

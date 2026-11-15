@@ -50,6 +50,7 @@ type TreeSummary struct {
 	GoalIDs          []string        `json:"goal_ids,omitempty"`
 	ActiveNodeID     string          `json:"active_node_id,omitempty"`
 	Nodes            []core.Node     `json:"nodes"`
+	Sessions         []core.Session  `json:"sessions,omitempty"`
 	Pending          []string        `json:"pending,omitempty"`
 	Conflicts        []core.Conflict `json:"conflicts,omitempty"`
 	ProjectionStatus string          `json:"projection_status"`
@@ -207,6 +208,7 @@ func treeSummary(events []core.Event, result core.ReplayResult) TreeSummary {
 	if len(events) > 0 {
 		ts.WorkspaceID = events[0].WorkspaceID
 	}
+	ts.Sessions = result.Tree.SortedSessions()
 	for _, n := range result.Tree.SortedNodes() {
 		ts.Nodes = append(ts.Nodes, *n)
 		if n.Type == core.NodeGoal && !n.Deleted {
