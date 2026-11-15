@@ -178,7 +178,11 @@ func TestCLIConsecutiveTransitions(t *testing.T) {
 		t.Fatalf("%s %s", out, errText)
 	}
 	for _, to := range []string{"in_progress", "done"} {
-		if out, errText, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", to); code != 0 {
+		args := []string{"node", "transition", "--dir", ws, "--id", "task1", "--to", to}
+		if to == "done" {
+			args = append(args, "--user-override")
+		}
+		if out, errText, code := runCLI(t, root, args...); code != 0 {
 			t.Fatalf("transition %s: %s %s", to, out, errText)
 		}
 	}
@@ -188,5 +192,22 @@ func TestCLIConsecutiveTransitions(t *testing.T) {
 	}
 	if !strings.Contains(out, `"status": "done"`) {
 		t.Fatalf("final status not done: %s", out)
+	}
+}
+
+func TestCLIDoneRequiresEvidenceOrLocalOverride(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "T")
+	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "in_progress"); code != 0 {
+		t.Fatal("in_progress failed")
+	}
+	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "done"); code == 0 {
+		t.Fatal("done without evidence/override should fail")
+	}
+	if _, _, code := runCLI(t, root, "node", "transition", "--dir", ws, "--id", "task1", "--to", "done", "--user-override"); code != 0 {
+		t.Fatal("explicit local override should pass")
 	}
 }

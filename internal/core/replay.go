@@ -412,6 +412,9 @@ func applyMutation(tree *Tree, e Event, nodeID string) error {
 	if e.BaseRevision != n.Revision {
 		return fmt.Errorf("revision conflict: event base %d, node revision %d", e.BaseRevision, n.Revision)
 	}
+	if e.ExpectedRevision != 0 && e.ExpectedRevision != n.Revision+1 {
+		return fmt.Errorf("expected_revision conflict: event expects %d, next revision is %d", e.ExpectedRevision, n.Revision+1)
+	}
 	var p NodePayload
 	if err := json.Unmarshal(e.Payload, &p); err != nil {
 		return err
@@ -421,6 +424,14 @@ func applyMutation(tree *Tree, e Event, nodeID string) error {
 		to := Status(p.Status)
 		if !CanTransition(n.Type, n.Status, to) {
 			return fmt.Errorf("illegal transition %s: %s -> %s", n.Type, n.Status, to)
+		}
+		if to == StatusDone {
+			if len(p.EvidenceIDs) == 0 && !p.UserOverride {
+				return fmt.Errorf("done requires evidence_ids or an explicit local user override")
+			}
+			if p.UserOverride && (e.ActorKind != "user" || e.ActorAttestation != "local_cli_confirm") {
+				return fmt.Errorf("user_override requires local user attestation")
+			}
 		}
 		n.Status = to
 	case EvNodeUpdated:

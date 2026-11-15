@@ -162,3 +162,91 @@ func TestEventDirSymlinkRejectedAndDuplicateID(t *testing.T) {
 		t.Fatal("duplicate event_id accepted")
 	}
 }
+
+func TestDoneRequiresEvidenceOrAttestedUserOverride(t *testing.T) {
+	gc := withID(rawOwn("g1", "lg", "a", 1), "gclaim", "d1", 1)
+	ge := withID(rawCreated("g1", "goal", "", "lg", 1, "gclaim"), "gcreated", "d1", 2)
+	c := withID(rawOwn("n1", "l1", "a", 1, "gcreated"), "claim", "d1", 3)
+	cr := withID(rawCreated("n1", "task", "g1", "l1", 1, "claim"), "created", "d1", 4)
+	ip := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "created"), "a-inprog", "d1", 5)
+	doneNoEvidence := withID(rawStatus("n1", StatusDone, 2, "l1", 1, "a-inprog"), "b-done", "d1", 6)
+	r := Replay([]Event{gc, ge, c, cr, ip, doneNoEvidence})
+	found := false
+	for _, c := range r.Conflicts {
+		if c.EventID == "b-done" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("done without evidence/override was accepted: %+v", r)
+	}
+	// Agent cannot self-report actor=user without local attestation.
+	badOverride := doneNoEvidence
+	badOverride.EventID = "b-done2"
+	badOverride.ActorKind = "user"
+	badOverride.ActorAttestation = ""
+	badOverride.Payload = json.RawMessage(`{"node_id":"n1","status":"done","user_override":true}`)
+	r = Replay([]Event{gc, ge, c, cr, ip, badOverride})
+	found = false
+	for _, c := range r.Conflicts {
+		if c.EventID == "b-done2" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("agent self-reported user override accepted")
+	}
+	// Valid local CLI attestation is accepted.
+	okOverride := badOverride
+	okOverride.EventID = "b-done3"
+	okOverride.ActorAttestation = "local_cli_confirm"
+	r = Replay([]Event{gc, ge, c, cr, ip, okOverride})
+	if r.Tree.Nodes["n1"].Status != StatusDone {
+		t.Fatalf("attested override rejected: %+v", r)
+	}
+}
+
+func TestLoadReportQuarantinesBadHash(t *testing.T) {
+	ws := t.TempDir()
+	s, err := Open(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := rawOwn("n1", "l1", "a", 1)
+	e.EventID = "good"
+	if _, _, err := s.Append(e); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "events", "bad.json"), []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Events) != 1 || len(r.Quarantined) != 1 {
+		t.Fatalf("valid events not preserved: %+v", r)
+	}
+	if got := Replay(r.Events); got.RecoveryStatus != "complete" {
+		t.Fatalf("valid events failed replay: %+v", got)
+	}
+}
+
+func TestExpectedRevisionMismatchIsConflict(t *testing.T) {
+	gc := withID(rawOwn("g1", "lg", "a", 1), "gclaim", "d1", 1)
+	ge := withID(rawCreated("g1", "goal", "", "lg", 1, "gclaim"), "gcreated", "d1", 2)
+	c := withID(rawOwn("n1", "l1", "a", 1, "gcreated"), "claim", "d1", 3)
+	cr := withID(rawCreated("n1", "task", "g1", "l1", 1, "claim"), "created", "d1", 4)
+	m := withID(rawStatus("n1", StatusInProgress, 1, "l1", 1, "claim"), "mut", "d1", 5)
+	m.ExpectedRevision = 99
+	r := Replay([]Event{gc, ge, c, cr, m})
+	found := false
+	for _, cf := range r.Conflicts {
+		if cf.EventID == "mut" && strings.Contains(cf.Reason, "expected_revision") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected_revision mismatch not isolated: %+v", r.Conflicts)
+	}
+}

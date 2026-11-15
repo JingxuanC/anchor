@@ -50,16 +50,20 @@ type Event struct {
 	FencingToken     uint64          `json:"fencing_token,omitempty"`
 	Payload          json.RawMessage `json:"payload"`
 	EventHash        string          `json:"event_hash,omitempty"`
+	ActorKind        string          `json:"actor_kind,omitempty"`
+	ActorAttestation string          `json:"actor_attestation,omitempty"`
 }
 
 type NodePayload struct {
-	NodeID   string `json:"node_id"`
-	Type     string `json:"type,omitempty"`
-	Title    string `json:"title,omitempty"`
-	ParentID string `json:"parent_id,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Note     string `json:"note,omitempty"`
-	Owner    string `json:"owner,omitempty"`
+	NodeID       string   `json:"node_id"`
+	Type         string   `json:"type,omitempty"`
+	Title        string   `json:"title,omitempty"`
+	ParentID     string   `json:"parent_id,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	Note         string   `json:"note,omitempty"`
+	Owner        string   `json:"owner,omitempty"`
+	EvidenceIDs  []string `json:"evidence_ids,omitempty"`
+	UserOverride bool     `json:"user_override,omitempty"`
 }
 
 type OwnershipPayload struct {

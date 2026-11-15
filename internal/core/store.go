@@ -14,6 +14,16 @@ import (
 	"time"
 )
 
+type Quarantine struct {
+	File   string `json:"file"`
+	Reason string `json:"reason"`
+}
+
+type LoadResult struct {
+	Events      []Event      `json:"-"`
+	Quarantined []Quarantine `json:"quarantined"`
+}
+
 type Store struct {
 	Dir string
 	mu  sync.Mutex
@@ -47,35 +57,50 @@ func validateEventID(id string) error {
 
 func (s *Store) eventsDir() string { return filepath.Join(s.Dir, "events") }
 
-func (s *Store) Load() ([]Event, error) {
+// LoadReport reads all valid events and quarantines individual corrupt files
+// instead of failing the whole workspace. Valid events continue to replay.
+func (s *Store) LoadReport() (LoadResult, error) {
 	entries, err := os.ReadDir(s.eventsDir())
 	if err != nil {
-		return nil, err
+		return LoadResult{}, err
 	}
 	var out []Event
+	var bad []Quarantine
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(s.eventsDir(), entry.Name()))
 		if err != nil {
-			return nil, err
+			bad = append(bad, Quarantine{File: entry.Name(), Reason: err.Error()})
+			continue
 		}
 		var e Event
 		if err := json.Unmarshal(b, &e); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", entry.Name(), err)
+			bad = append(bad, Quarantine{File: entry.Name(), Reason: "parse: " + err.Error()})
+			continue
 		}
 		h, err := e.Hash()
 		if err != nil {
-			return nil, err
+			bad = append(bad, Quarantine{File: entry.Name(), Reason: "hash: " + err.Error()})
+			continue
 		}
 		if e.EventHash != "" && e.EventHash != h {
-			return nil, fmt.Errorf("hash mismatch %s", e.EventID)
+			bad = append(bad, Quarantine{File: entry.Name(), Reason: "hash mismatch"})
+			continue
 		}
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].EventID < out[j].EventID })
-	return out, nil
+	return LoadResult{Events: out, Quarantined: bad}, nil
+}
+
+func (s *Store) Load() ([]Event, error) {
+	r, err := s.LoadReport()
+	if err != nil {
+		return nil, err
+	}
+	return r.Events, nil
 }
 
 func newID(prefix string) string {
@@ -87,10 +112,16 @@ func newID(prefix string) string {
 func (s *Store) Append(e Event) (Event, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	events, err := s.Load()
+	release, err := acquireWorkspaceLock(s.Dir)
 	if err != nil {
 		return Event{}, false, err
 	}
+	defer release()
+	report, err := s.LoadReport()
+	if err != nil {
+		return Event{}, false, err
+	}
+	events := report.Events
 	if e.IdempotencyKey != "" {
 		for _, existing := range events {
 			if existing.IdempotencyKey == e.IdempotencyKey {

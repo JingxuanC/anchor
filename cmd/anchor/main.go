@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/JingxuanC/anchor/internal/core"
@@ -125,6 +126,18 @@ func appendEvent(dir string, e core.Event) (core.Event, bool) {
 	return stored, created
 }
 
+func quarantineDir(dir string) []core.Quarantine {
+	s, err := core.Open(dir)
+	if err != nil {
+		return nil
+	}
+	r, err := s.LoadReport()
+	if err != nil {
+		return nil
+	}
+	return r.Quarantined
+}
+
 func replayDir(dir string) core.ReplayResult {
 	s, err := core.Open(dir)
 	if err != nil {
@@ -223,6 +236,8 @@ func nodeTransition(args []string) {
 	dir := fs.String("dir", ".", "workspace directory")
 	id := fs.String("id", "", "node id")
 	to := fs.String("to", "", "target status")
+	evidence := fs.String("evidence", "", "comma-separated evidence ids (required for done)")
+	userOverride := fs.Bool("user-override", false, "local user confirmation when no evidence is available")
 	_ = fs.Parse(args)
 	if *id == "" || *to == "" {
 		die(fmt.Errorf("--id and --to are required"))
@@ -243,9 +258,24 @@ func nodeTransition(args []string) {
 		die(fmt.Errorf("node %s has no ownership lease event", *id))
 	}
 	_ = owner
-	sp := core.NodePayload{NodeID: *id, Status: string(status)}
+	var evidenceIDs []string
+	if strings.TrimSpace(*evidence) != "" {
+		for _, part := range strings.Split(*evidence, ",") {
+			if v := strings.TrimSpace(part); v != "" {
+				evidenceIDs = append(evidenceIDs, v)
+			}
+		}
+	}
+	if status == core.StatusDone && len(evidenceIDs) == 0 && !*userOverride {
+		die(fmt.Errorf("done requires --evidence id[,id] or --user-override (local user confirmation)"))
+	}
+	sp := core.NodePayload{NodeID: *id, Status: string(status), EvidenceIDs: evidenceIDs, UserOverride: *userOverride}
 	sb, _ := json.Marshal(sp)
-	ev, _ := appendEvent(*dir, core.Event{Type: core.EvStatusChanged, CausalParents: []string{n.LeaseEventID}, BaseRevision: n.Revision, ExpectedRevision: n.Revision + 1, LeaseID: lease, FencingToken: fencing, Payload: sb})
+	actorKind, attestation := "", ""
+	if *userOverride {
+		actorKind, attestation = "user", "local_cli_confirm"
+	}
+	ev, _ := appendEvent(*dir, core.Event{Type: core.EvStatusChanged, CausalParents: []string{n.LeaseEventID}, BaseRevision: n.Revision, ExpectedRevision: n.Revision + 1, LeaseID: lease, FencingToken: fencing, ActorKind: actorKind, ActorAttestation: attestation, Payload: sb})
 	fmt.Printf("%s %s -> %s (%s)\n", *id, n.Status, status, ev.EventID)
 }
 
@@ -261,10 +291,17 @@ func cmdStatus(args []string) {
 		packet = &p
 	}
 	eval := handoff.Evaluate(*dir, *repo, packet)
+	quarantined := quarantineDir(*dir)
+	if len(quarantined) > 0 {
+		if eval.Status == handoff.StatusComplete {
+			eval.Status = handoff.StatusIncomplete
+		}
+		eval.Reasons = append(eval.Reasons, "quarantined event files prevent a complete recovery")
+	}
 	if *asJSON {
 		out := map[string]any{
 			"projection_status": r.RecoveryStatus, "recovery_status": eval.Status,
-			"recovery_reasons": eval.Reasons, "handoff_id": eval.PacketID,
+			"recovery_reasons": eval.Reasons, "handoff_id": eval.PacketID, "quarantined": quarantined,
 			"tree": r.Tree, "applied": r.Applied, "pending": r.Pending, "conflicts": r.Conflicts,
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
@@ -442,7 +479,12 @@ func cmdDoctor(args []string) {
 		hardFail = true
 	}
 	r := replayDir(*dir)
-	checks = append(checks, map[string]any{"check": "events", "status": "ok", "applied": len(r.Applied), "pending": len(r.Pending), "conflicts": len(r.Conflicts)})
+	q := quarantineDir(*dir)
+	eventStatus := "ok"
+	if len(q) > 0 {
+		eventStatus = "warn"
+	}
+	checks = append(checks, map[string]any{"check": "events", "status": eventStatus, "applied": len(r.Applied), "pending": len(r.Pending), "conflicts": len(r.Conflicts), "quarantined": q})
 	p, _, err := handoff.Latest(*dir)
 	eval := handoff.Evaluation{Status: handoff.StatusIncomplete, Reasons: []string{"no prepared handoff"}}
 	if err == nil {
