@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 55 Go files / ~22,900 LOC, of which ~16,200 lines are tests
-(342 top-level test functions, 923 `=== RUN` entries).
+Current tree: 56 Go files / ~23,500 LOC, of which ~16,600 lines are tests
+(351 top-level test functions, 932 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -91,16 +91,22 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    `handoff_verified` events, and refuses node mutations until the latest
    prepared handoff is verified. The gate is derived from `handoff_prepared`
    events (not the packet file), so deleting or moving a packet cannot disable
-   it, and raw `event append` cannot forge ack/verify. Code is still never
-   applied by restore: the plan states `code_apply: disabled`.
+   it, and raw `event append` cannot forge ack/verify. Preparation is recorded by
+   every path that creates a packet (including export-first). A successor whose
+   code state exactly matches the packet can ack without `--force`; verification
+   requires HEAD *and* the working tree to match. Restore itself never applies
+   code: the plan states `code_apply: disabled`.
 9. **Code byte transport** — `handoff export --include-code` bundles the prepared
    commit (verified with `git bundle list-heads`) and `handoff apply-code`
    restores it into a repository: fetch, backup ref, stash when forced, checkout,
    then applies the packaged staged/unstaged diffs and untracked bytes after
-   hash and secret checks. Packaged code must match the packet's recorded hashes,
-   handoff ids and branch names are validated, and a failure rolls the worktree
-   back to the pre-apply commit. Code is never applied unless `--apply` is
-   explicit.
+   hash and secret checks. Packaged code must match the packet's recorded hashes
+   (validated before anything is mutated), incomplete packages are refused,
+   writes cannot traverse symlinked directories, ignored local files that would
+   be overwritten are detected (and stashed with `--all` only under `--force`),
+   an existing local branch is never reset, handoff ids and branch names are
+   validated, and a failure rolls the worktree back to the pre-apply commit.
+   Code is never applied unless `--apply` is explicit.
 10. **Restorable packages** — export always transports the workspace manifest and
    event log; import rebuilds the workspace in a fresh empty target, replays it,
    verifies evidence blobs and reports an honest `complete`/`incomplete` status.
@@ -170,8 +176,8 @@ authoritative.
 | RST-005 | missing | one static packet format only | No per-adapter cross-agent handoff. |
 | RST-006 | missing | export/import now transports the workspace (`recovery.go`); no Git sync | Handoff across devices works only by manually moving a package; the requirement's Git-sync path does not exist. |
 | RST-007 | implemented | `recovery.ExportWithCode`, `recovery.ApplyCode`; `TestApplyCodeRestoresUncommittedWorktree`, `TestCLIExportApplyCodeEndToEnd` | Bundle carries the commit; diffs and untracked bytes carry the dirty state; apply-code restores both with hash checks. |
-| RST-008 | implemented | `handoff restore --ack/--verify`, plan actions; `TestCLIRestoreStaleCodeRequiresForce` | Restore is plan-first, a stale/dirty packet needs explicit `--force` (recorded as forced), and code bytes are never applied by design. |
-| RST-009 | implemented | `handoff.BuildPlan` blockers/actions; export/import warnings; `TestBuildPlanStaleCodeAndGateLifecycle` | Plans enumerate stale code, missing evidence, dirty trees and missing bundle/code bytes instead of only returning a status. |
+| RST-008 | implemented | `handoff restore --ack/--verify`, plan actions; `TestCLIRestoreStaleCodeRequiresForce` | Restore is plan-first; restoring *code* is a separate explicit `handoff apply-code --apply`. A mismatched code state needs `--force` (recorded as forced). |
+| RST-009 | implemented | `handoff.BuildPlan` blockers/actions; export/import warnings; `apply-code` blockers; `TestBuildPlanStaleCodeAndGateLifecycle`, `TestApplyCodeRefusesIncompleteCodePackage` | Restore plans enumerate stale code, dirty trees and missing evidence; export/import/apply-code enumerate missing bytes and refuse an incomplete package. |
 | RST-010 | implemented | `Node.Provenance` + packet blocks; `TestPrepareCarriesTaskStructure` | Provenance is labeled per goal/decision/next step/question and summarized; `user_confirmed` is refused until a verified attestation exists. |
 | RST-011 | implemented | `handoff.go:103`, `recovery.go:433`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | Code apply disabled, so "unrecovered" is always true; no per-artifact list. |
 
@@ -587,10 +593,10 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `internal/core` | 69.4% | 92.9% | Remaining gaps are OS-error paths (rename/sync failures) and the test-only tx hook shim. |
 | `internal/adapter` | 75.8% | 93.2% | Remaining gaps are `json.Marshal`/`Write` error branches. |
 | `internal/handoff` | 78.1% | 95.3% | Goal ranking, packet blocks, stale/detached eval covered. |
-| `internal/recovery` | 51.9% | 86.4% | Export/import branches, staging atomicity, limits, legacy packages covered. |
+| `internal/recovery` | 51.9% | 85.4% | Export/import branches, staging atomicity, limits, legacy packages covered. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 342 top-level test functions / 923 run entries, ~16,300 test lines.
+Test suite: 351 top-level test functions / 932 run entries, ~16,600 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
@@ -601,10 +607,11 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   positive delivery evidence in a release review.
 - **`evidence --file`** intentionally accepts absolute paths outside the workspace, so
   SEC-001 has no single unified path validator. `docs/04` should say so explicitly.
-- **`handoff import`** now reports `complete` only after replaying the rebuilt
-  workspace, verifying evidence blobs and confirming the exported code state was
-  clean. Code is never applied: imported untracked bytes are staged under
-  `local/imported/`, and the successor must check out the recorded commit.
+- **`handoff import`** reports `complete` only after replaying the rebuilt
+  workspace and verifying evidence blobs, and only when the package carries
+  complete code bytes (a dirty tree needs `--include-code` plus
+  `--include-bytes`). Import never applies code: `handoff apply-code --apply` is
+  the explicit code step.
 - **Legacy artifact-only packages** (no workspace payload) still import their
   verified bytes but never report a rebuilt workspace.
 - **Secret scanning covers canonical state too.** Export scans event batches, so
@@ -616,12 +623,19 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 - **Handoff progress cannot be forged through the raw event surface.** Only
   `handoff restore`/`handoff prepare` record prepared/acked/verified events; raw
   `event append` rejects them. The packet file may be deleted, but the gate stays
-  active and `status` reports `packet_missing`, prompting a fresh preparation.
-- **`handoff prepare` freezes editing until the handoff is verified.** The gate
-  treats preparation as "session is ending", so the same agent that wants to keep
-  editing must ack and verify its own packet (or the operator should prepare only
-  when handing off). Verification requires the repository HEAD *and* the working
-  tree to match the packet; otherwise `--force` is required and recorded.
+  active and both `anchor status --json` and `handoff status` report
+  `packet_missing`, prompting a fresh preparation; a packet from another
+  workspace is refused.
+- **`handoff prepare` (and any export that creates a packet) freezes editing
+  until the handoff is verified.** A successor whose code state exactly matches
+  the packet can acknowledge it without `--force`; if the code differs,
+  `--force` is required and recorded. Verification requires HEAD *and* the
+  working tree (staged/unstaged diffs) to match the packet.
+- **Imported verification is inherited by design.** Handoff ack/verify are
+  workspace events, so an imported workspace whose handoff was verified on the
+  source device is not asked to verify it again (`TestCLIImportInheritsVerification`
+  pins this). Devices that must re-verify should prepare and export a fresh
+  handoff instead of reusing a verified one.
 - **The successor gate fails closed.** If the projection cannot be replayed (for
   example a referenced evidence blob disappeared), the gate reports the handoff
   as pending instead of assuming progress; the workspace then refuses writes
@@ -632,8 +646,9 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   command that writes code: it stashes dirty changes (when forced), creates a
   `refs/anchor/backup/*` ref, then checks out and applies the packaged bytes.
 - **Package limits are symmetric.** Export refuses a workspace that would exceed
-  the import limits (1000 files / 256 MiB), so an export can never produce a
-  package that import rejects.
+  the import limits (1000 files / 256 MiB), and the git bundle is excluded from
+  the *text* secret scanner on both sides, so an export can always be imported.
+  Committed history inside a bundle is therefore not text-scanned.
 - **Import is atomic.** A failed import removes its staging tree and never leaves
   a half-built workspace; the target parent directory must already exist.
 - **`acceptance/matrix.yaml`** still lists all 140 requirements as `planned` with

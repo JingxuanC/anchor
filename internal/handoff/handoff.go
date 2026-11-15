@@ -404,14 +404,26 @@ func Prepare(dir, repo string) (Packet, string, error) {
 	}
 	if cs.Dirty {
 		p.RecoveryStatus = StatusIncomplete
-		p.Warnings = append(p.Warnings, "uncommitted code is metadata-only; artifact bytes were not captured")
+		p.Warnings = append(p.Warnings, "uncommitted code is metadata-only in the packet; export its bytes with --include-bytes/--include-code")
 	}
 	if len(p.Warnings) == 0 {
 		p.Warnings = nil
 	}
-	body, _ := json.Marshal(p)
-	sum := sha256.Sum256(body)
-	p.ContentHash = hex.EncodeToString(sum[:])
+	seal := func() {
+		body, _ := json.Marshal(p)
+		sum := sha256.Sum256(body)
+		p.ContentHash = hex.EncodeToString(sum[:])
+	}
+	seal()
+	// Recording the preparation here (not only in the CLI) means every code path
+	// that creates a packet arms the successor gate, including export-first. A
+	// workspace whose projection is broken cannot record events (its own writes are
+	// blocked too), so the failure is surfaced as a warning instead of losing the
+	// packet.
+	if err := recordPrepared(store, p); err != nil {
+		p.Warnings = append(p.Warnings, "successor gate could not be armed: "+err.Error())
+		seal()
+	}
 	b, _ := json.MarshalIndent(p, "", "  ")
 	hd := filepath.Join(store.Dir, "handoff")
 	if err := os.MkdirAll(hd, 0o700); err != nil {
@@ -513,6 +525,7 @@ type RestorePlan struct {
 	CodeApply      string          `json:"code_apply"`
 	Reasons        []string        `json:"reasons,omitempty"`
 	Code           CodeComparison  `json:"code"`
+	CodeExact      bool            `json:"code_exact"`
 	Progress       HandoffProgress `json:"progress"`
 	CanAck         bool            `json:"can_ack"`
 	AckBlockers    []string        `json:"ack_blockers,omitempty"`
@@ -569,15 +582,34 @@ func LatestPrepared(dir string) (Packet, string, bool) {
 	return p, path, true
 }
 
-// RecordPrepared appends the handoff_prepared event for a packet. The successor
+// CodeMatches reports whether the repository's current code state still matches
+// the packet, so callers can decide whether a prepared packet is fresh.
+func CodeMatches(p Packet, repo string) bool {
+	cs, err := codeState(repo)
+	if err != nil {
+		return false
+	}
+	if cs.Branch != p.CodeState.Branch || cs.Head != p.CodeState.Head ||
+		cs.StagedDiffSHA256 != p.CodeState.StagedDiffSHA256 ||
+		cs.UnstagedDiffSHA256 != p.CodeState.UnstagedDiffSHA256 {
+		return false
+	}
+	if len(cs.Untracked) != len(p.CodeState.Untracked) {
+		return false
+	}
+	for i := range cs.Untracked {
+		if cs.Untracked[i].Path != p.CodeState.Untracked[i].Path || cs.Untracked[i].SHA256 != p.CodeState.Untracked[i].SHA256 {
+			return false
+		}
+	}
+	return true
+}
+
+// recordPrepared appends the handoff_prepared event for a packet. The successor
 // gate is derived from events, so deleting a packet file cannot disable it.
-func RecordPrepared(dir string, p Packet) error {
+func recordPrepared(store *core.Store, p Packet) error {
 	payload := core.HandoffPayload{HandoffID: p.HandoffID, ContentHash: p.ContentHash, CodeHead: p.CodeState.Head}
 	b, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	store, err := core.Open(dir)
 	if err != nil {
 		return err
 	}
@@ -653,10 +685,12 @@ func BuildPlan(dir, repo string, p Packet, path string) (RestorePlan, error) {
 		}
 	}
 
+	plan.CodeExact = plan.Code.BranchMatches && plan.Code.HeadMatches &&
+		plan.Code.StagedDiffMatches && plan.Code.UnstagedDiffMatches
 	if plan.Progress.Acked {
 		plan.AckBlockers = append(plan.AckBlockers, "handoff is already acked")
-	} else if plan.RecoveryStatus != StatusComplete {
-		plan.AckBlockers = append(plan.AckBlockers, "recovery status is "+plan.RecoveryStatus+"; --force is required to acknowledge anyway")
+	} else if !plan.CodeExact {
+		plan.AckBlockers = append(plan.AckBlockers, "code state differs from the packet ("+plan.RecoveryStatus+"); --force is required to acknowledge anyway")
 	}
 	plan.CanAck = len(plan.AckBlockers) == 0
 

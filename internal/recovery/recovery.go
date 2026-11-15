@@ -85,8 +85,9 @@ type Report struct {
 }
 
 type verifiedPackage struct {
-	manifest Manifest
-	data     map[string][]byte
+	manifest  Manifest
+	data      map[string][]byte
+	canonical string
 }
 
 func hashBytes(b []byte) string {
@@ -219,6 +220,11 @@ func ExportWithCode(dir, repo, out string, includeBytes, includeCode bool) (Mani
 	// successor gate refers to, so importing it must restore the same handoff id.
 	// Otherwise export snapshots the current state with a fresh packet.
 	p, _, prepared := handoff.LatestPrepared(store.Dir)
+	if prepared && !handoff.CodeMatches(p, repo) {
+		// The repository moved since the packet was prepared; exporting the stale
+		// packet would describe code that no longer exists.
+		prepared = false
+	}
 	if !prepared {
 		var prepareErr error
 		p, _, prepareErr = handoff.Prepare(store.Dir, repo)
@@ -313,7 +319,11 @@ func ExportWithCode(dir, repo, out string, includeBytes, includeCode bool) (Mani
 		}
 		files = append(files, FileEntry{Path: bundleRel, SHA256: sha, Size: info.Size(), Kind: "git_bundle"})
 		m.CodeBundleIncluded = true
+		m.CodeCommitIncluded = true
 		m.CodeBundleSHA256 = sha
+		if m.ArtifactAvailability == "metadata_only" {
+			m.ArtifactAvailability = "partial"
+		}
 	}
 
 	if len(p.Quarantined) > 0 {
@@ -417,12 +427,12 @@ func ExportWithCode(dir, repo, out string, includeBytes, includeCode bool) (Mani
 	}
 
 	if p.CodeState.Dirty {
-		codeCovered := includeBytes &&
+		codeCovered := includeBytes && m.CodeBundleIncluded &&
 			(p.CodeState.StagedCount == 0 || m.StagedDiffIncluded) &&
 			(p.CodeState.UnstagedCount == 0 || m.UnstagedDiffIncluded) &&
 			untrackedCovered
 		if !codeCovered {
-			markIncomplete("uncommitted code is not fully transported; the successor cannot reproduce it")
+			markIncomplete("uncommitted code is not fully transported (code bundle + diffs + untracked bytes are required); the successor cannot reproduce it")
 		}
 	}
 	if m.CodeBundleIncluded {
@@ -532,8 +542,13 @@ func inspectPackage(pkg string) (verifiedPackage, error) {
 		if hashBytes(fb) != f.SHA256 {
 			return verifiedPackage{}, fmt.Errorf("package file hash mismatch: %s", f.Path)
 		}
-		if err := core.ScanSecrets(fb); err != nil {
-			return verifiedPackage{}, fmt.Errorf("package file rejected: %w", err)
+		// The git bundle is compressed binary history, not authored content: the
+		// text secret scanner would give false assurance (and false rejections).
+		// Committed secrets are out of scope for this scanner.
+		if f.Kind != "git_bundle" {
+			if err := core.ScanSecrets(fb); err != nil {
+				return verifiedPackage{}, fmt.Errorf("package file rejected: %w", err)
+			}
 		}
 		total += int64(len(fb))
 		if total > MaxTotalBytes {
@@ -564,7 +579,7 @@ func inspectPackage(pkg string) (verifiedPackage, error) {
 	if err != nil {
 		return verifiedPackage{}, err
 	}
-	return verifiedPackage{manifest: m, data: data}, nil
+	return verifiedPackage{manifest: m, data: data, canonical: canonical}, nil
 }
 
 // importPlan classifies the verified payload of a package.
@@ -604,6 +619,11 @@ func packageCodeCovered(v verifiedPackage) bool {
 	cs := v.manifest.Packet.CodeState
 	if !cs.Dirty {
 		return true
+	}
+	// Uncommitted bytes are diffs against the prepared commit; without the commit
+	// bundle they cannot be applied reproducibly.
+	if !v.manifest.CodeBundleIncluded {
+		return false
 	}
 	if cs.StagedCount > 0 && !v.manifest.StagedDiffIncluded {
 		return false
@@ -721,7 +741,11 @@ func Import(pkg, target string, dryRun bool) (Report, error) {
 		RecoveryStatus: status, ArtifactAvailability: v.manifest.ArtifactAvailability, CodeApply: "disabled", AdapterNativeRecovery: "unverified",
 		FilesVerified: len(v.data), BytesVerified: totalBytes(v.data), DoesNotExecute: true, AutoInstall: false, Upload: false,
 		WorkspaceRebuilt: plan.hasWorkspace, EventBatches: len(plan.events), Warnings: reasons}
-	r.Warnings = append(r.Warnings, "code apply is disabled; Git commit/dirty worktree restoration is incomplete")
+	if v.manifest.CodeBundleIncluded {
+		r.Warnings = append(r.Warnings, "code bytes are in the package; restore them explicitly with `anchor handoff apply-code`")
+	} else {
+		r.Warnings = append(r.Warnings, "package carries no code bytes; the successor must have the recorded commit in its repository")
+	}
 	if dryRun {
 		return r, nil
 	}

@@ -1222,14 +1222,18 @@ func TestCLIExportApplyCodeEndToEnd(t *testing.T) {
 	if !strings.Contains(importOut, `"recovery_status": "complete"`) {
 		t.Fatalf("import did not report complete: %s", importOut)
 	}
-	// The restored code is dirty relative to the packet, so the successor
-	// acknowledges with --force and then verifies before editing.
+	// The applied code state matches the packet exactly, so the successor can
+	// acknowledge it without --force (review finding F11), then verify.
 	restoredPkt, err := filepath.Glob(filepath.Join(ws2, "handoff", "ho_*.json"))
 	if err != nil || len(restoredPkt) != 1 {
 		t.Fatalf("restored packet missing: %v %v", restoredPkt, err)
 	}
-	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws2, "--repo", repoB, "--packet", restoredPkt[0], "--ack", "--force"); code != 0 {
-		t.Fatalf("successor ack: %s", stderr)
+	ackOut, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws2, "--repo", repoB, "--packet", restoredPkt[0], "--ack")
+	if code != 0 {
+		t.Fatalf("successor ack: %s%s", ackOut, stderr)
+	}
+	if strings.Contains(ackOut, `"forced": true`) {
+		t.Fatalf("ack of an exact code state was recorded as forced: %s", ackOut)
 	}
 	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws2, "--repo", repoB, "--packet", restoredPkt[0], "--verify"); code != 0 {
 		t.Fatalf("successor verify: %s", stderr)
@@ -1349,5 +1353,129 @@ func TestCLIRestoreRejectsNonLatestPacket(t *testing.T) {
 		t.Fatalf("stale packet was acked: %s", stderr)
 	} else if !strings.Contains(stderr, "not the latest prepared handoff") {
 		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+}
+
+// TestCLIExportFirstArmsTheGate covers review finding F9: an export that has to
+// create a packet must record the preparation, so neither the sender nor an
+// imported successor can edit without acknowledging/verifying the handoff.
+func TestCLIExportFirstArmsTheGate(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	pkg := filepath.Join(root, "pkg")
+	if out, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", pkg, "--include-code", "--json"); code != 0 {
+		t.Fatalf("export-first: %s%s", out, stderr)
+	}
+	// The sender's workspace is now gated by the packet created during export.
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "blocked"); code != 1 {
+		t.Fatalf("export did not arm the gate: %s", stderr)
+	}
+	statusOut, _, _ := runCLI(t, root, "status", "--dir", ws, "--json")
+	if !strings.Contains(statusOut, `"pending": true`) {
+		t.Fatalf("status does not show the pending handoff: %s", statusOut)
+	}
+	// The imported successor is gated too.
+	ws2 := filepath.Join(root, "ws2")
+	if _, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", ws2, "--apply"); code != 0 {
+		t.Fatalf("import: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws2, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "blocked"); code != 1 {
+		t.Fatalf("imported successor was not gated: %s", stderr)
+	}
+	// Acknowledge + verify the imported packet, then editing works.
+	pkt, err := filepath.Glob(filepath.Join(ws2, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("imported packet missing: %v %v", pkt, err)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws2, "--repo", repo, "--packet", pkt[0], "--ack"); code != 0 {
+		t.Fatalf("ack: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws2, "--repo", repo, "--packet", pkt[0], "--verify"); code != 0 {
+		t.Fatalf("verify: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws2, "--id", "task2", "--type", "task", "--parent", "goal1", "--title", "allowed"); code != 0 {
+		t.Fatalf("successor still gated after verification: %s", stderr)
+	}
+}
+
+// TestCLIHandoffStatusUsesEventGate covers review finding F13.
+func TestCLIHandoffStatusUsesEventGate(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	pkt, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("packets: %v %v", pkt, err)
+	}
+	if err := os.Remove(pkt[0]); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code := runCLI(t, root, "handoff", "status", "--dir", ws, "--repo", repo)
+	if code != 0 {
+		t.Fatalf("handoff status: %s%s", out, stderr)
+	}
+	if !strings.Contains(out, `"pending": true`) || !strings.Contains(out, `"packet_missing": true`) {
+		t.Fatalf("handoff status does not use the event gate: %s", out)
+	}
+}
+
+// TestCLIRestoreRejectsForeignPacket covers review finding F14.
+func TestCLIRestoreRejectsForeignPacket(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws1 := filepath.Join(root, "ws1")
+	runCLI(t, root, "init", "--dir", ws1, "--workspace", "ws-one", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws1, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "handoff", "prepare", "--dir", ws1, "--repo", repo)
+	pkt, err := filepath.Glob(filepath.Join(ws1, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("packets: %v %v", pkt, err)
+	}
+	ws2 := filepath.Join(root, "ws2")
+	runCLI(t, root, "init", "--dir", ws2, "--workspace", "ws-two", "--device", "dev2")
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", ws2, "--repo", repo, "--packet", pkt[0], "--ack"); code != 1 {
+		t.Fatalf("foreign packet was accepted: %s", stderr)
+	} else if !strings.Contains(stderr, "belongs to workspace") {
+		t.Fatalf("unexpected diagnostic: %s", stderr)
+	}
+}
+
+// TestCLIImportInheritsVerification pins the documented semantics for review
+// finding F12: workspace events are the cross-device truth, so an imported
+// workspace whose handoff was already verified does not re-demand verification.
+// The test exists so this is a decision, not an accident.
+func TestCLIImportInheritsVerification(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t)
+	ws := filepath.Join(root, "ws")
+	runCLI(t, root, "init", "--dir", ws, "--workspace", "ws1", "--device", "dev1")
+	runCLI(t, root, "node", "create", "--dir", ws, "--id", "goal1", "--type", "goal", "--title", "G")
+	runCLI(t, root, "handoff", "prepare", "--dir", ws, "--repo", repo)
+	pkt, err := filepath.Glob(filepath.Join(ws, "handoff", "ho_*.json"))
+	if err != nil || len(pkt) != 1 {
+		t.Fatalf("packets: %v %v", pkt, err)
+	}
+	runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--ack")
+	runCLI(t, root, "handoff", "restore", "--dir", ws, "--repo", repo, "--packet", pkt[0], "--verify")
+	pkg := filepath.Join(root, "pkg")
+	if _, stderr, code := runCLI(t, root, "handoff", "export", "--dir", ws, "--repo", repo, "--out", pkg, "--include-code"); code != 0 {
+		t.Fatalf("export: %s", stderr)
+	}
+	ws2 := filepath.Join(root, "ws2")
+	if _, stderr, code := runCLI(t, root, "handoff", "import", "--package", pkg, "--target", ws2, "--apply"); code != 0 {
+		t.Fatalf("import: %s", stderr)
+	}
+	statusOut, _, _ := runCLI(t, root, "status", "--dir", ws2, "--json")
+	if !strings.Contains(statusOut, `"verified": true`) || !strings.Contains(statusOut, `"pending": false`) {
+		t.Fatalf("imported verification state not inherited: %s", statusOut)
+	}
+	if _, stderr, code := runCLI(t, root, "node", "create", "--dir", ws2, "--id", "task1", "--type", "task", "--parent", "goal1", "--title", "inherited"); code != 0 {
+		t.Fatalf("imported workspace should be editable after inherited verification: %s", stderr)
 	}
 }

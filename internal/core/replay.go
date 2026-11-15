@@ -546,6 +546,9 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 			return nil
 		}
 		if e.Type == EvHandoffAcked {
+			if !st.Prepared {
+				return fmt.Errorf("handoff_acked requires a prior handoff_prepared for %s", p.HandoffID)
+			}
 			if st.Acked && !p.Forced {
 				return fmt.Errorf("handoff %s is already acked", p.HandoffID)
 			}

@@ -201,7 +201,8 @@ func TestImportZeroEventWorkspaceIsComplete(t *testing.T) {
 	if r.RecoveryStatus != handoff.StatusComplete || !r.WorkspaceRebuilt {
 		t.Fatalf("report = %+v", r)
 	}
-	if r.EventBatches != 0 || r.EventsApplied != 0 || r.EvidenceVerified != 0 || r.ProjectionStatus != "complete" {
+	// Export records the preparation, so the package carries exactly that event.
+	if r.EventBatches != 1 || r.EventsApplied != 1 || r.EvidenceVerified != 0 || r.ProjectionStatus != "complete" {
 		t.Fatalf("counts = %+v", r)
 	}
 	wantFiles := len(outer.Files)
@@ -212,7 +213,7 @@ func TestImportZeroEventWorkspaceIsComplete(t *testing.T) {
 		t.Fatalf("write counts = %+v", r)
 	}
 	persisted := readReportFile(t, target)
-	if persisted.Writes != r.FilesWritten+1 || persisted.EventBatches != 0 {
+	if persisted.Writes != r.FilesWritten+1 || persisted.EventBatches != 1 {
 		t.Fatalf("persisted report = %+v", persisted)
 	}
 	if _, err := os.Stat(filepath.Join(target, "manifest.json")); err != nil {
@@ -351,7 +352,7 @@ func TestImportDirtyExportedCodeIsIncomplete(t *testing.T) {
 		t.Fatalf("apply predicted %q", r.RecoveryStatus)
 	}
 	joined := strings.Join(r.Warnings, "|")
-	if !strings.Contains(joined, "code apply is disabled; Git commit/dirty worktree restoration is incomplete") {
+	if !strings.Contains(joined, "uncommitted code bytes are missing") {
 		t.Fatalf("warnings = %v", r.Warnings)
 	}
 }

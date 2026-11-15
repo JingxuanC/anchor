@@ -753,7 +753,7 @@ func TestPrepareDirtyRepoIsIncomplete(t *testing.T) {
 	}
 	found := false
 	for _, w := range p.Warnings {
-		if w == "uncommitted code is metadata-only; artifact bytes were not captured" {
+		if w == "uncommitted code is metadata-only in the packet; export its bytes with --include-bytes/--include-code" {
 			found = true
 		}
 	}

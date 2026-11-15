@@ -880,11 +880,7 @@ func cmdHandoff(args []string) {
 		if err != nil {
 			die(err)
 		}
-		// The successor gate is derived from events, so the preparation itself is
-		// recorded; deleting the packet file cannot disable the gate.
-		if err := handoff.RecordPrepared(*dir, p); err != nil {
-			die(fmt.Errorf("handoff packet written but the prepared event could not be recorded: %w", err))
-		}
+
 		out := map[string]any{"handoff_id": p.HandoffID, "path": path, "recovery_status": p.RecoveryStatus, "artifact_availability": p.ArtifactAvailability, "warnings": p.Warnings, "content_hash": p.ContentHash}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
@@ -910,6 +906,9 @@ func cmdHandoff(args []string) {
 		p, err := handoff.Load(*packet)
 		if err != nil {
 			die(err)
+		}
+		if local, err := readManifest(*dir); err == nil && p.Tree.WorkspaceID != "" && local.WorkspaceID != "" && p.Tree.WorkspaceID != local.WorkspaceID {
+			die(fmt.Errorf("packet belongs to workspace %q, not this workspace %q", p.Tree.WorkspaceID, local.WorkspaceID))
 		}
 		gate, err := handoff.Gate(*dir)
 		if err != nil {
@@ -1038,15 +1037,27 @@ func cmdHandoff(args []string) {
 		dir := fs.String("dir", ".", "workspace directory")
 		repo := fs.String("repo", ".", "git working tree")
 		_ = fs.Parse(args[1:])
-		p, path, err := handoff.Latest(*dir)
+		gate, err := handoff.Gate(*dir)
 		if err != nil {
-			fmt.Printf("recovery_status: incomplete\n  reason: no prepared handoff\n")
-			return
+			die(err)
 		}
-		eval := handoff.Evaluate(*dir, *repo, &p)
-		gate, _ := handoff.Gate(*dir)
-		b, _ := json.MarshalIndent(map[string]any{"handoff_id": p.HandoffID, "path": path, "recovery_status": eval.Status,
-			"reasons": eval.Reasons, "acked": gate.Progress.Acked, "verified": gate.Progress.Verified, "pending": gate.Pending}, "", "  ")
+		out := map[string]any{"pending": gate.Pending, "packet_missing": gate.PacketMissing,
+			"acked": gate.Progress.Acked, "verified": gate.Progress.Verified, "forced": gate.Progress.Forced}
+		if gate.HandoffID != "" {
+			out["handoff_id"] = gate.HandoffID
+			out["path"] = gate.PacketPath
+		}
+		if p, path, err := handoff.Latest(*dir); err == nil {
+			eval := handoff.Evaluate(*dir, *repo, &p)
+			out["handoff_id"] = p.HandoffID
+			out["path"] = path
+			out["recovery_status"] = eval.Status
+			out["reasons"] = eval.Reasons
+		} else {
+			out["recovery_status"] = "incomplete"
+			out["reasons"] = []string{"no prepared handoff"}
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
 	default:
 		usage()

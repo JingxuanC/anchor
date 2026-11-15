@@ -17,6 +17,7 @@ func handoffEvent(t *testing.T, typ EventType, p HandoffPayload, parents ...stri
 
 func TestHandoffAckAndVerifyAreProjected(t *testing.T) {
 	s := initTest(t)
+	mustAppend(t, s, handoffEvent(t, EvHandoffPrepared, HandoffPayload{HandoffID: "ho_1", ContentHash: strings.Repeat("a", 64)}))
 	mustAppend(t, s, handoffEvent(t, EvHandoffAcked, HandoffPayload{HandoffID: "ho_1", ContentHash: strings.Repeat("a", 64), Verifier: "agent-b"}))
 	mustAppend(t, s, handoffEvent(t, EvHandoffVerified, HandoffPayload{HandoffID: "ho_1", ContentHash: strings.Repeat("a", 64),
 		CodeHead: strings.Repeat("b", 40), EvidenceIDs: []string{}, Verifier: "agent-b", Note: "checked"}))
@@ -43,6 +44,7 @@ func TestHandoffAckAndVerifyAreProjected(t *testing.T) {
 func TestHandoffVerifiedRequiresAck(t *testing.T) {
 	s := initTest(t)
 	_, _, err := s.Append(handoffEvent(t, EvHandoffVerified, HandoffPayload{HandoffID: "ho_1", CodeHead: strings.Repeat("b", 40)}))
+	_ = err
 	if err == nil {
 		t.Fatal("verification without acknowledgement was accepted")
 	}
@@ -53,6 +55,7 @@ func TestHandoffVerifiedRequiresAck(t *testing.T) {
 
 func TestHandoffDuplicateAckAndVerifyRejected(t *testing.T) {
 	s := initTest(t)
+	mustAppend(t, s, handoffEvent(t, EvHandoffPrepared, HandoffPayload{HandoffID: "ho_1"}))
 	mustAppend(t, s, handoffEvent(t, EvHandoffAcked, HandoffPayload{HandoffID: "ho_1"}))
 	if _, _, err := s.Append(handoffEvent(t, EvHandoffAcked, HandoffPayload{HandoffID: "ho_1"})); err == nil {
 		t.Fatal("duplicate ack was accepted")
@@ -95,6 +98,7 @@ func TestHandoffEventValidation(t *testing.T) {
 		})
 	}
 	// Verification must not name evidence the workspace does not have.
+	mustAppend(t, s, handoffEvent(t, EvHandoffPrepared, HandoffPayload{HandoffID: "h"}))
 	mustAppend(t, s, handoffEvent(t, EvHandoffAcked, HandoffPayload{HandoffID: "h"}))
 	if _, _, err := s.Append(handoffEvent(t, EvHandoffVerified, HandoffPayload{HandoffID: "h", EvidenceIDs: []string{"ghost"}})); err == nil {
 		t.Fatal("verification of unknown evidence was accepted")

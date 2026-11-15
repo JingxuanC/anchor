@@ -332,7 +332,9 @@ func TestExportMetadataOnlyWithoutEvidenceIsComplete(t *testing.T) {
 	if m.RecoveryStatus != handoff.StatusComplete {
 		t.Fatalf("status = %q warnings=%v", m.RecoveryStatus, m.Warnings)
 	}
-	if m.ArtifactAvailability != "metadata_only" || len(m.Files) != 1 {
+	// The workspace manifest and the recorded handoff_prepared event are always
+	// transported (export records preparation, so the successor gate can arm).
+	if m.ArtifactAvailability != "metadata_only" || len(m.Files) != 2 {
 		t.Fatalf("files = %+v availability=%q", m.Files, m.ArtifactAvailability)
 	}
 	warn := false
@@ -390,10 +392,11 @@ func TestExportIncludeBytesCapturesEvidenceAndWorktree(t *testing.T) {
 	if !m.StagedDiffIncluded || !m.UnstagedDiffIncluded {
 		t.Fatalf("diff flags: staged=%v unstaged=%v", m.StagedDiffIncluded, m.UnstagedDiffIncluded)
 	}
-	// All uncommitted bytes (staged+unstaged diffs, untracked) are transported, so
-	// the package can reproduce the dirty code state via apply-code.
-	if m.RecoveryStatus != handoff.StatusComplete {
-		t.Fatalf("dirty export with complete bytes status = %q (%v)", m.RecoveryStatus, m.Warnings)
+	// Diffs and untracked bytes are transported, but a dirty tree additionally
+	// needs the commit bundle to be reproducibly applicable, so this package is
+	// honestly incomplete.
+	if m.RecoveryStatus != handoff.StatusIncomplete {
+		t.Fatalf("dirty export without a code bundle status = %q (%v)", m.RecoveryStatus, m.Warnings)
 	}
 	// Evidence bytes round-trip exactly.
 	evPath := filepath.Join(pkg, "payload", "evidence", artifact.SHA256)

@@ -1598,7 +1598,7 @@ func TestCLIHandoffExportImportDryRunAndBytes(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &summary); err != nil {
 		t.Fatal(err)
 	}
-	if summary["workspace_id"] != "ws1" || summary["device_id"] != "dev1" || summary["recovery_status"] != "complete" || summary["artifact_availability"] != "partial" || summary["code_commit_included"] != false || summary["code_apply"] != "disabled" || summary["adapter_native_recovery"] != "unverified" {
+	if summary["workspace_id"] != "ws1" || summary["device_id"] != "dev1" || summary["recovery_status"] != "incomplete" || summary["artifact_availability"] != "partial" || summary["code_commit_included"] != false || summary["code_apply"] != "disabled" || summary["adapter_native_recovery"] != "unverified" {
 		t.Fatalf("export summary wrong: %s", out)
 	}
 	mb, err := os.ReadFile(filepath.Join(pkg, "manifest.json"))
@@ -1652,7 +1652,7 @@ func TestCLIHandoffExportImportDryRunAndBytes(t *testing.T) {
 	if err := json.Unmarshal([]byte(dryOut), &dry); err != nil {
 		t.Fatal(err)
 	}
-	if dry["dry_run"] != true || dry["writes"] != float64(0) || dry["recovery_status"] != "complete" || dry["code_apply"] != "disabled" || dry["adapter_native_recovery"] != "unverified" || dry["does_not_execute"] != true {
+	if dry["dry_run"] != true || dry["writes"] != float64(0) || dry["recovery_status"] != "incomplete" || dry["code_apply"] != "disabled" || dry["adapter_native_recovery"] != "unverified" || dry["does_not_execute"] != true {
 		t.Fatalf("dry-run report wrong: %s", dryOut)
 	}
 	if dry["workspace_rebuilt"] != true || dry["event_batches"].(float64) < 1 {
@@ -2078,6 +2078,17 @@ func TestCLIExportImportRebuildsWorkspace(t *testing.T) {
 	}
 	if st.Tree.Nodes["task1"].Status != "todo" {
 		t.Fatalf("restored task missing: %s", restoredStatus)
+	}
+	// The restored workspace is a successor: verify the restored handoff first.
+	restoredPkts, err := filepath.Glob(filepath.Join(target, "handoff", "ho_*.json"))
+	if err != nil || len(restoredPkts) != 1 {
+		t.Fatalf("restored packet missing: %v %v", restoredPkts, err)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", target, "--repo", repo, "--packet", restoredPkts[0], "--ack"); code != 0 {
+		t.Fatalf("restored ack: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, root, "handoff", "restore", "--dir", target, "--repo", repo, "--packet", restoredPkts[0], "--verify"); code != 0 {
+		t.Fatalf("restored verify: %s", stderr)
 	}
 	if _, _, code := runCLI(t, root, "node", "transition", "--dir", target, "--id", "task1", "--to", "in_progress"); code != 0 {
 		t.Fatal("restored workspace is not writable")
