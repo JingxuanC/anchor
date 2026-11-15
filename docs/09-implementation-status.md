@@ -572,9 +572,9 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | Package | Before this pass | Now | Notes |
 |---|---:|---:|---|
 | `internal/pathguard` | 0.0% | 91.7% | Uncovered lines are unreachable defensive branches (root loop, non-ENOENT ancestor error). |
-| `internal/core` | 69.4% | 92.8% | Remaining gaps are OS-error paths (rename/sync failures) and the test-only tx hook shim. |
+| `internal/core` | 69.4% | 92.9% | Remaining gaps are OS-error paths (rename/sync failures) and the test-only tx hook shim. |
 | `internal/adapter` | 75.8% | 93.2% | Remaining gaps are `json.Marshal`/`Write` error branches. |
-| `internal/handoff` | 78.1% | 95.9% | Goal ranking, packet blocks, stale/detached eval covered. |
+| `internal/handoff` | 78.1% | 95.3% | Goal ranking, packet blocks, stale/detached eval covered. |
 | `internal/recovery` | 51.9% | 90.3% | Export/import branches, staging atomicity, limits, legacy packages covered. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
