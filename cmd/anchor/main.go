@@ -1,11 +1,16 @@
 package main
 
 import (
+	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -14,6 +19,20 @@ import (
 	"github.com/JingxuanC/anchor/internal/handoff"
 	"github.com/JingxuanC/anchor/internal/recovery"
 )
+
+// buildVersion is set by release builds (goreleaser) via -X main.buildVersion.
+var buildVersion = ""
+
+// versionString reports the release/module version, falling back to "dev".
+func versionString() string {
+	if buildVersion != "" {
+		return "anchor " + buildVersion
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return "anchor " + bi.Main.Version
+	}
+	return "anchor dev (" + runtime.GOOS + "/" + runtime.GOARCH + ")"
+}
 
 type manifest struct {
 	SchemaVersion   int    `json:"schema_version"`
@@ -70,6 +89,8 @@ func main() {
 		cmdTree(os.Args[2:])
 	case "skill":
 		cmdSkill(os.Args[2:])
+	case "version", "--version":
+		fmt.Println(versionString())
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -81,7 +102,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `Anchor core (first local segment)
-  anchor init --dir DIR --workspace ID --device ID [--attach]
+  anchor init [--dir DIR] [--agents auto|none|claude-code,codex,...] [--no-agent-setup] [--json]
+  anchor init --dir DIR --workspace ID --device ID [--attach]   (legacy explicit ids)
   anchor event append --dir DIR --file EVENT.json
   anchor event audit --dir DIR [--json]
   anchor node create --dir DIR --id ID --type goal|decision|task|branch|question|note --title T [--parent ID]
@@ -117,6 +139,7 @@ func usage() {
   anchor tree [--dir DIR] [--json | --md FILE | --html FILE] [--include-deleted]
   anchor ui [--dir DIR] [--addr 127.0.0.1:0]     (read-only local web tree)
   anchor config init|show|plan|apply|status|rollback ...   (managed per-agent config)
+  anchor version
   anchor state [--dir DIR] [--json]              (alias of status)
   anchor skill print
   anchor skill install --dir DIR --repo PROJECT [--apply | --uninstall] [--json]
@@ -129,38 +152,250 @@ func die(err error) { fmt.Fprintln(os.Stderr, "anchor:", err); os.Exit(1) }
 
 func cmdInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	dir := fs.String("dir", ".", "workspace directory")
-	ws := fs.String("workspace", "", "workspace id")
-	dev := fs.String("device", "", "device id")
-	attach := fs.Bool("attach", false, "adopt an existing project directory, storing state in <dir>/.anchor")
+	dir := fs.String("dir", ".", "project (or explicit state) directory")
+	ws := fs.String("workspace", "", "workspace id (legacy explicit mode)")
+	dev := fs.String("device", "", "device id (legacy explicit mode)")
+	attach := fs.Bool("attach", false, "adopt a project directory, storing state in <dir>/.anchor")
+	agents := fs.String("agents", "auto", "agent adapters to configure: auto|none|comma list (claude-code,codex,gemini-cli)")
+	noAgentSetup := fs.Bool("no-agent-setup", false, "do not write agent config/rules/hooks/skill during init")
+	asJSON := fs.Bool("json", false, "JSON output")
 	_ = fs.Parse(args)
-	if *ws == "" || *dev == "" {
-		die(fmt.Errorf("--workspace and --device are required"))
-	}
-	if *attach {
-		project, err := filepath.Abs(*dir)
-		if err != nil {
+
+	// Legacy explicit mode: --workspace/--device given. Behavior is unchanged so
+	// scripts and tests that pin ids keep working.
+	if *ws != "" || *dev != "" {
+		if *ws == "" || *dev == "" {
+			die(fmt.Errorf("--workspace and --device must be provided together"))
+		}
+		if *attach {
+			project, err := filepath.Abs(*dir)
+			if err != nil {
+				die(err)
+			}
+			_, stateDir, err := core.InitAttached(project, *ws, *dev)
+			if err != nil {
+				die(err)
+			}
+			project = filepath.Dir(stateDir)
+			fmt.Printf("attached %s (state %s, workspace %s, device %s)\n", project, stateDir, *ws, *dev)
+			changed, err := ensureProjectIgnore(project)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "anchor: warning: could not update the project .gitignore: %v\n", err)
+			} else if changed {
+				fmt.Println("ignored .anchor/ in the project .gitignore (commit it to keep the working tree clean)")
+			}
+			return
+		}
+		if _, err := core.InitWorkspace(*dir, *ws, *dev); err != nil {
 			die(err)
 		}
-		_, stateDir, err := core.InitAttached(project, *ws, *dev)
-		if err != nil {
-			die(err)
-		}
-		// The state root is canonical; its parent is the canonical project path.
-		project = filepath.Dir(stateDir)
-		fmt.Printf("attached %s (state %s, workspace %s, device %s)\n", project, stateDir, *ws, *dev)
-		changed, err := ensureProjectIgnore(project)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "anchor: warning: could not update the project .gitignore: %v\n", err)
-		} else if changed {
-			fmt.Println("ignored .anchor/ in the project .gitignore (commit it to keep the working tree clean)")
-		}
+		fmt.Printf("initialized %s (workspace %s, device %s)\n", *dir, *ws, *dev)
 		return
 	}
-	if _, err := core.InitWorkspace(*dir, *ws, *dev); err != nil {
+
+	// Streamlined mode: `anchor init` in a project sets everything up.
+	project, err := filepath.Abs(*dir)
+	if err != nil {
 		die(err)
 	}
-	fmt.Printf("initialized %s (workspace %s, device %s)\n", *dir, *ws, *dev)
+	project, err = filepath.EvalSymlinks(project)
+	if err != nil {
+		die(fmt.Errorf("project directory %s: %w", *dir, err))
+	}
+	if info, err := os.Stat(project); err != nil || !info.IsDir() {
+		die(fmt.Errorf("project directory %s is not a directory", *dir))
+	}
+	stateDir := filepath.Join(project, ".anchor")
+	already := false
+	var workspaceID, deviceID string
+	if b, err := os.ReadFile(filepath.Join(stateDir, "manifest.json")); err == nil {
+		var m manifest
+		if err := json.Unmarshal(b, &m); err != nil {
+			die(fmt.Errorf("existing workspace manifest is unreadable: %w", err))
+		}
+		already = true
+		workspaceID, deviceID = m.WorkspaceID, m.DeviceID
+	} else {
+		deviceID, err = loadOrCreateDeviceID()
+		if err != nil {
+			die(err)
+		}
+		workspaceID = workspaceIDForPath(project)
+		if _, _, err := core.InitAttached(project, workspaceID, deviceID); err != nil {
+			die(err)
+		}
+	}
+	ignored := false
+	if changed, err := ensureProjectIgnore(project); err != nil {
+		fmt.Fprintf(os.Stderr, "anchor: warning: could not update the project .gitignore: %v\n", err)
+	} else {
+		ignored = changed
+	}
+
+	chosen, err := resolveInitAgents(*agents, adapter.DetectAll(0))
+	if err != nil {
+		die(err)
+	}
+	if *noAgentSetup {
+		chosen = nil
+	}
+	configPath := ""
+	var configOps []configOp
+	if len(chosen) > 0 {
+		candidate := filepath.Join(stateDir, "config", "config.json")
+		if _, err := os.Stat(candidate); err == nil {
+			if err := mergeProjectConfigAgents(candidate, chosen); err != nil {
+				die(err)
+			}
+			configPath = candidate
+		} else {
+			configPath, err = ensureAnchorConfig(stateDir, chosen)
+			if err != nil {
+				die(err)
+			}
+		}
+		if !already {
+			configOps, err = applyAnchorConfig(stateDir, project)
+			if err != nil {
+				die(fmt.Errorf("workspace initialized but agent config failed: %w", err))
+			}
+		}
+	}
+
+	result := initResult{StateDir: stateDir, ProjectDir: project, WorkspaceID: workspaceID, DeviceID: deviceID,
+		Attached: true, AlreadyInitialized: already, GitIgnored: ignored, Agents: chosen, ConfigPath: configPath}
+	result.NextSteps = []string{
+		"record a goal: anchor node create --dir " + project + " --id goal --type goal --title \"…\"",
+		"run an agent: anchor wrap --dir " + stateDir + " --node <node> -- <agent>",
+	}
+	if configPath == "" {
+		result.NextSteps = append(result.NextSteps, "configure agents later: anchor config init --dir "+stateDir+" --repo "+project+" --agents claude-code --apply")
+	}
+	if *asJSON {
+		b, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(b))
+	} else {
+		if already {
+			fmt.Printf("already initialized %s (state %s, workspace %s, device %s)\n", project, stateDir, workspaceID, deviceID)
+		} else {
+			fmt.Printf("initialized %s\n  state:     %s\n  workspace: %s\n  device:    %s\n", project, stateDir, workspaceID, deviceID)
+		}
+		if ignored {
+			fmt.Println("  ignored .anchor/ in the project .gitignore")
+		}
+		if len(chosen) > 0 {
+			if already {
+				fmt.Printf("  config:    %s (already present; run `anchor config apply` to re-render)\n", configPath)
+			} else {
+				fmt.Printf("  config:    %s (configured agents: %s)\n", configPath, strings.Join(chosen, ","))
+			}
+			for _, op := range configOps {
+				fmt.Printf("  %-8s %s\n", op.Action, op.Path)
+			}
+		} else if *noAgentSetup {
+			fmt.Println("  agent setup skipped (--no-agent-setup)")
+		} else {
+			fmt.Println("  no agent CLI detected; state is ready, configure later with `anchor config init`")
+		}
+		for _, step := range result.NextSteps {
+			fmt.Printf("  next: %s\n", step)
+		}
+	}
+}
+
+type initResult struct {
+	StateDir           string   `json:"state_dir"`
+	ProjectDir         string   `json:"project_dir"`
+	WorkspaceID        string   `json:"workspace_id"`
+	DeviceID           string   `json:"device_id"`
+	Attached           bool     `json:"attached"`
+	AlreadyInitialized bool     `json:"already_initialized"`
+	GitIgnored         bool     `json:"git_ignored"`
+	Agents             []string `json:"agents,omitempty"`
+	ConfigPath         string   `json:"config_path,omitempty"`
+	NextSteps          []string `json:"next_steps,omitempty"`
+}
+
+// resolveInitAgents turns the --agents flag into an adapter id list. "auto"
+// selects the agent CLIs detected on this machine; "none" selects nothing.
+func resolveInitAgents(requested string, detections []adapter.Detection) ([]string, error) {
+	known := map[string]bool{"claude-code": true, "codex": true, "gemini-cli": true}
+	switch strings.TrimSpace(requested) {
+	case "", "auto":
+		var out []string
+		for _, d := range detections {
+			if d.Installed && known[d.AdapterID] {
+				out = append(out, d.AdapterID)
+			}
+		}
+		return out, nil
+	case "none":
+		return nil, nil
+	}
+	var out []string
+	for _, a := range splitList(requested) {
+		if !known[a] {
+			return nil, fmt.Errorf("unknown agent %q (claude-code, codex, gemini-cli)", a)
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// loadOrCreateDeviceID returns a stable per-machine device id stored under the
+// user config dir, so every workspace on this machine shares one identity.
+func loadOrCreateDeviceID() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "anchor")
+	path := filepath.Join(dir, "device_id")
+	if b, err := os.ReadFile(path); err == nil {
+		id := strings.TrimSpace(string(b))
+		if strings.HasPrefix(id, "dev_") && len(id) == 20 {
+			return id, nil
+		}
+	}
+	buf := make([]byte, 8)
+	if _, err := crand.Read(buf); err != nil {
+		return "", err
+	}
+	id := "dev_" + hex.EncodeToString(buf)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// workspaceIDForPath derives a stable workspace id from the canonical project
+// path (so re-init keeps the id and the path itself is not stored in the id).
+func workspaceIDForPath(project string) string {
+	sum := sha256.Sum256([]byte(project))
+	return "ws_" + hex.EncodeToString(sum[:6])
+}
+
+// mergeProjectConfigAgents unions additional agent adapters into an existing
+// project-scope config without touching other keys.
+func mergeProjectConfigAgents(path string, agents []string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var cfg anchorConfig
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	merged := ensureAgents(append(append([]string{}, cfg.Agents...), agents...))
+	if len(merged) == len(cfg.Agents) {
+		return nil
+	}
+	cfg.Agents = merged
+	cfg.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return writeJSONAtomic(path, cfg)
 }
 
 // insideGitWorkTree reports whether dir is inside a Git work tree, including a

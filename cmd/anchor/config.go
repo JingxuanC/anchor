@@ -836,6 +836,38 @@ func configRollback(args []string) {
 	}
 }
 
+// ensureAnchorConfig writes a default config file if none exists yet, enabling
+// the given agents. It returns the project-scope config path.
+func ensureAnchorConfig(stateDir string, agents []string) (string, error) {
+	path := filepath.Join(stateDir, "config", "config.json")
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	cfg := defaultAnchorConfig()
+	cfg.Agents = ensureAgents(agents)
+	cfg.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := writeJSONAtomic(path, cfg); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// applyAnchorConfig renders and applies the current config for a repository.
+func applyAnchorConfig(stateDir, repoDir string) ([]configOp, error) {
+	cfg, _, err := loadAnchorConfig(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	ops, targets, err := buildConfigRender(stateDir, repoDir, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyConfigRender(stateDir, repoDir, cfg, targets); err != nil {
+		return nil, err
+	}
+	return ops, nil
+}
+
 // renderRulesBlock builds the managed rules block rendered into each agent's
 // rules file. It instructs the agent to use Anchor at start, completion and
 // branch points (REQ-CFG-007) and lists the MCP tools.

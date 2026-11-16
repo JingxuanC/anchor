@@ -46,3 +46,17 @@ Windows/Linux/macOS binaries.
 Design documents live in `docs/` (start with `docs/01-architecture.md` and
 `docs/09-implementation-status.md`). The audit trail in `docs/09` is the
 authoritative status; keep it current.
+
+## Releasing
+
+Releases are built by GoReleaser from annotated tags:
+
+```sh
+go test ./... -count=1
+git tag -a v0.2.0 -m "Anchor v0.2.0"
+git push origin v0.2.0
+```
+
+The `release` workflow builds darwin/linux/windows archives for amd64/arm64,
+publishes `checksums.txt`, and creates the GitHub release. `install.sh` downloads
+the latest release and verifies its checksum.

@@ -1,6 +1,7 @@
 # Anchor
 
 [![ci](https://github.com/JingxuanC/anchor/actions/workflows/ci.yml/badge.svg)](https://github.com/JingxuanC/anchor/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/JingxuanC/anchor)](https://github.com/JingxuanC/anchor/releases/latest)
 [![Go 1.23+](https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go)](go.mod)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -50,51 +51,75 @@ verifying that packet.
 | Automatic SessionStart context injection (Claude Code hook) | installed by `adapter install` / `config apply` |
 | Verifiable evidence blobs, secret/path guards, quarantine of corrupt event files | `internal/core`, `internal/pathguard` |
 
-## Quick start
+## Install
 
-Requirements: Go 1.23+, `git`. (For agent integration: an installed agent CLI.)
+macOS and Linux, checksum-verified release binary:
 
 ```sh
-# build
-go build -o anchor ./cmd/anchor
-# or, once published/tagged:
-# go install github.com/JingxuanC/anchor/cmd/anchor@latest
+curl -fsSL https://raw.githubusercontent.com/JingxuanC/anchor/main/install.sh | sh
+# installs to ~/.local/bin (override with ANCHOR_INSTALL_DIR)
+```
 
-# 1. attach Anchor to an existing project (state lives in .anchor/, added to .gitignore)
-./anchor init --attach --dir ~/code/my-project
+Or with Go 1.23+:
 
-# 2. record the task structure (goals carry constraints; decisions carry rationale)
-./anchor node create --dir ~/code/my-project --id goal --type goal \
+```sh
+go install github.com/JingxuanC/anchor/cmd/anchor@latest
+```
+
+Or from a checkout: `go build -o anchor ./cmd/anchor`.
+
+## Quick start
+
+One command in your project does the setup: it attaches the workspace
+(`<project>/.anchor`), generates a workspace id and a machine-stable device id,
+keeps `.anchor/` out of Git, detects installed agent CLIs and writes their
+managed config (rules file, MCP registration, hooks incl. SessionStart context
+injection, skill).
+
+```sh
+cd ~/code/my-project
+anchor init
+# → .anchor/ state, .gitignore entry, CLAUDE.md/.mcp.json/.claude/… for Claude Code
+#   (and AGENTS.md/GEMINI.md for detected Codex/Gemini CLIs)
+# Use `anchor init --agents none` or --no-agent-setup to keep it state-only,
+# `anchor init --agents claude-code,codex` to choose, and `--json` for scripts.
+```
+
+Commands below assume `anchor` is on `PATH` (prefix with `./` if you built a
+local binary). Record the task structure — goals carry constraints, decisions
+carry rationale:
+
+```sh
+anchor node create --dir ~/code/my-project --id goal --type goal \
   --title "Ship the rate limiter" --north-star "no dropped requests"
-./anchor node create --dir ~/code/my-project --id task --type task --parent goal \
+anchor node create --dir ~/code/my-project --id task --type task --parent goal \
   --title "Implement WaitTime"
-./anchor node create --dir ~/code/my-project --id dec --type decision --parent goal \
+anchor node create --dir ~/code/my-project --id dec --type decision --parent goal \
   --title "Whole-interval rounding" --decision "round to whole refill intervals" \
   --rationale "successor must reproduce the boundary behavior"
 
-# 3. let Claude Code capture sessions and call Anchor over MCP
-./anchor adapter install --adapter claude-code --dir ~/code/my-project/.anchor \
-  --repo ~/code/my-project --with-mcp --apply
+# re-render the agent integration written by init
+anchor config apply --dir ~/code/my-project/.anchor --repo ~/code/my-project --apply
 
-# 4. hand off when the session ends
-./anchor handoff prepare --dir ~/code/my-project/.anchor --repo ~/code/my-project
+# hand off when the session ends
+anchor handoff prepare --dir ~/code/my-project/.anchor --repo ~/code/my-project
 
-# 5. successor: inspect the plan, acknowledge, verify (this unlocks edits)
-./anchor handoff restore --dir ~/code/my-project/.anchor --repo ~/code/my-project \
+# successor: inspect the plan, acknowledge, verify (this unlocks edits)
+anchor handoff restore --dir ~/code/my-project/.anchor --repo ~/code/my-project \
   --packet ~/code/my-project/.anchor/handoff/ho_*.json
-./anchor handoff restore ... --ack
-./anchor handoff restore ... --verify
+anchor handoff restore ... --ack
+anchor handoff restore ... --verify
 
 # optional: tree view, local web UI and the agent skill
-./anchor tree --dir ~/code/my-project/.anchor
-./anchor ui --dir ~/code/my-project/.anchor --addr 127.0.0.1:0
-./anchor skill install --dir ~/code/my-project/.anchor --repo ~/code/my-project --apply
+anchor tree --dir ~/code/my-project/.anchor
+anchor ui --dir ~/code/my-project/.anchor --addr 127.0.0.1:0
+anchor skill install --dir ~/code/my-project/.anchor --repo ~/code/my-project --apply
 ```
 
 No native hooks? Wrap any agent CLI:
 
 ```sh
-./anchor wrap --dir ~/code/my-project/.anchor --node task \
+anchor wrap --dir ~/code/my-project/.anchor --node task \
   -- claude -p "continue the task"
 ```
 
@@ -108,15 +133,15 @@ propagates the child's exit code. It never runs the child through a shell, and
 
 ```sh
 # sender: package workspace + event log + evidence + handoff packet + code bytes
-./anchor handoff export --dir proj/.anchor --repo proj \
+anchor handoff export --dir proj/.anchor --repo proj \
   --out handoff.anchorpkg --include-bytes --include-code
 
 # receiver: rebuild in a fresh directory, then verify and apply the code
-./anchor handoff import --package handoff.anchorpkg --target newproj --apply
-./anchor handoff restore --dir newproj/.anchor --repo newproj --packet newproj/.anchor/handoff/ho_*.json
-./anchor handoff restore ... --ack
-./anchor handoff restore ... --verify
-./anchor handoff apply-code --package handoff.anchorpkg --repo newproj --apply
+anchor handoff import --package handoff.anchorpkg --target newproj --apply
+anchor handoff restore --dir newproj/.anchor --repo newproj --packet newproj/.anchor/handoff/ho_*.json
+anchor handoff restore ... --ack
+anchor handoff restore ... --verify
+anchor handoff apply-code --package handoff.anchorpkg --repo newproj --apply
 ```
 
 Packages are hash-verified, text-scanned for secrets, and never executed.
@@ -128,11 +153,11 @@ working tree.
 See the goal tree without reading raw events:
 
 ```sh
-./anchor tree --dir proj/.anchor                    # terminal tree
-./anchor tree --dir proj/.anchor --json             # machine-readable tree
-./anchor tree --dir proj/.anchor --md TREE.md       # human-readable projection
-./anchor tree --dir proj/.anchor --html TREE.html   # shareable, self-contained
-./anchor state --dir proj/.anchor --json            # alias of `status`
+anchor tree --dir proj/.anchor                    # terminal tree
+anchor tree --dir proj/.anchor --json             # machine-readable tree
+anchor tree --dir proj/.anchor --md TREE.md       # human-readable projection
+anchor tree --dir proj/.anchor --html TREE.html   # shareable, self-contained
+anchor state --dir proj/.anchor --json            # alias of `status`
 ```
 
 The terminal view shows goals with their north star/must/must-not, decisions with
@@ -147,8 +172,8 @@ resume. `anchor skill install` writes it to
 uninstallable); `anchor skill print` prints the embedded copy:
 
 ```sh
-./anchor skill print
-./anchor skill install --dir proj/.anchor --repo proj --apply
+anchor skill print
+anchor skill install --dir proj/.anchor --repo proj --apply
 ```
 
 ## Configuration management
@@ -158,13 +183,13 @@ per-agent files with **managed blocks**:
 
 ```sh
 # project scope config: .anchor/config/config.json
-./anchor config init --dir proj/.anchor --repo proj --agents claude-code,codex --apply
-./anchor config show --json
+anchor config init --dir proj/.anchor --repo proj --agents claude-code,codex --apply
+anchor config show --json
 
-./anchor config plan  --dir proj/.anchor --repo proj [--diff]   # plan only (default)
-./anchor config apply --dir proj/.anchor --repo proj --apply    # write + snapshot
-./anchor config status --dir proj/.anchor --repo proj           # drift/missing/ok
-./anchor config rollback --dir proj/.anchor --repo proj [--to TS] --apply
+anchor config plan  --dir proj/.anchor --repo proj [--diff]   # plan only (default)
+anchor config apply --dir proj/.anchor --repo proj --apply    # write + snapshot
+anchor config status --dir proj/.anchor --repo proj           # drift/missing/ok
+anchor config rollback --dir proj/.anchor --repo proj [--to TS] --apply
 ```
 
 What `apply` renders:
@@ -203,7 +228,7 @@ user values.
 ## Local web UI
 
 ```sh
-./anchor ui --dir proj/.anchor
+anchor ui --dir proj/.anchor
 # anchor ui listening on http://127.0.0.1:54321/
 ```
 
@@ -234,12 +259,12 @@ Register the server per agent:
 
 ```sh
 # Claude Code (project scope): writes/merges .mcp.json automatically
-./anchor adapter install --adapter claude-code --dir proj/.anchor --repo proj --with-mcp --apply
+anchor adapter install --adapter claude-code --dir proj/.anchor --repo proj --with-mcp --apply
 
 # any agent: print the snippet for its config format
-./anchor mcp config --adapter claude-code --dir proj/.anchor   # .mcp.json JSON
-./anchor mcp config --adapter codex       --dir proj/.anchor   # ~/.codex/config.toml
-./anchor mcp config --adapter gemini-cli  --dir proj/.anchor   # settings.json JSON
+anchor mcp config --adapter claude-code --dir proj/.anchor   # .mcp.json JSON
+anchor mcp config --adapter codex       --dir proj/.anchor   # ~/.codex/config.toml
+anchor mcp config --adapter gemini-cli  --dir proj/.anchor   # settings.json JSON
 ```
 
 The full per-agent walkthrough (hooks, MCP, wrap, skill, troubleshooting) is in
@@ -320,7 +345,7 @@ inside a live logged-in session is on the roadmap.
 This is an early, honest implementation — not a finished product. The
 authoritative requirement-by-requirement audit is
 [`docs/09-implementation-status.md`](docs/09-implementation-status.md)
-(140 requirements: 44 implemented, 52 partial, 43 missing, 1 deferred).
+(140 requirements: 45 implemented, 53 partial, 41 missing, 1 deferred).
 
 Known gaps, roughly by priority:
 

@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 100 Go files / ~34,500 LOC, of which ~20,800 lines are tests
-(452 top-level test functions, 1021 `=== RUN` entries).
+Current tree: 101 Go files / ~35,000 LOC, of which ~21,100 lines are tests
+(460 top-level test functions, 1029 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -50,8 +50,8 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | RT | 1 | 1 | 0 | 1 | 3 |
 | SEC | 0 | 4 | 3 | 0 | 7 |
 | NFR | 2 | 2 | 3 | 0 | 7 |
-| OPS | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **44** | **52** | **43** | **1** | **140** |
+| OPS | 2 | 4 | 2 | 0 | 8 |
+| **Total** | **45** | **53** | **41** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -79,14 +79,23 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
 6. **Path/secret/lock hardening** — canonicalized paths, shared agent-config refusal,
    `O_NOFOLLOW` evidence reads, 0600/0700 modes, symlink/traversal rejection
    (`internal/pathguard`, `internal/core`).
-7. **Task-structure model** — goal nodes carry north star, must/must-not
+7. **One-command project setup (install + init)** — `install.sh` downloads the
+    latest release binary for the host OS/arch and verifies `checksums.txt`;
+    `anchor init` (no flags required) attaches `<project>/.anchor`, generates a
+    workspace id plus a machine-stable device id, keeps the state out of Git,
+    detects installed agent CLIs and writes their managed config (rules file,
+    MCP registration, hooks incl. SessionStart context injection, skill), is
+    idempotent, and supports `--agents`, `--no-agent-setup` and `--json`; the
+    legacy explicit `--workspace/--device` mode is unchanged. Releases are built
+    by GoReleaser on tags (archives + checksums).
+8. **Task-structure model** — goal nodes carry north star, must/must-not
    constraints and success criteria; decision nodes carry decision, rationale,
    alternatives and consequences; every node can carry provenance + confidence,
    with replay rejecting goal fields on non-goals, decision fields on
    non-decisions, unknown provenance, out-of-range confidence, empty constraint
    entries, any `user_confirmed` claim, and any event carrying a self-declared
    `actor_attestation` (`internal/core`).
-8. **Successor restore + gate** — `handoff restore` emits a read-only plan
+9. **Successor restore + gate** — `handoff restore` emits a read-only plan
    (code comparison, blocker list, actions), records `handoff_acked` /
    `handoff_verified` events, and refuses node mutations until the latest
    prepared handoff is verified. The gate is derived from `handoff_prepared`
@@ -96,7 +105,7 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    code state exactly matches the packet can ack without `--force`; verification
    requires HEAD *and* the working tree to match. Restore itself never applies
    code: the plan states `code_apply: disabled`.
-9. **Adapter detection + Claude hook installation** — `adapter detect` probes the
+10. **Adapter detection + Claude hook installation** — `adapter detect` probes the
    real CLIs (`claude --version`, `codex --version`, …) with an argv-only,
    timeout-bounded call and never upgrades hook evidence; `adapter install`
    merges managed `PostToolUse`/`SessionEnd` capture hooks into Claude Code's
@@ -105,7 +114,7 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    the installed command writes one metadata-only capture file per hook into the
    workspace and prints nothing. Evidence remains contract-level: a real in-agent
    run is impossible here because Claude Code is installed but not logged in.
-10. **Code byte transport** — `handoff export --include-code` bundles the prepared
+11. **Code byte transport** — `handoff export --include-code` bundles the prepared
    commit (verified with `git bundle list-heads`) and `handoff apply-code`
    restores it into a repository: fetch, backup ref, stash when forced, checkout,
    then applies the packaged staged/unstaged diffs and untracked bytes after
@@ -116,12 +125,12 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
    an existing local branch is never reset, handoff ids and branch names are
    validated, and a failure rolls the worktree back to the pre-apply commit.
    Code is never applied unless `--apply` is explicit.
-11. **Restorable packages** — export always transports the workspace manifest and
+12. **Restorable packages** — export always transports the workspace manifest and
    event log; import rebuilds the workspace in a fresh empty target, replays it,
    verifies evidence blobs and reports an honest `complete`/`incomplete` status.
    Legacy artifact-only packages still import their bytes but are reported as not
    rebuilding a workspace.
-12. **Hookless fallback (`anchor wrap`)** — runs the agent CLI as a child with
+13. **Hookless fallback (`anchor wrap`)** — runs the agent CLI as a child with
     inherited stdio and exact argv (never through a shell), records
     `adapter_session_seen`/`adapter_session_ended` for adapter `wrap`, exports
     `ANCHOR_WORKSPACE`/`NODE`/`SESSION`/`CONTEXT_FILE`, writes a context file
@@ -129,13 +138,13 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     questions), forwards SIGINT/SIGTERM/SIGHUP, propagates the child's exit code
     and optionally prepares the successor handoff at exit. Captured session
     evidence stays `hook_unverified` / `unverified_adapter`.
-13. **Read-only MCP server + registration** — `anchor mcp serve` speaks
+14. **Read-only MCP server + registration** — `anchor mcp serve` speaks
     newline-delimited JSON-RPC 2.0 over stdio with four read-only tools
     (`anchor_status`, `anchor_tree`, `anchor_evidence_verify`,
     `anchor_restore_plan`), and `adapter install --with-mcp` registers that server
     in the project's `.mcp.json` (merged, backed up, idempotent; uninstall removes
     only the recorded entry). No mutation tool is exposed over MCP.
-14. **A/B benchmark harness** — `bench/` contains a small offline fixture project,
+15. **A/B benchmark harness** — `bench/` contains a small offline fixture project,
     a two-phase (implement → resume with a fresh process) protocol, hidden
     acceptance tests restored after the agent exits, and a runner
     (`go run ./bench/ab`) with baseline vs anchor arms, a deterministic mock
@@ -145,7 +154,7 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     3/3, at +33% total tokens and +$0.087 mean cost; the baseline's failed
     phase-2 attempts still consumed ~184k tokens. Results and caveats are in
     `bench/results/2026-11-16-deepseek-v4-flash/` and `bench/README.md` §7.
-15. **Tree view + local web UI + agent skill** — `anchor tree` renders the
+16. **Tree view + local web UI + agent skill** — `anchor tree` renders the
     Session Tree as a terminal tree, stable JSON, Markdown (`TREE.md`) or a
     self-contained HTML file (escaped titles, no external resources, tombstones
     hidden by default); `anchor ui` serves the same view as a live, loopback-only,
@@ -163,7 +172,7 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     SessionStart hook that injects size-capped, secret-scanned context (goal
     constraints, decisions, tasks, handoff) as `additionalContext`; Codex/Gemini
     receive the same playbook through their rules file.
-16. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
+17. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
 
@@ -367,10 +376,10 @@ matches only capability strings.
 
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
-| OPS-001 | missing | no packaging/release files | No install packages, checksums, signatures. |
+| OPS-001 | partial | `.goreleaser.yaml`, `.github/workflows/release.yml`, `install.sh`; tag-triggered release workflow | Release archives (darwin/linux/windows, amd64/arm64) with `checksums.txt` and a checksum-verifying installer; no signatures/provenance attestation yet. |
 | OPS-002 | missing | only a version gate (`store.go:73`) | No migrate/backup/rollback/downgrade docs. |
 | OPS-003 | missing | no uninstall | Entire behavior absent. |
-| OPS-004 | missing | no `.github/`, no Makefile/lint config | No CI gates of any kind. |
+| OPS-004 | implemented | `.github/workflows/ci.yml`, `.github/workflows/release.yml`; green run on main | CI gates: gofmt, vet, tests on Linux+macOS, `-race` on Linux, cross-build, mock benchmark self-test; tag-triggered release job. |
 | OPS-005 | partial | `docs/00`–`09` + README | Missing user guide, migration doc, uninstall doc, coverage report (this file adds status). |
 | OPS-006 | partial | zero deps (`go.mod`), no postinstall | No SBOM, reproducible-build flags, or release provenance. |
 | OPS-007 | implemented (by-absence) | no payment/network code; synthetic tokens only | No automated real-key scan (no CI). |
@@ -419,9 +428,10 @@ Ranked by "what blocks a usable local segment":
     claim/release/heartbeat commands, stale-owner takeover only after expiry,
     ownership audit query. (Fencing and isolation already work; expiry is not
     enforced and heartbeat/release commands are missing.)
-12. **Make it shippable** (WS-003/008, OPS-001..004, NFR-001). `migrate` with
-    dry-run/backup/rollback, `uninstall --purge` confirmation, CI (gofmt/vet/race on
-    3 OSes), checksummed release builds.
+12. **Make it shippable** (WS-003/008, OPS-001..004, NFR-001). **Partially
+    done** — CI gates (gofmt/vet/tests/race/cross-build/bench) and checksummed
+    GoReleaser releases with `install.sh` exist; still missing `migrate`,
+    `uninstall --purge`, signed builds/attestations.
 13. **Expand the A/B evidence** (benchmark). A real Claude Code +
     `deepseek-v4-flash` run now exists (3 trials/arm: resume 0/3 vs 3/3, +33%
     tokens, +$0.087 mean cost; `bench/results/2026-11-16-deepseek-v4-flash/`).
@@ -644,10 +654,10 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 
 | Req | Status | Note |
 |---|---|---|
-| OPS-001 | missing | no packaging |
+| OPS-001 | partial | goreleaser archives + checksums + install.sh; no signatures |
 | OPS-002 | missing | no migrate/rollback |
 | OPS-003 | missing | no uninstall |
-| OPS-004 | missing | no CI |
+| OPS-004 | implemented | ci.yml (fmt/vet/test/race/cross-build/bench) + release.yml |
 | OPS-005 | partial |  |
 | OPS-006 | partial |  |
 | OPS-007 | implemented | by-absence: satisfied only by absence of payments/network code |
@@ -672,7 +682,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 452 top-level test functions / 1021 run entries, ~20,800 test lines.
+Test suite: 460 top-level test functions / 1029 run entries, ~21,100 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 

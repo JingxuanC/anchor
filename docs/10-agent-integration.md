@@ -20,17 +20,22 @@ is optional but recommended.
 ## 1. Workspace setup (all agents)
 
 ```sh
-anchor init --attach --dir ~/code/project        # state in ~/code/project/.anchor
+cd ~/code/project
+anchor init        # attach state, generate ids, detect agents, write their config
 anchor node create --dir ~/code/project --id goal --type goal --title "…"
 ```
 
+`anchor init` is idempotent. By default it configures every agent CLI it detects
+(`claude-code`, `codex`, `gemini-cli`); use `--agents claude-code` to choose,
+`--agents none` / `--no-agent-setup` for state only, and `--json` for scripts.
+Legacy explicit mode (`--workspace ID --device ID`) still works for pinned ids.
 If the project is already initialised, `anchor status --dir <project>` resolves
 the attached state root.
 
 ### One-shot managed setup (`anchor config`)
 
-Instead of installing hooks/MCP/skill piecemeal, one config file can render
-everything with managed blocks, drift detection and rollback:
+`anchor init` already writes this config when it detects agents. To change it
+later (managed blocks with drift detection and rollback):
 
 ```sh
 anchor config init --dir project/.anchor --repo project --agents claude-code,codex --apply
