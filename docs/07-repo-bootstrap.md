@@ -13,14 +13,14 @@ opened or copied, no token was printed, and no undocumented API was used.
 | Check | Result | Interpretation |
 |---|---|---|
 | `gh auth status` | Logged in as `JingxuanC`; scopes `gist, read:org, repo` | Account identity confirmed; owner permissions on the repo are reported as `ADMIN`. |
-| `gh repo view JingxuanC/anchor` | `nameWithOwner=JingxuanC/anchor`, `visibility=PRIVATE`, `defaultBranchRef=main`, `isEmpty=false`, `viewerPermission=ADMIN` | Repository exists, is private, and uses `main` as default. |
+| `gh repo view JingxuanC/anchor` | `nameWithOwner=JingxuanC/anchor`, `visibility=PRIVATE`, `defaultBranchRef=main`, `isEmpty=false`, `viewerPermission=ADMIN` | Repository existed and used `main` as default at bootstrap time. **It was later published publicly under Apache-2.0 (2026-11-16)**; this table records the original private-repo state. |
 | `git ls-remote https://github.com/JingxuanC/anchor refs/heads/main` | `39b6fffdb35511859a82632d174b97ca304e26f5` | Remote `main` matches the reported initialization SHA. |
 | `gh api repos/JingxuanC/anchor/commits/main` | `sha=39b6fff…`, message `Initial commit`, parents `[]` | Confirmed root/initial commit; remote README is part of this commit. |
 | Remote initial README | `# anchor` / `Personal agent workspace for session continuity and causal memory` | Preserved as the first content in the local merged README; the init commit is untouched. |
 | Earlier pre-creation lookup | GraphQL “Could not resolve…” before the repo existed | Historical; superseded by the verified repository above. |
 | Remote write APIs | Not used | No push, PR, branch creation, default-branch write, or settings change was performed in this round. |
 
-**Conclusion:** the repository URL, private visibility, default branch and
+**Conclusion (at bootstrap):** the repository URL, private visibility, default branch and
 initial commit SHA are verified. The earlier 404 was accurate for that time and
 is no longer the current state.
 
