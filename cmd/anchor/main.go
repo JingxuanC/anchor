@@ -62,6 +62,8 @@ func main() {
 		cmdWrap(os.Args[2:])
 	case "mcp":
 		cmdMcp(os.Args[2:])
+	case "ui":
+		cmdUI(os.Args[2:])
 	case "tree":
 		cmdTree(os.Args[2:])
 	case "skill":
@@ -109,7 +111,9 @@ func usage() {
       [--anchor-path PATH] [--json]
   anchor wrap --dir DIR --node NODE [--repo PROJECT] [--prepare-handoff] [--json] -- <agent command> [args...]
   anchor mcp serve [--dir DIR]                    (read-only MCP tools over stdio)
+  anchor mcp config [--adapter ID] [--dir DIR] [--json]   (MCP registration snippet)
   anchor tree [--dir DIR] [--json | --md FILE | --html FILE] [--include-deleted]
+  anchor ui [--dir DIR] [--addr 127.0.0.1:0]     (read-only local web tree)
   anchor state [--dir DIR] [--json]              (alias of status)
   anchor skill print
   anchor skill install --dir DIR --repo PROJECT [--apply | --uninstall] [--json]

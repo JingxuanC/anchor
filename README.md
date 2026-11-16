@@ -43,6 +43,8 @@ verifying that packet.
 | Agent adapters: real CLI detection, Claude Code hook install, hookless `wrap` fallback | `anchor adapter detect`, `anchor adapter install`, `anchor wrap` |
 | Read-only MCP server for agents that can call tools | `anchor mcp serve` (four tools, stdio JSON-RPC 2.0) |
 | Human tree view: terminal, JSON, Markdown, self-contained HTML | `anchor tree`, `anchor tree --json/--md/--html` |
+| Local read-only web UI (live tree, loopback only) | `anchor ui` |
+| MCP registration snippets per agent | `anchor mcp config --adapter claude-code|codex|gemini-cli` |
 | Agent skill teaching the resume/record workflow | `anchor skill print`, `anchor skill install` |
 | Verifiable evidence blobs, secret/path guards, quarantine of corrupt event files | `internal/core`, `internal/pathguard` |
 
@@ -80,6 +82,11 @@ go build -o anchor ./cmd/anchor
   --packet ~/code/my-project/.anchor/handoff/ho_*.json
 ./anchor handoff restore ... --ack
 ./anchor handoff restore ... --verify
+
+# optional: tree view, local web UI and the agent skill
+./anchor tree --dir ~/code/my-project/.anchor
+./anchor ui --dir ~/code/my-project/.anchor --addr 127.0.0.1:0
+./anchor skill install --dir ~/code/my-project/.anchor --repo ~/code/my-project --apply
 ```
 
 No native hooks? Wrap any agent CLI:
@@ -142,6 +149,21 @@ uninstallable); `anchor skill print` prints the embedded copy:
 ./anchor skill install --dir proj/.anchor --repo proj --apply
 ```
 
+## Local web UI
+
+```sh
+./anchor ui --dir proj/.anchor
+# anchor ui listening on http://127.0.0.1:54321/
+```
+
+A read-only local view of the Session Tree: live-refreshing (2 s), goals with
+constraints, decisions with rationale/consequences, tasks, ownership badges and
+the handoff gate. The server binds **loopback only** (non-loopback `--addr` is
+rejected), serves `GET`/`HEAD` only (mutations are not exposed), has no external
+resources, renders data with `textContent` (no HTML injection), and re-reads the
+workspace on every request. `--addr 127.0.0.1:PORT` picks a fixed port; the
+default `127.0.0.1:0` picks a free one.
+
 ## MCP tools
 
 `anchor mcp serve --dir <state>` speaks newline-delimited JSON-RPC 2.0 over stdio
@@ -155,8 +177,22 @@ and exposes read-only tools:
 | `anchor_restore_plan` | the read-only successor plan (blockers, code comparison, actions) |
 
 Mutations stay in the CLI, where the gate, lease/fencing checks and event
-validation live. `anchor adapter install --with-mcp` registers the server in a
-project's `.mcp.json` (merged, backed up, idempotent, removable).
+validation live.
+
+Register the server per agent:
+
+```sh
+# Claude Code (project scope): writes/merges .mcp.json automatically
+./anchor adapter install --adapter claude-code --dir proj/.anchor --repo proj --with-mcp --apply
+
+# any agent: print the snippet for its config format
+./anchor mcp config --adapter claude-code --dir proj/.anchor   # .mcp.json JSON
+./anchor mcp config --adapter codex       --dir proj/.anchor   # ~/.codex/config.toml
+./anchor mcp config --adapter gemini-cli  --dir proj/.anchor   # settings.json JSON
+```
+
+The full per-agent walkthrough (hooks, MCP, wrap, skill, troubleshooting) is in
+[`docs/10-agent-integration.md`](docs/10-agent-integration.md).
 
 ## A/B benchmark
 
@@ -233,7 +269,7 @@ inside a live logged-in session is on the roadmap.
 This is an early, honest implementation — not a finished product. The
 authoritative requirement-by-requirement audit is
 [`docs/09-implementation-status.md`](docs/09-implementation-status.md)
-(140 requirements: 34 implemented, 50 partial, 55 missing, 1 deferred).
+(140 requirements: 35 implemented, 52 partial, 52 missing, 1 deferred).
 
 Known gaps, roughly by priority:
 
@@ -257,6 +293,7 @@ Known gaps, roughly by priority:
 | [`docs/03-adapter-matrix.md`](docs/03-adapter-matrix.md) | per-agent capture/install matrix |
 | [`docs/04-security-model.md`](docs/04-security-model.md) | threat model and controls |
 | [`docs/09-implementation-status.md`](docs/09-implementation-status.md) | audited implementation status |
+| [`docs/10-agent-integration.md`](docs/10-agent-integration.md) | per-agent setup: hooks, MCP, wrap, skill, troubleshooting |
 | [`bench/README.md`](bench/README.md) | A/B benchmark protocol, results, caveats |
 
 ## Development

@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 90 Go files / ~32,100 LOC, of which ~19,900 lines are tests
-(431 top-level test functions, 1000 `=== RUN` entries).
+Current tree: 95 Go files / ~32,700 LOC, of which ~20,200 lines are tests
+(437 top-level test functions, 1006 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -44,14 +44,14 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | SY | 2 | 6 | 4 | 0 | 12 |
 | CFG | 0 | 0 | 8 | 0 | 8 |
 | VT | 0 | 3 | 7 | 0 | 10 |
-| UI | 0 | 3 | 4 | 0 | 7 |
+| UI | 1 | 5 | 1 | 0 | 7 |
 | CONC | 2 | 3 | 0 | 0 | 5 |
 | EVID | 1 | 4 | 1 | 0 | 6 |
 | RT | 1 | 1 | 0 | 1 | 3 |
 | SEC | 0 | 4 | 3 | 0 | 7 |
 | NFR | 2 | 2 | 3 | 0 | 7 |
 | OPS | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **34** | **50** | **55** | **1** | **140** |
+| **Total** | **35** | **52** | **52** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -145,14 +145,17 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     3/3, at +33% total tokens and +$0.087 mean cost; the baseline's failed
     phase-2 attempts still consumed ~184k tokens. Results and caveats are in
     `bench/results/2026-11-16-deepseek-v4-flash/` and `bench/README.md` §7.
-15. **Tree view + agent skill** — `anchor tree` renders the Session Tree as a
-    terminal tree, stable JSON, Markdown (`TREE.md`) or a self-contained HTML
-    file (escaped titles, no external resources, tombstones hidden by default);
+15. **Tree view + local web UI + agent skill** — `anchor tree` renders the
+    Session Tree as a terminal tree, stable JSON, Markdown (`TREE.md`) or a
+    self-contained HTML file (escaped titles, no external resources, tombstones
+    hidden by default); `anchor ui` serves the same view as a live, loopback-only,
+    GET-only web page (no mutation surface, re-reads state per request);
     `anchor state` aliases `status`. `anchor skill print|install` embeds an
     opinionated agent playbook (read context → check tree → record
     decisions/evidence → prepare/verify handoff) and installs it to
     `<project>/.claude/skills/anchor/SKILL.md` with plan/backup/idempotent/
-    uninstall semantics.
+    uninstall semantics. `anchor mcp config` prints per-agent MCP registration
+    snippets.
 16. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
@@ -290,7 +293,10 @@ matches only capability strings.
 | UI-001 | partial | `cmd/anchor/main.go`; `TestCLITreeTextAndJSON`, `TestCLISkillInstallPlanApplyUninstall` | `tree`, `state` and `skill` verbs exist (plus attach/wrap/wrap-related); still missing branch, claim/release/heartbeat, top-level capture/restore, sync, config, vault, memory, web, install, uninstall, migrate, version, ack. No local web UI yet (static HTML tree only). |
 | UI-002 | partial | `--json` on 5 command families | No JSON for init/node/evidence add/handoff prepare; exit codes only 0/1/2. |
 | UI-003 | partial | plain `fmt.Printf` (`main.go:483`) | No TTY detection, color, or structured human layout. |
-| UI-004/005/006/007 | missing | no `http`/web code | No web UI, loopback auth, CSRF/Origin checks, or read-only mode. |
+| UI-004 | partial | `cmd/anchor/ui.go`; `TestUIHandlerServesTreeAPIAndPage` | Read-only loopback web view of the Session Tree (`anchor ui`); no evidence/sync/ownership views yet. |
+| UI-005 | partial | `ui.go` (`validateUIAddr`, `isLoopbackAddr`); `TestValidateUIAddr` | Binds loopback only and rejects non-loopback `--addr`; no per-session token/auth (loopback-only deployment). |
+| UI-006 | missing | no Origin/CSRF checks | Server is GET/HEAD-only and read-only, which limits CSRF impact, but no explicit Origin/CSRF validation exists. |
+| UI-007 | implemented | `ui.go` 405 guard; `TestUIHandlerServesTreeAPIAndPage` | Read-only mode: no mutation routes; non-GET/HEAD requests get 405 with `Allow: GET, HEAD`. |
 
 ### 3.11 CONC — Ownership / concurrency
 
@@ -383,10 +389,11 @@ Ranked by "what blocks a usable local segment":
 7. ~~**Fix adoption: `init --attach`** (WS-001).~~ **Done** — state lives in
    `<project>/.anchor`, user files are untouched, and every command resolves the
    attached state root from the project directory.
-8. **Human-readable projections + `tree` view** (WS-002, UI-001). **Partially
-   done** — `anchor tree` renders terminal/JSON/Markdown/HTML views and
-   `anchor state` aliases `status`; still missing a `branch` command, a
-   `state.json` file projection and a Git-merge test.
+8. **Human-readable projections + `tree` view + web UI** (WS-002, UI-001/004–007).
+   **Partially done** — terminal/JSON/Markdown/HTML views, a read-only loopback
+   web page (`anchor ui`) and `anchor state` exist; still missing a `branch`
+   command, a `state.json` file projection, a Git-merge test and Origin/CSRF
+   checks on the web server.
 9. ~~**Expose Anchor tools over MCP** (AD-010) before the memory bridge.~~ **Done**
    — stdio server with four read-only tools, registered by `adapter install
    --with-mcp`. Deliberately no mutation tools yet.
@@ -560,10 +567,10 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 | UI-001 | partial | tree/state/skill verbs; no branch/ownership verbs/web UI |
 | UI-002 | partial |  |
 | UI-003 | partial |  |
-| UI-004 | missing |  |
-| UI-005 | missing |  |
-| UI-006 | missing |  |
-| UI-007 | missing |  |
+| UI-004 | partial | read-only loopback tree web view (`anchor ui`) |
+| UI-005 | partial | loopback-only binding; no per-session token |
+| UI-006 | missing | no Origin/CSRF checks (GET-only read-only server) |
+| UI-007 | implemented | GET/HEAD-only server, 405 on mutations |
 
 ### CONC
 
@@ -650,7 +657,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 431 top-level test functions / 1000 run entries, ~19,900 test lines.
+Test suite: 437 top-level test functions / 1006 run entries, ~20,200 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 

@@ -15,8 +15,12 @@ import (
 // workspace directly (tools: anchor_status, anchor_tree,
 // anchor_evidence_verify, anchor_restore_plan).
 func cmdMcp(args []string) {
+	if len(args) >= 1 && args[0] == "config" {
+		cmdMcpConfig(args[1:])
+		return
+	}
 	if len(args) < 1 || args[0] != "serve" {
-		fmt.Fprintln(os.Stderr, "usage: anchor mcp serve [--dir DIR]")
+		fmt.Fprintln(os.Stderr, "usage: anchor mcp serve [--dir DIR]\n       anchor mcp config [--adapter claude-code|codex|gemini-cli] [--dir DIR] [--json]")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("mcp serve", flag.ExitOnError)

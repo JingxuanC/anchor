@@ -653,6 +653,16 @@ func existingDir(path string) (string, error) {
 	return real, nil
 }
 
+// ResolveAnchorPath returns the absolute executable to record in MCP/hook
+// configuration, resolving symlinks and validating it is executable.
+func ResolveAnchorPath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return resolveAnchorPath(exe)
+}
+
 func resolveAnchorPath(given string) (string, error) {
 	path := given
 	if path == "" {
