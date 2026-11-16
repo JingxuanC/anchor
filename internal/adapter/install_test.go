@@ -36,7 +36,7 @@ func readSettingsFile(t *testing.T, path string) map[string]any {
 func managedCount(settings map[string]any, anchorPath string) int {
 	count := 0
 	hooks, _ := settings["hooks"].(map[string]any)
-	for _, event := range []string{"PostToolUse", "SessionEnd"} {
+	for _, event := range []string{"SessionStart", "PostToolUse", "SessionEnd"} {
 		groups, _ := hooks[event].([]any)
 		for _, g := range groups {
 			group, _ := g.(map[string]any)
@@ -80,7 +80,7 @@ func TestInstallPlanThenApplyThenUninstall(t *testing.T) {
 		t.Fatalf("apply did not report applied: %+v", applied)
 	}
 	settings := readSettingsFile(t, applied.SettingsPath)
-	if got := managedCount(settings, anchorPath); got != 2 {
+	if got := managedCount(settings, anchorPath); got != 3 {
 		t.Fatalf("expected 2 managed hooks, got %d: %s", got, settings)
 	}
 	if _, err := os.Stat(applied.StatePath); err != nil {
@@ -102,7 +102,7 @@ func TestInstallPlanThenApplyThenUninstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !un.Applied || un.Removed != 2 {
+	if !un.Applied || un.Removed != 3 {
 		t.Fatalf("uninstall wrong: %+v", un)
 	}
 	settings = readSettingsFile(t, un.SettingsPath)
@@ -165,7 +165,7 @@ func TestInstallPreservesUserSettingsAndBacksUp(t *testing.T) {
 	if !foundUser {
 		t.Fatalf("user hook was lost: %s", settings)
 	}
-	if got := managedCount(settings, anchorPath); got != 2 {
+	if got := managedCount(settings, anchorPath); got != 3 {
 		t.Fatalf("managed hooks missing: %d", got)
 	}
 }
@@ -457,5 +457,60 @@ func TestInstallWithMCPRefusesBadConfigAndUserScope(t *testing.T) {
 	if _, err := Install(InstallOptions{AdapterID: "claude-code", StateDir: stateDir, RepoDir: repoDir,
 		Scope: ScopeProject, AnchorPath: anchorPath, WithMCP: true, Apply: true}); err == nil || !strings.Contains(err.Error(), "mcpServers value is not an object") {
 		t.Fatalf("malformed MCP config accepted: %v", err)
+	}
+}
+
+func TestInstallSessionContextHookToggle(t *testing.T) {
+	stateDir, repoDir, anchorPath := installFixture(t)
+	opts := InstallOptions{AdapterID: "claude-code", StateDir: stateDir, RepoDir: repoDir,
+		Scope: ScopeProject, AnchorPath: anchorPath, Apply: true}
+	plan, err := Install(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.AlreadyInstalled {
+		t.Fatalf("first install should change something: %+v", plan)
+	}
+	settings := readSettingsFile(t, plan.SettingsPath)
+	if got := managedCount(settings, anchorPath); got != 3 {
+		t.Fatalf("expected 3 managed hooks (SessionStart/PostToolUse/SessionEnd), got %d", got)
+	}
+	state, err := LoadInstallState(stateDir, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := map[string]bool{}
+	for _, e := range state.Entries {
+		events[e.Event] = true
+	}
+	if !events["SessionStart"] {
+		t.Fatalf("SessionStart missing from install state: %+v", state.Entries)
+	}
+	// Disabling session context removes only SessionStart.
+	opts.NoSessionContext = true
+	if _, err := Install(opts); err != nil {
+		t.Fatal(err)
+	}
+	settings = readSettingsFile(t, plan.SettingsPath)
+	if got := managedCount(settings, anchorPath); got != 2 {
+		t.Fatalf("SessionStart not removed: %d managed hooks left", got)
+	}
+	if _, ok := settings["hooks"].(map[string]any)["SessionStart"]; ok {
+		t.Fatalf("SessionStart event key left behind: %s", settings)
+	}
+	state, _ = LoadInstallState(stateDir, "claude-code")
+	for _, e := range state.Entries {
+		if e.Event == "SessionStart" {
+			t.Fatal("state still records SessionStart after disabling it")
+		}
+	}
+	// Re-enabling restores it.
+	opts.NoSessionContext = false
+	if _, err := Install(opts); err != nil {
+		t.Fatal(err)
+	}
+	settings = readSettingsFile(t, plan.SettingsPath)
+	if got := managedCount(settings, anchorPath); got != 3 {
+		t.Fatalf("SessionStart not restored: %d managed hooks", got)
 	}
 }

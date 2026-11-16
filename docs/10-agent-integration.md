@@ -51,7 +51,15 @@ secret *references* are preserved. Hook installation for Claude Code is still
 
 ### Install hooks, MCP and skill
 
+Two equivalent paths:
+
 ```sh
+# one-shot: config owns rules + MCP + skill + hooks
+anchor config init --dir ~/code/project/.anchor --repo ~/code/project \
+  --agents claude-code,codex --apply
+anchor config apply --dir ~/code/project/.anchor --repo ~/code/project --apply
+
+# or adapter-only (hooks + MCP + skill helpers)
 anchor adapter install --adapter claude-code \
   --dir ~/code/project/.anchor --repo ~/code/project \
   --with-mcp --apply
@@ -63,13 +71,18 @@ This writes/merges:
 
 | File | Content |
 |---|---|
-| `~/code/project/.claude/settings.json` | managed `PostToolUse` + `SessionEnd` hook entries (backed up first) |
+| `~/code/project/.claude/settings.json` | managed `SessionStart` + `PostToolUse` + `SessionEnd` hook entries (backed up first) |
 | `~/code/project/.mcp.json` | `mcpServers.anchor` = absolute `anchor mcp serve --dir <state>` |
 | `~/code/project/.claude/skills/anchor/SKILL.md` | the agent playbook |
 
 Restart Claude Code and check it sees the server (`/mcp` in the UI, or ask the
-agent to call `anchor_status`). Hooks write one metadata-only capture file per
-event under `<state>/local/captures/` and print nothing.
+agent to call `anchor_status`). `SessionStart` injects a size-capped,
+secret-scanned context block (goal constraints, decisions, tasks, open
+questions, handoff pointer) through the hook's `additionalContext`; the other
+hooks write one metadata-only capture file per event under
+`<state>/local/captures/` and print nothing. Disable/tune hooks in the config
+file (`hooks.claude_code`, `hooks.session_start`); `anchor config status` reports
+hook drift.
 
 To plan before writing, omit `--apply` and inspect the printed operations/backup
 paths; `--uninstall` removes only the recorded entries.
@@ -117,7 +130,9 @@ anchor mcp config --adapter gemini-cli --dir ~/code/project/.anchor
 
 Hooks/MCP are documentation-level for this adapter (the CLI was not available in
 the development environment); `anchor wrap --dir … --node … -- gemini …` is the
-supported capture path.
+supported capture path. The Anchor skill playbook is rendered into `GEMINI.md`
+(and `AGENTS.md` for Codex) rather than assuming an adapter-specific skill
+directory.
 
 ---
 

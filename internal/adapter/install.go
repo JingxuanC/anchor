@@ -65,6 +65,9 @@ type InstallOptions struct {
 	// WithMCP also registers the read-only Anchor MCP server in the project's
 	// .mcp.json so the agent can call its tools directly.
 	WithMCP bool
+	// NoSessionContext omits the SessionStart context-injection hook. The default
+	// installs it (RST-002).
+	NoSessionContext bool
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
 }
@@ -127,7 +130,7 @@ func Install(opts InstallOptions) (InstallPlan, error) {
 	}
 
 	captures := filepath.Join(stateDir, "local", "captures")
-	desired := managedHooks(anchorPath, captures)
+	desired := managedHooks(anchorPath, stateDir, captures, !opts.NoSessionContext)
 	plan.Desired = desired
 	settings, exists, err := loadSettings(settingsPath)
 	if err != nil {
@@ -136,9 +139,26 @@ func Install(opts InstallOptions) (InstallPlan, error) {
 	if !exists {
 		settings = map[string]any{}
 	}
+	// Remove managed hook entries that are no longer desired (e.g. SessionStart
+	// context injection disabled by config) before merging the desired set.
+	removedObsolete := 0
+	if old, err := LoadInstallState(opts.StateDir, "claude-code"); err == nil && old != nil {
+		for _, prev := range old.Entries {
+			if hookSpecIn(desired, prev) {
+				continue
+			}
+			if removeHook(settings, prev) > 0 {
+				removedObsolete++
+				plan.Operations = append(plan.Operations, "remove obsolete "+prev.Event+" hook")
+			}
+		}
+	}
 	changedHooks, hookOps, err := mergeHooks(settings, desired)
 	if err != nil {
 		return InstallPlan{}, err
+	}
+	if removedObsolete > 0 {
+		changedHooks = true
 	}
 	plan.Operations = append(plan.Operations, hookOps...)
 
@@ -266,12 +286,26 @@ func removeMCPServer(obj map[string]any, name string, recorded map[string]any) b
 // managedHooks returns the hook entries Anchor installs. They only record
 // metadata: the capture command writes a timestamped JSON file into the
 // workspace and prints nothing, so hook output never pollutes agent context.
-func managedHooks(anchorPath, capturesDir string) []HookSpec {
+func hookSpecIn(specs []HookSpec, want HookSpec) bool {
+	for _, s := range specs {
+		if s.Event == want.Event && s.Matcher == want.Matcher && s.Command == want.Command && s.Timeout == want.Timeout {
+			return true
+		}
+	}
+	return false
+}
+
+func managedHooks(anchorPath, stateDir, capturesDir string, includeSessionContext bool) []HookSpec {
 	command := shellQuote(anchorPath) + " adapter capture --adapter claude-code --stdin --capture-dir " + shellQuote(capturesDir)
-	return []HookSpec{
+	contextCommand := shellQuote(anchorPath) + " adapter context --dir " + shellQuote(stateDir) + " --stdin"
+	hooks := []HookSpec{
 		{Event: "PostToolUse", Matcher: "*", Timeout: 5, Command: command},
 		{Event: "SessionEnd", Matcher: "*", Timeout: 1, Command: command},
 	}
+	if includeSessionContext {
+		hooks = append([]HookSpec{{Event: "SessionStart", Matcher: "*", Timeout: 10, Command: contextCommand}}, hooks...)
+	}
+	return hooks
 }
 
 // mergeHooks inserts missing managed entries and reports what it would change.
@@ -465,7 +499,11 @@ func removeHook(settings map[string]any, spec HookSpec) int {
 		group["hooks"] = keptHooks
 		keptGroups = append(keptGroups, group)
 	}
-	hooksAny[spec.Event] = keptGroups
+	if len(keptGroups) == 0 {
+		delete(hooksAny, spec.Event)
+	} else {
+		hooksAny[spec.Event] = keptGroups
+	}
 	return removed
 }
 

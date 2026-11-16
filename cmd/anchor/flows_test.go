@@ -1566,8 +1566,11 @@ func TestCLIAdapterInstallContractE2E(t *testing.T) {
 	if err := json.Unmarshal(settingsRaw, &settings); err != nil {
 		t.Fatal(err)
 	}
-	if len(settings.Hooks["PostToolUse"]) == 0 || len(settings.Hooks["SessionEnd"]) == 0 {
+	if len(settings.Hooks["PostToolUse"]) == 0 || len(settings.Hooks["SessionEnd"]) == 0 || len(settings.Hooks["SessionStart"]) == 0 {
 		t.Fatalf("managed hooks missing: %s", settingsRaw)
+	}
+	if !strings.Contains(mustMarshalString(t, settings.Hooks["SessionStart"]), "adapter context") {
+		t.Fatalf("SessionStart hook is not the context injector: %s", settingsRaw)
 	}
 	hookCommand := settings.Hooks["PostToolUse"][0].Hooks[0].Command
 
@@ -1613,7 +1616,7 @@ func TestCLIAdapterInstallContractE2E(t *testing.T) {
 	if err := json.Unmarshal([]byte(unOut), &un); err != nil {
 		t.Fatal(err)
 	}
-	if !un.Applied || un.Removed != 2 {
+	if !un.Applied || un.Removed != 3 {
 		t.Fatalf("uninstall wrong: %s", unOut)
 	}
 	remaining, err := os.ReadFile(plan.SettingsPath)
@@ -1760,6 +1763,15 @@ func TestCLIMcpServeContract(t *testing.T) {
 	if before != after {
 		t.Fatalf("MCP read-only tools changed the workspace:\nbefore=%s\nafter=%s", before, after)
 	}
+}
+
+func mustMarshalString(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func toolText(t *testing.T, result json.RawMessage) string {

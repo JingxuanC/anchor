@@ -46,7 +46,8 @@ verifying that packet.
 | Local read-only web UI (live tree, loopback only) | `anchor ui` |
 | MCP registration snippets per agent | `anchor mcp config --adapter claude-code|codex|gemini-cli` |
 | Agent skill teaching the resume/record workflow | `anchor skill print`, `anchor skill install` |
-| Unified config: managed rules blocks, MCP registration, skills, drift/rollback | `anchor config init/plan/apply/status/rollback` |
+| Unified config: managed rules blocks, MCP registration, skills, hooks, drift/rollback | `anchor config init/plan/apply/status/rollback` |
+| Automatic SessionStart context injection (Claude Code hook) | installed by `adapter install` / `config apply` |
 | Verifiable evidence blobs, secret/path guards, quarantine of corrupt event files | `internal/core`, `internal/pathguard` |
 
 ## Quick start
@@ -175,9 +176,21 @@ What `apply` renders:
 | `.claude/skills/anchor/SKILL.md` | embedded agent playbook |
 | `.anchor/config/rendered/` | Codex `config.toml` / Gemini `settings.json` MCP snippets to merge (shared agent config is never written automatically) |
 
+`anchor config` also owns native **Claude Code hooks** (`hooks.claude_code` and
+`hooks.session_start` in the config file): apply installs/removes the managed
+`SessionStart` / `PostToolUse` / `SessionEnd` entries in
+`.claude/settings.json`, and `adapter install` remains a shortcut for hook-only
+setups. The `SessionStart` hook calls `anchor adapter context`, which returns
+`additionalContext` built from the Session Tree and the latest handoff packet —
+so a fresh session starts with the goal constraints, decisions and open questions
+already in context. Injection is size-capped (`--max-bytes`, default 8000) and
+secret-scanned; it never records prompts or transcripts.
+
 The rendered rules instruct the agent to check Anchor at session start, record
-decisions when direction changes, and prepare a handoff at completion. Every
-apply snapshots the files it touches (rollback-safe) and backs up existing files.
+decisions when direction changes, and prepare a handoff at completion. Codex and
+Gemini receive the same playbook through their rules file (their activation
+mechanism) instead of an assumed skill directory. Every apply snapshots the files
+it touches (rollback-safe) and backs up existing files.
 
 **Secrets are references only.** `secret_refs` accepts `env:NAME`,
 `keychain:NAME`, `op://…` or `file:PATH`; literal values are rejected and
@@ -292,7 +305,7 @@ go run ./bench/ab --mock-agent --trials 1 # deterministic self-test
 | Capability | Claude Code | Codex CLI | Gemini CLI |
 |---|---|---|---|
 | Version detection (`adapter detect`) | ✅ real probe | ✅ real probe | ✅ real probe |
-| Native hook installation | ✅ `adapter install` (contract-tested) | fragment only | fragment only |
+| Native hook installation | ✅ incl. SessionStart context injection (contract-tested) | fragment only | fragment only |
 | Hookless `wrap` fallback | ✅ | ✅ | ✅ |
 | Metadata capture/ingest | ✅ | ✅ (contract) | ✅ (contract) |
 | MCP server client | ✅ auto `.mcp.json` | manual config | manual config |
@@ -307,7 +320,7 @@ inside a live logged-in session is on the roadmap.
 This is an early, honest implementation — not a finished product. The
 authoritative requirement-by-requirement audit is
 [`docs/09-implementation-status.md`](docs/09-implementation-status.md)
-(140 requirements: 41 implemented, 54 partial, 44 missing, 1 deferred).
+(140 requirements: 44 implemented, 52 partial, 43 missing, 1 deferred).
 
 Known gaps, roughly by priority:
 

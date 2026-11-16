@@ -33,8 +33,15 @@ type anchorConfig struct {
 	Agents        []string          `json:"agents"` // enabled adapters
 	Rules         anchorRules       `json:"rules"`
 	MCP           anchorMCP         `json:"mcp"`
+	Hooks         anchorHooks       `json:"hooks"`
 	SecretRefs    map[string]string `json:"secret_refs,omitempty"`
 	UpdatedAt     string            `json:"updated_at,omitempty"`
+}
+
+// anchorHooks controls native Claude Code hook installation (config-owned).
+type anchorHooks struct {
+	ClaudeCode   *bool `json:"claude_code,omitempty"`
+	SessionStart *bool `json:"session_start,omitempty"`
 }
 
 type anchorRules struct {
@@ -168,7 +175,16 @@ func validateSecretRefs(refs map[string]string) error {
 }
 
 func defaultAnchorConfig() anchorConfig {
-	return anchorConfig{SchemaVersion: configSchemaVersion, Agents: []string{"claude-code"}, MCP: anchorMCP{Server: "anchor"}}
+	yes := true
+	return anchorConfig{SchemaVersion: configSchemaVersion, Agents: []string{"claude-code"},
+		MCP: anchorMCP{Server: "anchor"}, Hooks: anchorHooks{ClaudeCode: &yes, SessionStart: &yes}}
+}
+
+func boolOr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 func applyOverlay(cfg *anchorConfig, o anchorConfig) {
@@ -192,6 +208,12 @@ func applyOverlay(cfg *anchorConfig, o anchorConfig) {
 	}
 	if o.SecretRefs != nil {
 		cfg.SecretRefs = o.SecretRefs
+	}
+	if o.Hooks.ClaudeCode != nil {
+		cfg.Hooks.ClaudeCode = o.Hooks.ClaudeCode
+	}
+	if o.Hooks.SessionStart != nil {
+		cfg.Hooks.SessionStart = o.Hooks.SessionStart
 	}
 }
 
@@ -262,7 +284,9 @@ func configShow(args []string) {
 		fmt.Println(string(b))
 		return
 	}
-	fmt.Printf("config: %s\nagents: %s\nmcp server: %s\n", path, strings.Join(cfg.Agents, ","), cfg.MCP.Server)
+	fmt.Printf("config: %s\nagents: %s\nmcp server: %s\nhooks: claude-code=%v session-start=%v\n",
+		path, strings.Join(cfg.Agents, ","), cfg.MCP.Server,
+		boolOr(cfg.Hooks.ClaudeCode, true), boolOr(cfg.Hooks.SessionStart, true))
 	if len(cfg.SecretRefs) > 0 {
 		names := make([]string, 0, len(cfg.SecretRefs))
 		for k := range cfg.SecretRefs {
@@ -414,7 +438,45 @@ func buildConfigRender(stateDir, repoDir string, cfg anchorConfig) ([]configOp, 
 	}
 	ops = append(ops, configOp{Kind: "skill", Path: skillPath, Action: action})
 	targets = append(targets, configTarget{Kind: "skill", Path: skillPath, Full: adapter.SkillMarkdown})
+
+	// Native hooks are config-owned (CFG-001): config apply installs/removes the
+	// managed Claude Code hook entries; adapter install remains a standalone
+	// shortcut for hook-only setups.
+	if len(agents) > 0 && agents[0] == "claude-code" || containsAgent(agents, "claude-code") {
+		hooksWanted := boolOr(cfg.Hooks.ClaudeCode, true)
+		includeSession := boolOr(cfg.Hooks.SessionStart, true)
+		plan, err := adapter.Install(adapter.InstallOptions{AdapterID: "claude-code", StateDir: stateDir,
+			RepoDir: repoDir, AnchorPath: anchorPath, NoSessionContext: !includeSession})
+		if err != nil {
+			return nil, nil, err
+		}
+		settingsPath := filepath.Join(repoDir, ".claude", "settings.json")
+		switch {
+		case !hooksWanted:
+			if st, _ := adapter.LoadInstallState(stateDir, "claude-code"); st != nil {
+				ops = append(ops, configOp{Kind: "hooks", Path: settingsPath, Action: "uninstall", Detail: " (hooks disabled in config)"})
+				targets = append(targets, configTarget{Kind: "hooks", Path: settingsPath})
+			} else {
+				ops = append(ops, configOp{Kind: "hooks", Path: settingsPath, Action: "unchanged", Detail: " (disabled)"})
+			}
+		case plan.AlreadyInstalled:
+			ops = append(ops, configOp{Kind: "hooks", Path: settingsPath, Action: "unchanged", Detail: " (managed hooks installed)"})
+			targets = append(targets, configTarget{Kind: "hooks", Path: settingsPath})
+		default:
+			ops = append(ops, configOp{Kind: "hooks", Path: settingsPath, Action: "update", Detail: " (managed hooks: SessionStart/PostToolUse/SessionEnd)"})
+			targets = append(targets, configTarget{Kind: "hooks", Path: settingsPath})
+		}
+	}
 	return ops, targets, nil
+}
+
+func containsAgent(agents []string, want string) bool {
+	for _, a := range agents {
+		if a == want {
+			return true
+		}
+	}
+	return false
 }
 
 func planManagedBlock(path, block string) (string, string) {
@@ -484,6 +546,11 @@ func applyConfigRender(stateDir, repoDir string, cfg anchorConfig, targets []con
 	}
 	state := renderState{SchemaVersion: configSchemaVersion, AppliedAt: time.Now().UTC().Format(time.RFC3339)}
 	for _, t := range targets {
+		if t.Kind == "hooks" {
+			// Native hooks are installed/removed through adapter.Install below; the
+			// target exists so snapshots capture .claude/settings.json.
+			continue
+		}
 		var content string
 		switch t.Kind {
 		case "rules":
@@ -504,6 +571,26 @@ func applyConfigRender(stateDir, repoDir string, cfg anchorConfig, targets []con
 			return err
 		}
 		state.Files = append(state.Files, rendered{Path: t.Path, Kind: t.Kind, SHA256: hashString(content)})
+	}
+	anchorPath, err := adapter.ResolveAnchorPath()
+	if err != nil {
+		return err
+	}
+	if containsAgent(ensureAgents(cfg.Agents), "claude-code") {
+		if !boolOr(cfg.Hooks.ClaudeCode, true) {
+			if st, _ := adapter.LoadInstallState(stateDir, "claude-code"); st != nil {
+				if _, err := adapter.Install(adapter.InstallOptions{AdapterID: "claude-code", StateDir: stateDir,
+					RepoDir: repoDir, AnchorPath: anchorPath, Uninstall: true, Apply: true}); err != nil {
+					return fmt.Errorf("cannot remove managed hooks: %w", err)
+				}
+			}
+		} else {
+			if _, err := adapter.Install(adapter.InstallOptions{AdapterID: "claude-code", StateDir: stateDir,
+				RepoDir: repoDir, AnchorPath: anchorPath, Apply: true,
+				NoSessionContext: !boolOr(cfg.Hooks.SessionStart, true)}); err != nil {
+				return fmt.Errorf("cannot install managed hooks: %w", err)
+			}
+		}
 	}
 	return writeJSONAtomic(filepath.Join(stateDir, "config", "state.json"), state)
 }
@@ -574,6 +661,10 @@ func configStatus(args []string) {
 	}
 	var statuses []fileStatus
 	for _, t := range targets {
+		if t.Kind == "hooks" {
+			// Derived from the adapter install state below, not from a file hash.
+			continue
+		}
 		st := fileStatus{Path: t.Path, Kind: t.Kind}
 		b, err := os.ReadFile(t.Path)
 		if err != nil {
@@ -604,6 +695,33 @@ func configStatus(args []string) {
 			}
 			if _, ok := recorded[t.Path]; !ok && st.Status == "drift" {
 				st.Status = "never-applied"
+			}
+		}
+		statuses = append(statuses, st)
+	}
+	// Hooks status is derived from the adapter install state (config-owned).
+	if containsAgent(ensureAgents(cfg.Agents), "claude-code") {
+		st := fileStatus{Path: filepath.Join(repoDir, ".claude", "settings.json"), Kind: "hooks"}
+		installed, _ := adapter.LoadInstallState(store.Dir, "claude-code")
+		wantHooks := boolOr(cfg.Hooks.ClaudeCode, true)
+		switch {
+		case !wantHooks && installed == nil:
+			st.Status = "ok"
+		case !wantHooks && installed != nil:
+			st.Status = "drift"
+		case installed == nil:
+			st.Status = "missing"
+		default:
+			hasSession := false
+			for _, e := range installed.Entries {
+				if e.Event == "SessionStart" {
+					hasSession = true
+				}
+			}
+			if boolOr(cfg.Hooks.SessionStart, true) != hasSession {
+				st.Status = "drift"
+			} else {
+				st.Status = "ok"
 			}
 		}
 		statuses = append(statuses, st)
@@ -743,7 +861,19 @@ func renderRulesBlock(cfg anchorConfig, agent, stateDir, anchorPath string) stri
 	fmt.Fprintf(&b, "\n**Start.** %s\n\n", start)
 	fmt.Fprintf(&b, "**During work.** Record decisions (`anchor node create --type decision … --rationale …`), task transitions and verifiable evidence (`anchor evidence add`). Never record secrets, tokens, prompts or transcripts. %s\n\n", branch)
 	fmt.Fprintf(&b, "**Completion.** %s\n\n", completion)
-	b.WriteString("**MCP tools (read-only):** `anchor_status`, `anchor_tree`, `anchor_evidence_verify`, `anchor_restore_plan`. Mutations go through the CLI so the successor gate, ownership fencing and event validation apply.\n")
+	b.WriteString("**MCP tools (read-only):** `anchor_status`, `anchor_tree`, `anchor_evidence_verify`, `anchor_restore_plan`. Mutations go through the CLI so the successor gate, ownership fencing and event validation apply.\n\n")
+	if agent == "claude-code" {
+		b.WriteString("**Agent skill.** `.claude/skills/anchor/SKILL.md` is installed by `anchor config apply`; follow it.\n")
+	} else {
+		// Activation semantics are adapter-specific: Codex and Gemini read their
+		// rules file, so the skill playbook is rendered here instead of assuming a
+		// skill directory exists (REQ-CFG-008).
+		b.WriteString("**Agent skill (activated through this rules file).**\n")
+		b.WriteString("- Start: read `ANCHOR_CONTEXT_FILE` when present, then `anchor status --json` and `anchor tree`; if a handoff is pending, read `anchor handoff restore` before editing.\n")
+		b.WriteString("- Work: record decisions (`--type decision --rationale …`), task transitions and verifiable evidence with the CLI; never record secrets, tokens or transcripts.\n")
+		b.WriteString("- Finish: `anchor handoff prepare --dir \"$ANCHOR_WORKSPACE\" --repo .` and record unresolved work as task/question nodes.\n")
+		b.WriteString("- Resume: acknowledge and verify the handoff packet before editing; apply packaged code with `anchor handoff apply-code --apply`.\n")
+	}
 	b.WriteString(managedEnd)
 	return b.String()
 }

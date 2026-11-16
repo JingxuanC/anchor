@@ -258,3 +258,134 @@ func TestCLIConfigScopePrecedence(t *testing.T) {
 		t.Fatalf("project scope did not override user scope: %v", shown.Config.Agents)
 	}
 }
+
+func TestCLIConfigOwnsHooks(t *testing.T) {
+	root, proj := configFixture(t)
+	runCLI(t, root, "config", "init", "--dir", proj, "--repo", proj, "--agents", "claude-code", "--apply")
+	if out, stderr, code := runCLI(t, root, "config", "apply", "--dir", proj, "--repo", proj, "--apply"); code != 0 {
+		t.Fatalf("apply: %s%s", out, stderr)
+	}
+	settingsPath := filepath.Join(proj, ".claude", "settings.json")
+	var settings map[string]any
+	readJSONFile(t, settingsPath, &settings)
+	hooks := settings["hooks"].(map[string]any)
+	for _, event := range []string{"SessionStart", "PostToolUse", "SessionEnd"} {
+		if _, ok := hooks[event]; !ok {
+			t.Fatalf("config apply did not install %s hook: %s", event, jsonString(t, settings))
+		}
+	}
+	// The installed SessionStart hook injects context.
+	raw := jsonString(t, hooks["SessionStart"])
+	if !strings.Contains(raw, "adapter context") || !strings.Contains(raw, "adapter context --dir") {
+		t.Fatalf("SessionStart hook is not a context hook: %s", raw)
+	}
+	// Status is clean with hooks present.
+	statusOut, _, _ := runCLI(t, root, "config", "status", "--dir", proj, "--repo", proj, "--json")
+	var st struct {
+		Clean bool `json:"clean"`
+	}
+	if err := json.Unmarshal([]byte(statusOut), &st); err != nil || !st.Clean {
+		t.Fatalf("config status not clean after apply: %s", statusOut)
+	}
+
+	// Disable session context: only that hook is removed.
+	editConfig(t, proj, func(cfg map[string]any) {
+		h := cfg["hooks"].(map[string]any)
+		h["session_start"] = false
+	})
+	if out, stderr, code := runCLI(t, root, "config", "apply", "--dir", proj, "--repo", proj, "--apply"); code != 0 {
+		t.Fatalf("disable session apply: %s%s", out, stderr)
+	}
+	readJSONFile(t, settingsPath, &settings)
+	hooks = settings["hooks"].(map[string]any)
+	if _, ok := hooks["SessionStart"]; ok {
+		t.Fatalf("SessionStart hook was not removed: %s", jsonString(t, hooks))
+	}
+	if _, ok := hooks["PostToolUse"]; !ok {
+		t.Fatal("PostToolUse hook removed unexpectedly")
+	}
+
+	// Disable all hooks: every managed hook is removed.
+	editConfig(t, proj, func(cfg map[string]any) {
+		h := cfg["hooks"].(map[string]any)
+		h["claude_code"] = false
+	})
+	if out, stderr, code := runCLI(t, root, "config", "apply", "--dir", proj, "--repo", proj, "--apply"); code != 0 {
+		t.Fatalf("disable hooks apply: %s%s", out, stderr)
+	}
+	readJSONFile(t, settingsPath, &settings)
+	hooks, _ = settings["hooks"].(map[string]any)
+	if len(hooks) != 0 {
+		t.Fatalf("managed hooks left after disabling them: %s", jsonString(t, hooks))
+	}
+	statusOut, _, _ = runCLI(t, root, "config", "status", "--dir", proj, "--repo", proj, "--json")
+	if err := json.Unmarshal([]byte(statusOut), &st); err != nil || !st.Clean {
+		t.Fatalf("config status not clean with hooks disabled: %s", statusOut)
+	}
+}
+
+func TestCLIConfigRendersSkillPlaybookForCodexAndGemini(t *testing.T) {
+	root, proj := configFixture(t)
+	runCLI(t, root, "config", "init", "--dir", proj, "--repo", proj, "--agents", "claude-code,codex,gemini-cli", "--apply")
+	if out, stderr, code := runCLI(t, root, "config", "apply", "--dir", proj, "--repo", proj, "--apply"); code != 0 {
+		t.Fatalf("apply: %s%s", out, stderr)
+	}
+	for _, file := range []string{"AGENTS.md", "GEMINI.md"} {
+		b, err := os.ReadFile(filepath.Join(proj, file))
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		text := string(b)
+		if !strings.Contains(text, "Agent skill (activated through this rules file)") {
+			t.Fatalf("%s missing the adapter-specific skill playbook", file)
+		}
+		for _, want := range []string{"Start:", "Work:", "Finish:", "Resume:"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s skill playbook missing %q", file, want)
+			}
+		}
+	}
+	// Claude gets the dedicated skill file and a pointer in its rules block.
+	claude, _ := os.ReadFile(filepath.Join(proj, "CLAUDE.md"))
+	if !strings.Contains(string(claude), ".claude/skills/anchor/SKILL.md") {
+		t.Fatal("CLAUDE.md does not reference the installed skill")
+	}
+	if _, err := os.Stat(filepath.Join(proj, ".claude", "skills", "anchor", "SKILL.md")); err != nil {
+		t.Fatalf("Claude skill not installed: %v", err)
+	}
+}
+
+func readJSONFile(t *testing.T, path string, out any) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, out); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+}
+
+func jsonString(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func editConfig(t *testing.T, proj string, mutate func(map[string]any)) {
+	t.Helper()
+	path := filepath.Join(proj, ".anchor", "config", "config.json")
+	var cfg map[string]any
+	readJSONFile(t, path, &cfg)
+	mutate(cfg)
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

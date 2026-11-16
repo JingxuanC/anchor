@@ -34,6 +34,8 @@ func cmdAdapter(args []string) {
 		adapterIngest(args[1:])
 	case "detect":
 		adapterDetect(args[1:])
+	case "context":
+		adapterContext(args[1:])
 	case "install":
 		adapterInstall(args[1:])
 	default:
@@ -46,6 +48,7 @@ func adapterUsage() {
 	fmt.Fprintln(os.Stderr, `  anchor adapter capabilities [--json]
   anchor adapter render --adapter ID (--target DIR | --print)
   anchor adapter capture --adapter ID (--event FILE | --stdin) (--out FILE | --print | --capture-dir DIR)
+  anchor adapter context --dir DIR (--event FILE | --stdin) [--max-bytes N] [--print]
   anchor adapter detect [--json]
   anchor adapter install --adapter claude-code --dir DIR [--repo PROJECT]
       [--scope project|user] [--apply | --uninstall] [--with-mcp]
@@ -351,6 +354,7 @@ func adapterInstall(args []string) {
 	apply := fs.Bool("apply", false, "write the change (default is a plan)")
 	uninstall := fs.Bool("uninstall", false, "remove the managed hook entries")
 	withMCP := fs.Bool("with-mcp", false, "also register the read-only Anchor MCP server in the project's .mcp.json")
+	noSessionContext := fs.Bool("no-session-context", false, "omit the SessionStart context-injection hook")
 	anchorPath := fs.String("anchor-path", "", "override the anchor executable recorded in hook commands")
 	asJSON := fs.Bool("json", false, "JSON output")
 	_ = fs.Parse(args)
@@ -363,6 +367,7 @@ func adapterInstall(args []string) {
 	plan, err := adapter.Install(adapter.InstallOptions{
 		AdapterID: *id, StateDir: stateDir, RepoDir: *repo, Scope: *scope,
 		AnchorPath: *anchorPath, Apply: *apply, Uninstall: *uninstall, WithMCP: *withMCP,
+		NoSessionContext: *noSessionContext,
 	})
 	if err != nil {
 		die(err)

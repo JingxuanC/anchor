@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 97 Go files / ~33,800 LOC, of which ~20,500 lines are tests
-(443 top-level test functions, 1012 `=== RUN` entries).
+Current tree: 100 Go files / ~34,500 LOC, of which ~20,800 lines are tests
+(451 top-level test functions, 1020 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -38,11 +38,11 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | WS | 4 | 3 | 1 | 0 | 8 |
 | ST | 5 | 5 | 3 | 0 | 13 |
 | CAP | 4 | 5 | 0 | 0 | 9 |
-| RST | 8 | 0 | 3 | 0 | 11 |
+| RST | 9 | 0 | 2 | 0 | 11 |
 | AD | 4 | 7 | 2 | 0 | 13 |
 | CM | 0 | 1 | 12 | 0 | 13 |
 | SY | 2 | 6 | 4 | 0 | 12 |
-| CFG | 6 | 2 | 0 | 0 | 8 |
+| CFG | 8 | 0 | 0 | 0 | 8 |
 | VT | 0 | 3 | 7 | 0 | 10 |
 | UI | 1 | 5 | 1 | 0 | 7 |
 | CONC | 2 | 3 | 0 | 0 | 5 |
@@ -51,7 +51,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | SEC | 0 | 4 | 3 | 0 | 7 |
 | NFR | 2 | 2 | 3 | 0 | 7 |
 | OPS | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **41** | **54** | **44** | **1** | **140** |
+| **Total** | **44** | **52** | **43** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -156,10 +156,13 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     `<project>/.claude/skills/anchor/SKILL.md` with plan/backup/idempotent/
     uninstall semantics. `anchor mcp config` prints per-agent MCP registration
     snippets. `anchor config init/plan/apply/status/rollback` provides one
-    source of truth for per-agent rules/MCP/skill configuration: managed blocks
-    with user content preserved, plan/diff, drift detection, secret *references*
-    only (literals rejected), project-over-user precedence and pre-apply
-    snapshots/rollback.
+    source of truth for per-agent rules/MCP/skill/hook configuration: managed
+    blocks with user content preserved, plan/diff, drift detection, secret
+    *references* only (literals rejected), project-over-user precedence and
+    pre-apply snapshots/rollback. Claude Code hooks are config-owned, including a
+    SessionStart hook that injects size-capped, secret-scanned context (goal
+    constraints, decisions, tasks, handoff) as `additionalContext`; Codex/Gemini
+    receive the same playbook through their rules file.
 16. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
@@ -218,7 +221,7 @@ authoritative.
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
 | RST-001 | implemented | `handoff.Packet` (`goal`/`decisions`/`next_steps`/`open_questions`/`ownership`/`provenance_summary`); `TestPrepareCarriesTaskStructure` | Packet now carries the task structure a successor needs; packet hash covers the new blocks. |
-| RST-002 | missing | render emits unverified fragments (`internal/adapter/render.go:69`) | No injection path, no size/token caps. |
+| RST-002 | implemented | `cmd/anchor/adaptercontext.go`, `adapter.Install` SessionStart hook; `TestCLIAdapterContextHookJSON`, `TestCLIAdapterContextTruncates` | SessionStart hook emits Claude Code hook JSON with `additionalContext` built from the Session Tree and latest handoff; size-capped (`--max-bytes`), secret-scanned, and installed by both `adapter install` and `anchor config apply`. |
 | RST-003 | implemented | `core.EvHandoffAcked/Verified`, `handoff.BuildPlan`/`Gate`; `TestHandoffAckAndVerifyAreProjected`, `TestCLIRestoreSuccessorGateFlow` | Ack/verify are recorded events; the gate blocks mutations until verification; `--force` is recorded. |
 | RST-004 | implemented | `handoff.go:248`, `main.go:484`; `TestCLIWorkflowRecoveryAndRestoreBoundary` | Partially vacuous: no summary object exists. |
 | RST-005 | missing | one static packet format only | No per-adapter cross-agent handoff. |
@@ -279,14 +282,14 @@ matches only capability strings.
 
 | Req | Status | Gap |
 |---|---|---|
-| CFG-001 | partial | `cmd/anchor/config.go`; `TestCLIConfigApplyRendersManagedBlocks` | One config file drives rules blocks, MCP registration and the Claude skill; native hook installation still goes through `adapter install`. |
+| CFG-001 | implemented | `cmd/anchor/config.go`; `TestCLIConfigOwnsHooks`, `TestCLIConfigApplyRendersManagedBlocks` | One config file drives rules blocks, MCP registration, the Claude skill **and** native hook installation (including SessionStart context injection); `adapter install` remains a shortcut for hook-only setups. |
 | CFG-002 | implemented | `config.go` managed markers + merge; `TestCLIConfigApplyRendersManagedBlocks`, `TestCLIConfigStatusDetectsDriftAndFixesIt` | Per-agent rules files get a managed block; user content outside it is preserved; apply is idempotent. |
 | CFG-003 | implemented | `config plan/apply/status`; `TestCLIConfigStatusDetectsDriftAndFixesIt` | Plan by default, `--diff` shows managed-block differences, `status` detects drift/missing/never-applied. |
 | CFG-004 | implemented | `validateSecretRefs`; `TestCLIConfigSecretRefsOnly` | Config accepts only `env:`/`keychain:`/`op://`/`file:` references; literal values are rejected and references are never rendered. |
 | CFG-005 | implemented | project + user config merge; `TestCLIConfigScopePrecedence` | Project-scope config overrides user-scope config; precedence documented in README/docs/10. |
 | CFG-006 | implemented | snapshots under `config/snapshots/`; `TestCLIConfigRollbackRestoresSnapshot` | Every apply snapshots the files it will touch; `config rollback [--to]` restores a snapshot (and its render state). |
 | CFG-007 | implemented | `renderRulesBlock`; `TestCLIConfigApplyRendersManagedBlocks` | Rendered rules instruct agents to use Anchor at start, during branch/decision changes and at completion; includes MCP tool list. |
-| CFG-008 | partial | embedded skill + Claude install; `TestCLISkillInstallPlanApplyUninstall` | Idempotent managed skill installation for Claude Code; Codex/Gemini skills are not installed (adapter-specific activation not assumed). |
+| CFG-008 | implemented | `internal/adapter/skill.go`; `TestCLISkillInstallPlanApplyUninstall`, `TestCLIConfigRendersSkillPlaybookForCodexAndGemini` | Claude Code gets the managed `.claude/skills/anchor/SKILL.md`; Codex/Gemini get the same playbook rendered into their rules file (their activation mechanism), with the adapter-specific semantics tested and documented instead of assuming a skill directory. |
 
 ### 3.9 VT — Vault / secrets
 
@@ -387,12 +390,11 @@ Ranked by "what blocks a usable local segment":
 3. ~~**Give the packet the task structure a successor needs** (RST-001/010,
    ST-001/002/005).~~ **Done** — goal constraints, decision trade-offs, provenance,
    next steps, open questions and ownership are in the model and the packet.
-4. **Context injection + managed rules files** (RST-002, AD-002/003/004/006,
-   CFG-002/007). **Rules-file side done** — `anchor config` renders managed
-   blocks into `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` with plan/diff, drift
-   detection, snapshots/rollback and secret references. Still missing: size-capped
-   SessionStart context injection (the packet/context file must be read by the
-   agent or `wrap`).
+4. ~~**Context injection + managed rules files** (RST-002, AD-002/003/004/006,
+   CFG-002/007).~~ **Done** — `anchor config` renders managed blocks into
+   `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` with plan/diff, drift detection,
+   snapshots/rollback and secret references, and installs a SessionStart hook
+   that injects size-capped, secret-scanned context as `additionalContext`.
 5. **Provenance + local user attestation** (ST-005/013, RST-010, EVID-002). Node
    provenance is enforced; event-level attestation and `override_recorded` are not.
 6. ~~**Wire real capture** (CAP-001, AD-001/005/009).~~ **Done except live
@@ -481,7 +483,7 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 | Req | Status | Note |
 |---|---|---|
 | RST-001 | implemented | packet carries goal, decisions, next steps, open questions, ownership, provenance |
-| RST-002 | missing | no context injection path |
+| RST-002 | implemented | SessionStart hook injects size-capped, secret-scanned context |
 | RST-003 | implemented | successor ack/verify events + mutation gate |
 | RST-004 | implemented |  |
 | RST-005 | missing | no cross-agent restore |
@@ -549,14 +551,14 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 
 | Req | Status | Note |
 |---|---|---|
-| CFG-001 | partial | config is source of truth for rules/MCP/skill; hooks still via adapter install |
+| CFG-001 | implemented | config is source of truth for rules/MCP/skill/hooks |
 | CFG-002 | implemented | managed blocks; user content preserved; idempotent |
 | CFG-003 | implemented | plan/diff/status drift detection |
 | CFG-004 | implemented | secret refs only, literal values rejected |
 | CFG-005 | implemented | project overrides user scope, tested |
 | CFG-006 | implemented | snapshots + rollback |
 | CFG-007 | implemented | rules instruct start/branch/completion |
-| CFG-008 | partial | Claude skill install only; no Codex/Gemini skill activation |
+| CFG-008 | implemented | Claude skill file; Codex/Gemini playbook via rules file |
 
 ### VT
 
@@ -670,7 +672,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 443 top-level test functions / 1012 run entries, ~20,500 test lines.
+Test suite: 451 top-level test functions / 1020 run entries, ~20,800 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
