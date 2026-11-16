@@ -4,7 +4,7 @@
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
 Current tree: 100 Go files / ~34,500 LOC, of which ~20,800 lines are tests
-(451 top-level test functions, 1020 `=== RUN` entries).
+(452 top-level test functions, 1021 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -672,7 +672,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 451 top-level test functions / 1020 run entries, ~20,800 test lines.
+Test suite: 452 top-level test functions / 1021 run entries, ~20,800 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 

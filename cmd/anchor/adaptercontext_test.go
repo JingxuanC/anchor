@@ -112,3 +112,38 @@ func TestTruncateContextKeepsRuneBoundary(t *testing.T) {
 
 var _ = os.Stat
 var _ = filepath.Join
+
+// TestCLIAdapterContextRejectsSecretInContext covers the secret-scan path: the
+// context embeds the workspace path, so a secret-shaped path must refuse
+// injection without breaking the agent's session.
+func TestCLIAdapterContextRejectsSecretInContext(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "AKIAIOSFODNN7EXAMPLE")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runCLI(t, root, "init", "--dir", stateDir, "--workspace", "ws1", "--device", "dev1"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	out, stderr, code := runCLIInput(t, root, `{}`, "adapter", "context", "--dir", stateDir, "--stdin")
+	if code != 0 {
+		t.Fatalf("context with secret-shaped path should not break the hook: %d %s", code, stderr)
+	}
+	if strings.TrimSpace(out) != `{"continue":true}` {
+		t.Fatalf("expected a continue-only payload, got %q", out)
+	}
+	if !strings.Contains(stderr, "context not injected") || !strings.Contains(stderr, "secret") {
+		t.Fatalf("missing secret diagnostic: %s", stderr)
+	}
+	// --print mode also refuses to print the secret-bearing context.
+	printed, stderr, code := runCLIInput(t, root, `{}`, "adapter", "context", "--dir", stateDir, "--stdin", "--print")
+	if code != 0 {
+		t.Fatalf("--print: %d %s", code, stderr)
+	}
+	if strings.TrimSpace(printed) != "" {
+		t.Fatalf("secret-bearing context was printed: %q", printed)
+	}
+	if !strings.Contains(stderr, "context not injected") {
+		t.Fatalf("--print missing diagnostic: %s", stderr)
+	}
+}
