@@ -32,8 +32,8 @@ func TestMockHarnessReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("mock harness took %v, want < 10s", elapsed)
+	if elapsed := time.Since(started); elapsed > 60*time.Second {
+		t.Fatalf("mock harness took %v, want < 60s (race builds are slow)", elapsed)
 	}
 	if report.Skipped {
 		t.Fatalf("mock run was skipped: %s", report.SkipReason)

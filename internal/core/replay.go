@@ -417,7 +417,10 @@ func applyNonMutation(tree *Tree, e Event, verify EvidenceVerifier) error {
 		if _, exists := tree.Evidence[p.EvidenceID]; exists {
 			return fmt.Errorf("evidence %s already exists", p.EvidenceID)
 		}
-		entry := EvidenceEntry{EvidenceID: p.EvidenceID, NodeID: p.NodeID, Kind: p.Kind, SHA256: p.SHA256, Size: p.Size, ArtifactSchema: p.ArtifactSchema}
+		// SHA-256 hex is case-insensitive: normalize so content-addressed lookups
+		// work on case-sensitive filesystems too.
+		sha := strings.ToLower(p.SHA256)
+		entry := EvidenceEntry{EvidenceID: p.EvidenceID, NodeID: p.NodeID, Kind: p.Kind, SHA256: sha, Size: p.Size, ArtifactSchema: p.ArtifactSchema}
 		if verify != nil {
 			if err := verify(entry); err != nil {
 				return fmt.Errorf("evidence artifact verification failed: %w", err)

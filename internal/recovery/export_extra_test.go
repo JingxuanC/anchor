@@ -937,19 +937,17 @@ func TestExportEvidenceWithUppercaseDigest(t *testing.T) {
 	repo := initGitRepo(t)
 	pkg := exportToPackage(t, dir, repo, true)
 	m := verifySealedPackage(t, pkg)
-	if m.EvidenceBytesIncluded != 0 {
-		t.Fatalf("evidence bytes included = %d", m.EvidenceBytesIncluded)
+	// Uppercase hex is normalized to lowercase at replay time, so the blob is
+	// found on case-sensitive filesystems and exported (and verifiable) too.
+	if m.EvidenceBytesIncluded != 1 {
+		t.Fatalf("evidence bytes included = %d (warnings=%v)", m.EvidenceBytesIncluded, m.Warnings)
 	}
-	if m.RecoveryStatus != handoff.StatusIncomplete {
-		t.Fatalf("status = %q", m.RecoveryStatus)
+	if m.RecoveryStatus != handoff.StatusComplete {
+		t.Fatalf("status = %q (warnings=%v)", m.RecoveryStatus, m.Warnings)
 	}
-	found := false
 	for _, w := range m.Warnings {
-		if w == "evidence hash changed: ev1" {
-			found = true
+		if w == "evidence hash changed: ev1" || strings.Contains(w, "unreadable") {
+			t.Fatalf("unexpected warning for a normalized digest: %v", m.Warnings)
 		}
-	}
-	if !found {
-		t.Fatalf("warnings = %v", m.Warnings)
 	}
 }

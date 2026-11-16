@@ -57,7 +57,7 @@ func TestDetectUsesPathAndParsesVersion(t *testing.T) {
 
 func TestDetectTimeoutAndFailure(t *testing.T) {
 	pathDir := t.TempDir()
-	fakeBinary(t, pathDir, "claude", "sleep 5\n")
+	fakeBinary(t, pathDir, "claude", "while :; do :; done\n")
 	t.Setenv("PATH", pathDir)
 	start := time.Now()
 	d := Detect("claude-code", 120*time.Millisecond)
