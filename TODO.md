@@ -1,3 +1,10 @@
+> **Historical snapshot (2026-11-15).** This board was written against
+> `feature/core-events` @ `35a2a46`, before the handoff gate, code transport,
+> adapters, `anchor wrap`, the MCP server and the A/B benchmark landed. The
+> authoritative, maintained status is
+> [`docs/09-implementation-status.md`](docs/09-implementation-status.md); keep
+> this file only as a planning/history artifact.
+
 # Anchor TODO / Gap Board
 
 - 生成日期：2026-11-15
