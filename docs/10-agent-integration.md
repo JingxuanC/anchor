@@ -27,6 +27,24 @@ anchor node create --dir ~/code/project --id goal --type goal --title "…"
 If the project is already initialised, `anchor status --dir <project>` resolves
 the attached state root.
 
+### One-shot managed setup (`anchor config`)
+
+Instead of installing hooks/MCP/skill piecemeal, one config file can render
+everything with managed blocks, drift detection and rollback:
+
+```sh
+anchor config init --dir project/.anchor --repo project --agents claude-code,codex --apply
+anchor config plan --dir project/.anchor --repo project --diff
+anchor config apply --dir project/.anchor --repo project --apply
+anchor config status --dir project/.anchor --repo project
+```
+
+It writes managed blocks into `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, merges
+`.mcp.json` for Claude Code, installs the Claude skill and renders Codex/Gemini
+MCP snippets to `.anchor/config/rendered/`; user content, other MCP servers and
+secret *references* are preserved. Hook installation for Claude Code is still
+`anchor adapter install` (native hook entries are not part of the config file).
+
 ---
 
 ## 2. Claude Code

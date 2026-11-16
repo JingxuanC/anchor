@@ -46,6 +46,7 @@ verifying that packet.
 | Local read-only web UI (live tree, loopback only) | `anchor ui` |
 | MCP registration snippets per agent | `anchor mcp config --adapter claude-code|codex|gemini-cli` |
 | Agent skill teaching the resume/record workflow | `anchor skill print`, `anchor skill install` |
+| Unified config: managed rules blocks, MCP registration, skills, drift/rollback | `anchor config init/plan/apply/status/rollback` |
 | Verifiable evidence blobs, secret/path guards, quarantine of corrupt event files | `internal/core`, `internal/pathguard` |
 
 ## Quick start
@@ -148,6 +149,43 @@ uninstallable); `anchor skill print` prints the embedded copy:
 ./anchor skill print
 ./anchor skill install --dir proj/.anchor --repo proj --apply
 ```
+
+## Configuration management
+
+One source of truth for agent rules, MCP registration and skills, rendered into
+per-agent files with **managed blocks**:
+
+```sh
+# project scope config: .anchor/config/config.json
+./anchor config init --dir proj/.anchor --repo proj --agents claude-code,codex --apply
+./anchor config show --json
+
+./anchor config plan  --dir proj/.anchor --repo proj [--diff]   # plan only (default)
+./anchor config apply --dir proj/.anchor --repo proj --apply    # write + snapshot
+./anchor config status --dir proj/.anchor --repo proj           # drift/missing/ok
+./anchor config rollback --dir proj/.anchor --repo proj [--to TS] --apply
+```
+
+What `apply` renders:
+
+| Output | Details |
+|---|---|
+| `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` | managed block between `<!-- anchor:begin … -->` / `<!-- anchor:end -->`; user content outside the block is preserved and never treated as drift |
+| `.mcp.json` | managed `mcpServers.anchor` entry, other servers preserved |
+| `.claude/skills/anchor/SKILL.md` | embedded agent playbook |
+| `.anchor/config/rendered/` | Codex `config.toml` / Gemini `settings.json` MCP snippets to merge (shared agent config is never written automatically) |
+
+The rendered rules instruct the agent to check Anchor at session start, record
+decisions when direction changes, and prepare a handoff at completion. Every
+apply snapshots the files it touches (rollback-safe) and backs up existing files.
+
+**Secrets are references only.** `secret_refs` accepts `env:NAME`,
+`keychain:NAME`, `op://…` or `file:PATH`; literal values are rejected and
+references are never rendered into agent files.
+
+**Scopes.** User-scope config (`~/.config/anchor/config.json`) is merged with
+project-scope config (`.anchor/config/config.json`); project values override
+user values.
 
 ## Local web UI
 
@@ -269,7 +307,7 @@ inside a live logged-in session is on the roadmap.
 This is an early, honest implementation — not a finished product. The
 authoritative requirement-by-requirement audit is
 [`docs/09-implementation-status.md`](docs/09-implementation-status.md)
-(140 requirements: 35 implemented, 52 partial, 52 missing, 1 deferred).
+(140 requirements: 41 implemented, 54 partial, 44 missing, 1 deferred).
 
 Known gaps, roughly by priority:
 

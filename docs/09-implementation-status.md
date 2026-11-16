@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 95 Go files / ~32,700 LOC, of which ~20,200 lines are tests
-(437 top-level test functions, 1006 `=== RUN` entries).
+Current tree: 97 Go files / ~33,800 LOC, of which ~20,500 lines are tests
+(443 top-level test functions, 1012 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -42,7 +42,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | AD | 4 | 7 | 2 | 0 | 13 |
 | CM | 0 | 1 | 12 | 0 | 13 |
 | SY | 2 | 6 | 4 | 0 | 12 |
-| CFG | 0 | 0 | 8 | 0 | 8 |
+| CFG | 6 | 2 | 0 | 0 | 8 |
 | VT | 0 | 3 | 7 | 0 | 10 |
 | UI | 1 | 5 | 1 | 0 | 7 |
 | CONC | 2 | 3 | 0 | 0 | 5 |
@@ -51,7 +51,7 @@ Where `docs/` claims a capability but no code was found, the row is marked
 | SEC | 0 | 4 | 3 | 0 | 7 |
 | NFR | 2 | 2 | 3 | 0 | 7 |
 | OPS | 1 | 3 | 4 | 0 | 8 |
-| **Total** | **35** | **52** | **52** | **1** | **140** |
+| **Total** | **41** | **54** | **44** | **1** | **140** |
 
 Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 partially done
 (local-only). Phases 4–8 are unstarted.**
@@ -155,7 +155,11 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     decisions/evidence → prepare/verify handoff) and installs it to
     `<project>/.claude/skills/anchor/SKILL.md` with plan/backup/idempotent/
     uninstall semantics. `anchor mcp config` prints per-agent MCP registration
-    snippets.
+    snippets. `anchor config init/plan/apply/status/rollback` provides one
+    source of truth for per-agent rules/MCP/skill configuration: managed blocks
+    with user content preserved, plan/diff, drift detection, secret *references*
+    only (literals rejected), project-over-user precedence and pre-apply
+    snapshots/rollback.
 16. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
@@ -275,7 +279,14 @@ matches only capability strings.
 
 | Req | Status | Gap |
 |---|---|---|
-| CFG-001 – CFG-008 | missing | No config package/command; no managed blocks, plan/diff, secret refs, scopes, rollback, rules rendering, or skills install. `adapter render` writes a fragment + manifest only (`render.go:88`). |
+| CFG-001 | partial | `cmd/anchor/config.go`; `TestCLIConfigApplyRendersManagedBlocks` | One config file drives rules blocks, MCP registration and the Claude skill; native hook installation still goes through `adapter install`. |
+| CFG-002 | implemented | `config.go` managed markers + merge; `TestCLIConfigApplyRendersManagedBlocks`, `TestCLIConfigStatusDetectsDriftAndFixesIt` | Per-agent rules files get a managed block; user content outside it is preserved; apply is idempotent. |
+| CFG-003 | implemented | `config plan/apply/status`; `TestCLIConfigStatusDetectsDriftAndFixesIt` | Plan by default, `--diff` shows managed-block differences, `status` detects drift/missing/never-applied. |
+| CFG-004 | implemented | `validateSecretRefs`; `TestCLIConfigSecretRefsOnly` | Config accepts only `env:`/`keychain:`/`op://`/`file:` references; literal values are rejected and references are never rendered. |
+| CFG-005 | implemented | project + user config merge; `TestCLIConfigScopePrecedence` | Project-scope config overrides user-scope config; precedence documented in README/docs/10. |
+| CFG-006 | implemented | snapshots under `config/snapshots/`; `TestCLIConfigRollbackRestoresSnapshot` | Every apply snapshots the files it will touch; `config rollback [--to]` restores a snapshot (and its render state). |
+| CFG-007 | implemented | `renderRulesBlock`; `TestCLIConfigApplyRendersManagedBlocks` | Rendered rules instruct agents to use Anchor at start, during branch/decision changes and at completion; includes MCP tool list. |
+| CFG-008 | partial | embedded skill + Claude install; `TestCLISkillInstallPlanApplyUninstall` | Idempotent managed skill installation for Claude Code; Codex/Gemini skills are not installed (adapter-specific activation not assumed). |
 
 ### 3.9 VT — Vault / secrets
 
@@ -377,9 +388,11 @@ Ranked by "what blocks a usable local segment":
    ST-001/002/005).~~ **Done** — goal constraints, decision trade-offs, provenance,
    next steps, open questions and ownership are in the model and the packet.
 4. **Context injection + managed rules files** (RST-002, AD-002/003/004/006,
-   CFG-002/007). Managed-block renderer for `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` with
-   dry-run/diff, backup, idempotent re-apply, and size-capped SessionStart injection.
-   Installation of hooks and MCP is done; rules-file management is not.
+   CFG-002/007). **Rules-file side done** — `anchor config` renders managed
+   blocks into `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` with plan/diff, drift
+   detection, snapshots/rollback and secret references. Still missing: size-capped
+   SessionStart context injection (the packet/context file must be read by the
+   agent or `wrap`).
 5. **Provenance + local user attestation** (ST-005/013, RST-010, EVID-002). Node
    provenance is enforced; event-level attestation and `override_recorded` are not.
 6. ~~**Wire real capture** (CAP-001, AD-001/005/009).~~ **Done except live
@@ -536,14 +549,14 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 
 | Req | Status | Note |
 |---|---|---|
-| CFG-001 | missing |  |
-| CFG-002 | missing |  |
-| CFG-003 | missing |  |
-| CFG-004 | missing |  |
-| CFG-005 | missing |  |
-| CFG-006 | missing |  |
-| CFG-007 | missing |  |
-| CFG-008 | missing |  |
+| CFG-001 | partial | config is source of truth for rules/MCP/skill; hooks still via adapter install |
+| CFG-002 | implemented | managed blocks; user content preserved; idempotent |
+| CFG-003 | implemented | plan/diff/status drift detection |
+| CFG-004 | implemented | secret refs only, literal values rejected |
+| CFG-005 | implemented | project overrides user scope, tested |
+| CFG-006 | implemented | snapshots + rollback |
+| CFG-007 | implemented | rules instruct start/branch/completion |
+| CFG-008 | partial | Claude skill install only; no Codex/Gemini skill activation |
 
 ### VT
 
@@ -657,7 +670,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 437 top-level test functions / 1006 run entries, ~20,200 test lines.
+Test suite: 443 top-level test functions / 1012 run entries, ~20,500 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 
