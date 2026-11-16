@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 80 Go files / ~30,700 LOC, of which ~19,400 lines are tests
-(417 top-level test functions, 986 `=== RUN` entries).
+Current tree: 90 Go files / ~32,100 LOC, of which ~19,900 lines are tests
+(431 top-level test functions, 1000 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -145,7 +145,15 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     3/3, at +33% total tokens and +$0.087 mean cost; the baseline's failed
     phase-2 attempts still consumed ~184k tokens. Results and caveats are in
     `bench/results/2026-11-16-deepseek-v4-flash/` and `bench/README.md` §7.
-15. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
+15. **Tree view + agent skill** — `anchor tree` renders the Session Tree as a
+    terminal tree, stable JSON, Markdown (`TREE.md`) or a self-contained HTML
+    file (escaped titles, no external resources, tombstones hidden by default);
+    `anchor state` aliases `status`. `anchor skill print|install` embeds an
+    opinionated agent playbook (read context → check tree → record
+    decisions/evidence → prepare/verify handoff) and installs it to
+    `<project>/.claude/skills/anchor/SKILL.md` with plan/backup/idempotent/
+    uninstall semantics.
+16. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
 
@@ -158,7 +166,7 @@ authoritative.
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
 | WS-001 | implemented | `internal/core/store.go:81` (in-place) + `StateDir`/`InitAttached` (attach); `TestCLIInitAttachInExistingProject`, `TestInitAttachedLeavesProjectFilesUntouched`, `TestStateDirResolvesAttachedWorkspace` | `init --attach` adopts an existing project with state in `<project>/.anchor`, ignores it in the project `.gitignore`, and fails closed on re-attach or half-initialized state. Remaining niceties: no interactive prompt, no multi-workspace-per-project. |
-| WS-002 | partial | `internal/core/transaction.go:231`, `replay.go:42`; `TestDeterministicReplayIndependentOfSliceOrder` | No `TREE.md`/`state.json` projections; event batches are random-named one-line JSON, so diffs are coarse. No Git-merge test. |
+| WS-002 | partial | `cmd/anchor/tree.go`; `TestCLITreeMarkdownAndHTML`, `TestDeterministicReplayIndependentOfSliceOrder` | `anchor tree --md` writes a `TREE.md` projection and `status --json` a state projection; still no `branch` command and no Git-merge test, and event batches stay coarse one-line JSON. |
 | WS-003 | partial | `internal/core/event_format_audit.go:83`, `store.go:73`; `TestCLIEventFormatDowngradeRejectedAndAudited` | Read-only audit only: no migrate, no backup, no dry-run plan, no rollback. |
 | WS-004 | implemented | `internal/core/transaction.go:143,231`, `lock_unix.go:16`; `TestTransactionBatchIsAllOrNothing`, `TestWorkspaceLockReleasedOnProcessCrash` | Directory fsync is best-effort (`_ = d.Sync()`). |
 | WS-005 | partial | `internal/adapter/capture.go:102`; `TestDirtyRepoIsIncompleteAndSecretNotInPacket` | No sync boundary to test; no workspace-wide assertion; `evidence --file` accepts absolute paths outside the workspace. |
@@ -279,7 +287,7 @@ matches only capability strings.
 
 | Req | Status | Evidence | Gap |
 |---|---|---|---|
-| UI-001 | partial | `cmd/anchor/main.go:31,60`; `TestCLIWorkflowRecoveryAndRestoreBoundary` | ~21 verbs; missing attach, tree, branch, claim/release/heartbeat, top-level capture/restore, sync, config, vault, memory, web, install, uninstall, migrate, version, wrap, ack. |
+| UI-001 | partial | `cmd/anchor/main.go`; `TestCLITreeTextAndJSON`, `TestCLISkillInstallPlanApplyUninstall` | `tree`, `state` and `skill` verbs exist (plus attach/wrap/wrap-related); still missing branch, claim/release/heartbeat, top-level capture/restore, sync, config, vault, memory, web, install, uninstall, migrate, version, ack. No local web UI yet (static HTML tree only). |
 | UI-002 | partial | `--json` on 5 command families | No JSON for init/node/evidence add/handoff prepare; exit codes only 0/1/2. |
 | UI-003 | partial | plain `fmt.Printf` (`main.go:483`) | No TTY detection, color, or structured human layout. |
 | UI-004/005/006/007 | missing | no `http`/web code | No web UI, loopback auth, CSRF/Origin checks, or read-only mode. |
@@ -375,8 +383,10 @@ Ranked by "what blocks a usable local segment":
 7. ~~**Fix adoption: `init --attach`** (WS-001).~~ **Done** — state lives in
    `<project>/.anchor`, user files are untouched, and every command resolves the
    attached state root from the project directory.
-8. **Human-readable projections + `tree` view** (WS-002, UI-001). Deterministic
-   `TREE.md` + `state.json`, `anchor tree [--json]`, and a `branch` command.
+8. **Human-readable projections + `tree` view** (WS-002, UI-001). **Partially
+   done** — `anchor tree` renders terminal/JSON/Markdown/HTML views and
+   `anchor state` aliases `status`; still missing a `branch` command, a
+   `state.json` file projection and a Git-merge test.
 9. ~~**Expose Anchor tools over MCP** (AD-010) before the memory bridge.~~ **Done**
    — stdio server with four read-only tools, registered by `adapter install
    --with-mcp`. Deliberately no mutation tools yet.
@@ -406,7 +416,7 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 | Req | Status | Note |
 |---|---|---|
 | WS-001 | implemented | `init --attach` adopts an existing project; state in `<project>/.anchor` |
-| WS-002 | partial |  |
+| WS-002 | partial | TREE.md via `tree --md` + state JSON; no branch/merge test |
 | WS-003 | partial |  |
 | WS-004 | implemented |  |
 | WS-005 | partial |  |
@@ -547,7 +557,7 @@ Every requirement in `acceptance/matrix.yaml` appears exactly once.
 
 | Req | Status | Note |
 |---|---|---|
-| UI-001 | partial |  |
+| UI-001 | partial | tree/state/skill verbs; no branch/ownership verbs/web UI |
 | UI-002 | partial |  |
 | UI-003 | partial |  |
 | UI-004 | missing |  |
@@ -640,7 +650,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 417 top-level test functions / 986 run entries, ~19,400 test lines.
+Test suite: 431 top-level test functions / 1000 run entries, ~19,900 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 

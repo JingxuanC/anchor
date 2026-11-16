@@ -69,7 +69,7 @@ func TestCLIHelpListsEverySurface(t *testing.T) {
 		"anchor handoff export", "anchor handoff import", "anchor handoff status",
 		"anchor adapter capabilities", "anchor adapter render", "anchor adapter capture", "anchor adapter ingest",
 		"anchor adapter detect", "anchor adapter install", "--capture-dir",
-		"anchor wrap", "anchor mcp serve",
+		"anchor wrap", "anchor mcp serve", "anchor tree", "anchor state", "anchor skill print", "anchor skill install",
 		"anchor status", "anchor doctor",
 	}
 	for _, w := range want {

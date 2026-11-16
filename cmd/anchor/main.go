@@ -44,7 +44,7 @@ func main() {
 		cmdEvent(os.Args[2:])
 	case "node":
 		cmdNode(os.Args[2:])
-	case "status", "replay":
+	case "status", "state", "replay":
 		cmdStatus(os.Args[2:])
 	case "doctor":
 		cmdDoctor(os.Args[2:])
@@ -62,6 +62,10 @@ func main() {
 		cmdWrap(os.Args[2:])
 	case "mcp":
 		cmdMcp(os.Args[2:])
+	case "tree":
+		cmdTree(os.Args[2:])
+	case "skill":
+		cmdSkill(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -105,6 +109,10 @@ func usage() {
       [--anchor-path PATH] [--json]
   anchor wrap --dir DIR --node NODE [--repo PROJECT] [--prepare-handoff] [--json] -- <agent command> [args...]
   anchor mcp serve [--dir DIR]                    (read-only MCP tools over stdio)
+  anchor tree [--dir DIR] [--json | --md FILE | --html FILE] [--include-deleted]
+  anchor state [--dir DIR] [--json]              (alias of status)
+  anchor skill print
+  anchor skill install --dir DIR --repo PROJECT [--apply | --uninstall] [--json]
   anchor adapter ingest --adapter ID --dir WS --node NODE (--event FILE | --stdin) [--source fixture|hook_unverified] [--json]
   anchor status --dir DIR --repo REPO [--json]
   anchor doctor --dir DIR --repo REPO [--json]`)

@@ -42,6 +42,8 @@ verifying that packet.
 | Code transport (commit + staged/unstaged diffs + untracked bytes) with backup ref, stash and rollback | `anchor handoff export --include-code --include-bytes`, `anchor handoff apply-code --apply` |
 | Agent adapters: real CLI detection, Claude Code hook install, hookless `wrap` fallback | `anchor adapter detect`, `anchor adapter install`, `anchor wrap` |
 | Read-only MCP server for agents that can call tools | `anchor mcp serve` (four tools, stdio JSON-RPC 2.0) |
+| Human tree view: terminal, JSON, Markdown, self-contained HTML | `anchor tree`, `anchor tree --json/--md/--html` |
+| Agent skill teaching the resume/record workflow | `anchor skill print`, `anchor skill install` |
 | Verifiable evidence blobs, secret/path guards, quarantine of corrupt event files | `internal/core`, `internal/pathguard` |
 
 ## Quick start
@@ -111,6 +113,34 @@ propagates the child's exit code. It never runs the child through a shell, and
 Packages are hash-verified, text-scanned for secrets, and never executed.
 Imported workspaces are rebuilt by replaying the event log, not by copying a
 working tree.
+
+## Tree view and agent skill
+
+See the goal tree without reading raw events:
+
+```sh
+./anchor tree --dir proj/.anchor                    # terminal tree
+./anchor tree --dir proj/.anchor --json             # machine-readable tree
+./anchor tree --dir proj/.anchor --md TREE.md       # human-readable projection
+./anchor tree --dir proj/.anchor --html TREE.html   # shareable, self-contained
+./anchor state --dir proj/.anchor --json            # alias of `status`
+```
+
+The terminal view shows goals with their north star/must/must-not, decisions with
+rationale and consequences, tasks, questions and evidence counts; the HTML view
+is a single static file with no external resources (safe to attach to a PR or
+open from disk). Tombstoned nodes are hidden unless `--include-deleted` is given.
+
+The agent skill is a short, opinionated playbook for agents: read the context,
+check the tree, record decisions/evidence, prepare the handoff, and verify it on
+resume. `anchor skill install` writes it to
+`<project>/.claude/skills/anchor/SKILL.md` (plan by default, backup, idempotent,
+uninstallable); `anchor skill print` prints the embedded copy:
+
+```sh
+./anchor skill print
+./anchor skill install --dir proj/.anchor --repo proj --apply
+```
 
 ## MCP tools
 
