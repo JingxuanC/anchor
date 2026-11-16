@@ -8,13 +8,14 @@ The harness runs a small, offline project task in two arms (with and without
 Anchor) and two phases (implement, then resume from a fresh process), grades
 both phases with real acceptance tests, and writes `report.json` + `report.md`.
 
-> **Status of the numbers in this checkout.** The harness is implemented,
-> deterministic and validated end-to-end in mock mode (`go test ./bench/...`).
-> **No real-agent A/B numbers were produced in this environment**: Claude Code
-> 2.1.252 is installed but not logged in, and `codex exec` with the local
-> deepseek provider emitted no tool actions. See the
-> [honest environment section](#honest-environment-status) before citing any
-> result. You must run the real A/B locally after logging in.
+> **Status of the numbers in this checkout.** The harness is implemented and
+> validated end-to-end in mock mode (`go test ./bench/...`). **Real-agent A/B
+> numbers were produced on 2026-11-16** with Claude Code 2.1.252 backed by the
+> DeepSeek API (`deepseek-v4-flash`, 3 trials per arm): baseline phase-2 pass
+> 0/3 vs Anchor 3/3. Raw reports are in
+> `bench/results/2026-11-16-deepseek-v4-flash/` and the run is described in
+> [§7](#7-real-agent-results-2026-11-16). These are small-N single-task results,
+> not a leaderboard; read the caveats before citing them.
 
 ---
 
@@ -237,83 +238,103 @@ Mock mode is a harness self-test, **not** evidence about real agents.
 
 Measured in this development environment (macOS, Go 1.26.4) on 2026-11-16:
 
-* **Claude Code is installed but not logged in.** `claude --version` reports
-  `2.1.252 (Claude Code)`, but `claude -p "reply with OK"` prints
-  `Not logged in · Please run /login`. A real Claude Code A/B run therefore
-  cannot be produced here.
-* **codex-cli is installed but did not act.** `codex --version` reports
-  `codex-cli 0.141.0`; `codex exec` used with the local deepseek provider emitted
-  no tool actions during the team's checks, so it could not complete a
-  filesystem task either.
-* Consequently **no real A/B results exist in this checkout**. All numbers
-  produced here come from the deterministic mock agent, which validates the
-  harness (fixture, two-phase resume protocol, Anchor attach/wrap/handoff,
-  acceptance, report shape) but says nothing about Anchor's effect on a real LLM
-  agent.
-* A real-mode smoke attempt with `--agent-cmd "claude -p"` was executed: every
-  agent invocation printed `Not logged in · Please run /login`, exited 1, and
-  both arms failed phase 1, exactly as this section predicts. The harness records
-  that output in `logs/trial-NN-*/phaseN-agent.log` and in the per-trial exit
-  codes, so the failure is auditable rather than silent.
-* To obtain real results: log in to an agent CLI locally (or configure one with
-  working tool use), run the commands in §4 with N ≥ 5 per arm, and inspect
-  `logs/` for failed trials. The harness marks environmental failures (e.g. an
-  agent that immediately prints "not logged in" and exits 0) through failed
-  phase passes, agent exit codes and the per-trial notes.
+* **Claude Code works when a valid DeepSeek key is configured.** The earlier
+  "Not logged in" failure was a stale `ANTHROPIC_AUTH_TOKEN`; the valid DeepSeek
+  key in the same shell profile works against
+  `https://api.deepseek.com/anthropic`. The environment used for the recorded
+  run is documented in [§8](#8-running-with-claude-code-backed-by-deepseek-anthropic-compatible-api);
+  the key itself is not in this repository.
+* **codex-cli still does not act.** `codex --version` reports `codex-cli
+  0.141.0`, but `codex exec` with the local deepseek provider emitted no tool
+  actions during the team's checks, so it could not complete a filesystem task.
+* **Mock mode is still a harness self-test.** Mock pass rates validate the
+  fixture/protocol/report mechanics, not LLM behavior. Real-agent numbers are in
+  §7.
+* Environmental failures are visible: agent exit codes, per-phase logs and the
+  per-trial notes make a misconfigured agent auditable even when it exits 0
+  after printing an auth error. The harness also kills the whole agent process
+  group on timeout (`bench/ab/timeout_test.go`), so a hung agent cannot keep the
+  run alive.
 
-Environment detection in the report is deliberately conservative: `--mock-agent`
-runs say so explicitly, and real runs record the command but cannot verify
-authentication.
+Real-mode runs record the agent command and `--agent-model`, but cannot verify
+authentication; check `logs/trial-NN-*/phaseN-agent.log` before trusting a run.
 
----
 
-## 7. Statistical caveats
+## 7. Real-agent results (2026-11-16)
 
-* Proportions over small N have very wide uncertainty. Use **≥5**, ideally
-  **≥10** trials per arm, and report the raw per-trial rows too.
-* Arm order is counterbalanced across trials (odd trials run baseline first,
-  even trials run anchor first) and the Go build cache is warmed once before the
-  trials, to limit order/cache bias. Run the harness several times anyway to
-  control for machine drift, model updates and rate limits.
-* The mock agent is deterministic; therefore mock pass rates are 0/1 by
-  construction and are not a variance estimate.
-* The anchor arm receives **seeded** decisions (a stand-in for decisions the
-  phase-1 agent records). A real phase-1 anchor agent may record additional
-  decisions/evidence; this fixture intentionally fixes the convention set so the
-  hidden test is deterministic.
-* The hidden phase-2 test encodes one intended convention set. A baseline agent
-  can still pass by guessing the conventions (that is a real failure mode of
-  context loss and is measured, not hidden).
-* `decision_marker` / the resume-score bonus is a heuristic over agent output and
-  the git diff; it under-counts an agent that silently uses the decisions without
-  referencing them.
-* Acceptance tests are restored from the fixture before grading, so agents
-  cannot weaken them. An agent that breaks the public API is still caught by the
-  canonical phase-1 tests.
-* `anchor wrap` is optional: the harness probes `anchor help`, records whether it
-  was used, and falls back to a direct run (with the same env vars) if the binary
-  predates it. Compare the `wrap_*` fields when interpreting results.
+Run: `go run ./bench/ab --trials 3 --agent-cmd /tmp/claude-flash-json.sh
+--prompt-stdin --agent-model deepseek-v4-flash --timeout 600s --out ...`
+(Claude Code 2.1.252, DeepSeek Anthropic-compatible endpoint, `deepseek-v4-flash`,
+3 trials per arm, 600 s per-phase timeout). Reports:
+`bench/results/2026-11-16-deepseek-v4-flash/report.{json,md}`; token/cost fields
+come from `claude -p --output-format json` (`usage_parsed_trials = 3` in both
+arms).
 
----
+| arm | trials | p1 pass | p2 pass | mean p1 ms | mean p2 ms | mean tokens | mean cost USD | mean resume |
+|---|---|---|---|---|---|---|---|---|
+| baseline | 3 | 1.00 | 0.00 | 197446 | 34826 | 1010812 | 1.6443 | 1.00 |
+| anchor | 3 | 1.00 | 1.00 | 147021 | 108686 | 1347739 | 1.7313 | 2.00 |
+| delta | | +0.00 | +1.00 | -50425 | +73860 | +336927 | +0.0870 | +1.00 |
 
-## 8. Layout
+Reading the numbers:
 
+- **Task completion**: both arms implement phase 1; only Anchor completes the
+  fresh-process resume (3/3 vs 0/3). Baseline still spends ~184k tokens per
+  failed phase-2 attempt, so its cheap-looking phase 2 is *wasted* work.
+- **Tokens**: Anchor uses ~33% more total tokens, almost all in phase 2
+  (~604k cache tokens + 36k input on average) because it actually reads the
+  handoff packet and implements the recorded conventions. Phase 1 was slightly
+  cheaper for Anchor in this sample (cost 0.96 vs 1.27 USD; output 17.9k vs
+  26.9k tokens) — probably because the baseline agent flailed longer; n=3, so do
+  not over-read this.
+- **Cost**: +$0.087 per trial overall (+5%). Cost per *successful resume*:
+  Anchor produced 3 successes for $5.19 total; baseline produced 0 for $4.93, so
+  baseline has no finite cost per successful resume.
+- **Time**: Anchor phase 1 was faster in this sample (likely noise); phase 2 is
+  slower because it completes the work instead of failing fast.
+- An earlier time-only run (same model/design, before token accounting, reports
+  in the same directory as `report-time-only.json`) saw the same direction:
+  baseline p2 0/3, Anchor p2 3/3.
+
+Caveats: N=3 per arm on one small custom task; no confidence intervals; one
+model (`deepseek-v4-flash`); cache-token quantities are dominated by the agent's
+context caching, so compare `total_cost_usd` and completion, not raw token
+totals, across hosts. This is an A/B for Anchor's continuity claim, not a
+leaderboard-grade evaluation.
+
+
+## 8. Running with Claude Code backed by DeepSeek (Anthropic-compatible API)
+
+Claude Code can be pointed at DeepSeek's Anthropic-compatible endpoint. The
+benchmark needs:
+
+1. a **valid** DeepSeek key in `ANTHROPIC_AUTH_TOKEN` (an expired token returns
+   `401 Authentication Fails`; check with `/user/balance` first);
+2. `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` and
+   `ANTHROPIC_MODEL=deepseek-v4-flash` (the fast model; `deepseek-v4.1-flash` is
+   not accepted by the API, `deepseek-v4-pro` is slower and often exceeds a
+   600 s phase timeout);
+3. global MCP servers disabled for speed, permissions bypassed headlessly, and
+   `--output-format json` so token/cost usage is recorded.
+
+Because the prompt is passed on stdin (`--prompt-stdin`), wrap the CLI in a small
+script so flags are fixed and the prompt flows through:
+
+```sh
+#!/bin/sh
+set -a; . "$HOME/.config/anchor/deepseek-env"; set +a   # exports base url, token, model
+exec claude -p --output-format json --dangerously-skip-permissions \
+  --strict-mcp-config --mcp-config /tmp/empty-mcp.json
 ```
-bench/
-├── README.md
-├── ab/
-│   ├── main.go              harness: flags, arms, phases, metrics, reports
-│   └── ab_test.go           in-process mock run; asserts report contract
-└── fixtures/
-    ├── ratelimit/           the project the agent works on
-    │   ├── go.mod           separate module: ignored by the repo test run
-    │   ├── ratelimit.go     compiling stub (phase-1 work)
-    │   ├── ratelimit_test.go visible phase-1 acceptance tests (failing)
-    │   ├── TASK.md          phase-1 prompt
-    │   └── ACCEPT.md        grading description
-    └── testdata/            Go ignores testdata/; never copied as agent input
-        ├── acceptance/
-        │   ├── phase1/ratelimit_test.go          canonical phase-1 tests
-        │   └── phase2/wait_time_accept_test.go   hidden phase-2 tests
-        └── mock/            deterministic mock-agent source variants
+
+```sh
+printf '{"mcpServers":{}}' > /tmp/empty-mcp.json
+go run ./bench/ab --trials 3 --arm both --agent-cmd /path/to/claude-wrapper.sh \
+  --prompt-stdin --agent-model deepseek-v4-flash --timeout 600s \
+  --out bench/results/deepseek-flash
 ```
+
+The runner kills the whole agent process group on timeout, so a hung agent
+cannot keep the harness alive (regression test: `bench/ab/timeout_test.go`).
+Report real numbers together with the model name, trial count and timeout; the
+report records all three plus per-phase token/cost fields.

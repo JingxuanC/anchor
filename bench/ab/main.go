@@ -67,6 +67,7 @@ type Config struct {
 	OutDir      string
 	JSON        bool
 	PromptStdin bool
+	AgentModel  string
 	AnchorBin   string
 	KeepWork    bool
 }
@@ -92,6 +93,7 @@ type ReportConfig struct {
 	Arm           string `json:"arm"`
 	MockAgent     bool   `json:"mock_agent"`
 	AgentCmd      string `json:"agent_cmd,omitempty"`
+	AgentModel    string `json:"agent_model,omitempty"`
 	PromptMode    string `json:"prompt_mode"`
 	PromptStdin   bool   `json:"prompt_stdin"`
 	TimeoutMS     int64  `json:"timeout_ms"`
@@ -124,6 +126,9 @@ type TrialResult struct {
 	Phase2AcceptMS int64 `json:"phase2_accept_ms"`
 	Phase2TotalMS  int64 `json:"phase2_total_ms"`
 	AnchorSetupMS  int64 `json:"anchor_setup_ms"`
+
+	Phase1Tokens TokenUsage `json:"phase1_tokens"`
+	Phase2Tokens TokenUsage `json:"phase2_tokens"`
 
 	Phase1AgentExit  int    `json:"phase1_agent_exit"`
 	Phase1AcceptExit int    `json:"phase1_accept_exit"`
@@ -171,6 +176,17 @@ type ArmAggregate struct {
 	MeanAnchorCaptures  float64 `json:"mean_anchor_captures"`
 	HandoffPreparedRate float64 `json:"handoff_prepared_rate"`
 	HandoffCompleteRate float64 `json:"handoff_complete_rate"`
+
+	MeanPhase1InputTokens  float64 `json:"mean_phase1_input_tokens"`
+	MeanPhase1OutputTokens float64 `json:"mean_phase1_output_tokens"`
+	MeanPhase1CacheTokens  float64 `json:"mean_phase1_cache_tokens"`
+	MeanPhase1CostUSD      float64 `json:"mean_phase1_cost_usd"`
+	MeanPhase2InputTokens  float64 `json:"mean_phase2_input_tokens"`
+	MeanPhase2OutputTokens float64 `json:"mean_phase2_output_tokens"`
+	MeanPhase2CacheTokens  float64 `json:"mean_phase2_cache_tokens"`
+	MeanPhase2CostUSD      float64 `json:"mean_phase2_cost_usd"`
+	MeanTotalTokens        float64 `json:"mean_total_tokens"`
+	UsageParsedTrials      int     `json:"usage_parsed_trials"`
 }
 
 // Delta is anchor minus baseline (ratios are anchor/baseline).
@@ -180,6 +196,9 @@ type Delta struct {
 	MeanResumeScore   float64 `json:"mean_resume_score_delta"`
 	MeanPhase1TotalMS float64 `json:"mean_phase1_total_ms_delta"`
 	MeanPhase2TotalMS float64 `json:"mean_phase2_total_ms_delta"`
+	MeanTotalTokens   float64 `json:"mean_total_tokens_delta"`
+	TotalTokensRatio  float64 `json:"total_tokens_ratio"`
+	MeanCostUSD       float64 `json:"mean_cost_usd_delta"`
 	Phase1TotalRatio  float64 `json:"phase1_total_ratio"`
 	Phase2TotalRatio  float64 `json:"phase2_total_ratio"`
 	AnchorSetupMeanMS float64 `json:"anchor_setup_mean_ms"`
@@ -224,8 +243,9 @@ func parseFlags(args []string) (Config, error) {
 	trials := fs.Int("trials", 3, "number of trials per arm")
 	arm := fs.String("arm", armBoth, "arm to run: both|baseline|anchor")
 	agentCmd := fs.String("agent-cmd", "", "real agent CLI, e.g. \"claude -p\" or \"codex exec --skip-git-repo-check\"")
+	agentModel := fs.String("agent-model", "", "recorded model identifier for the run (e.g. deepseek-v4-flash)")
 	mockAgent := fs.Bool("mock-agent", false, "use the deterministic scripted mock agent (offline, for CI)")
-	timeout := fs.Duration("timeout", 180*time.Second, "timeout per phase (agent and acceptance)")
+	timeout := fs.Duration("timeout", 600*time.Second, "timeout per phase (agent and acceptance)")
 	fixtures := fs.String("fixtures", "", "fixtures directory (default bench/fixtures)")
 	out := fs.String("out", "", "output directory (default bench/results/<UTC timestamp>)")
 	asJSON := fs.Bool("json", false, "print the report as JSON on stdout")
@@ -239,6 +259,7 @@ func parseFlags(args []string) (Config, error) {
 		Trials:      *trials,
 		Arm:         *arm,
 		AgentCmd:    *agentCmd,
+		AgentModel:  *agentModel,
 		MockAgent:   *mockAgent,
 		Timeout:     *timeout,
 		Fixtures:    *fixtures,
@@ -306,6 +327,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 			Arm:         cfg.Arm,
 			MockAgent:   cfg.MockAgent,
 			AgentCmd:    cfg.AgentCmd,
+			AgentModel:  cfg.AgentModel,
 			PromptMode:  promptMode(cfg),
 			PromptStdin: cfg.PromptStdin,
 			TimeoutMS:   cfg.Timeout.Milliseconds(),
@@ -514,6 +536,7 @@ func runTrial(ctx context.Context, cfg Config, trial int, arm string, wrapSuppor
 	p1 := runPhaseAgent(ctx, cfg, proj, logDir, 1, phase1Prompt, phase1Session)
 	res.Phase1AgentMS = p1.Duration.Milliseconds()
 	res.Phase1AgentExit = p1.ExitCode
+	res.Phase1Tokens = p1.Usage
 	res.AgentTimedOut = res.AgentTimedOut || p1.TimedOut
 	res.WrapUsedP1 = p1.WrapUsed
 	if p1.WrapFallback != "" {
@@ -600,6 +623,7 @@ func runTrial(ctx context.Context, cfg Config, trial int, arm string, wrapSuppor
 	p2 := runPhaseAgent(ctx, cfg, proj, logDir, 2, phase2Prompt, wrapped)
 	res.Phase2AgentMS = p2.Duration.Milliseconds()
 	res.Phase2AgentExit = p2.ExitCode
+	res.Phase2Tokens = p2.Usage
 	res.AgentTimedOut = res.AgentTimedOut || p2.TimedOut
 	res.WrapUsedP2 = p2.WrapUsed
 	if p2.WrapFallback != "" && res.WrapFallback == "" {
@@ -891,6 +915,64 @@ type agentRunResult struct {
 	Output       string
 	WrapUsed     bool
 	WrapFallback string
+	Usage        TokenUsage
+}
+
+// TokenUsage is the agent-reported token/cost usage for one phase. Claude Code
+// reports it in the final `--output-format json` result object; other agents may
+// report nothing, in which case Parsed stays false and the report says so.
+type TokenUsage struct {
+	Parsed      bool    `json:"parsed"`
+	Input       int64   `json:"input_tokens"`
+	Output      int64   `json:"output_tokens"`
+	CacheCreate int64   `json:"cache_creation_input_tokens"`
+	CacheRead   int64   `json:"cache_read_input_tokens"`
+	CostUSD     float64 `json:"total_cost_usd"`
+	Turns       int64   `json:"num_turns"`
+}
+
+func (u TokenUsage) Total() int64 { return u.Input + u.Output + u.CacheCreate + u.CacheRead }
+
+// parseTokenUsage extracts usage from an agent log. It scans for the last JSON
+// object that looks like a provider/agent result carrying `usage` or
+// `total_cost_usd`; everything else in the log is ignored.
+func parseTokenUsage(output string) TokenUsage {
+	usage := TokenUsage{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "{") || !strings.HasSuffix(line, "}") {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			continue
+		}
+		if u, ok := obj["usage"].(map[string]any); ok {
+			usage.Input = int64Field(u, "input_tokens")
+			usage.Output = int64Field(u, "output_tokens")
+			usage.CacheCreate = int64Field(u, "cache_creation_input_tokens")
+			usage.CacheRead = int64Field(u, "cache_read_input_tokens")
+			usage.Parsed = true
+		}
+		if v, ok := obj["total_cost_usd"].(float64); ok {
+			usage.CostUSD = v
+			usage.Parsed = true
+		}
+		if v, ok := obj["num_turns"].(float64); ok {
+			usage.Turns = int64(v)
+		}
+	}
+	return usage
+}
+
+func int64Field(m map[string]any, key string) int64 {
+	switch v := m[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	}
+	return 0
 }
 
 // runPhaseAgent runs one agent process for a phase. For the anchor arm it tries
@@ -972,6 +1054,14 @@ func execAgent(ctx context.Context, cfg Config, proj string, argv []string, extr
 	fmt.Fprintf(logFile, "# command: %s\n# cwd: %s\n# timeout: %s\n\n", strings.Join(argv, " "), proj, cfg.Timeout)
 
 	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
+	configureProcessGroup(cmd)
+	// Kill the whole subtree on timeout: a surviving child would keep the
+	// stdout pipe open and hang Wait.
+	cmd.Cancel = func() error {
+		killProcessTree(cmd)
+		return nil
+	}
+	cmd.WaitDelay = 10 * time.Second
 	cmd.Dir = proj
 	cmd.Env = mergeEnv(os.Environ(), extraEnv)
 	if stdin != "" {
@@ -986,6 +1076,7 @@ func execAgent(ctx context.Context, cfg Config, proj string, argv []string, extr
 	runErr := cmd.Run()
 	res.Duration = time.Since(started)
 	res.Output = out.String()
+	res.Usage = parseTokenUsage(res.Output)
 	switch {
 	case runCtx.Err() == context.DeadlineExceeded:
 		res.TimedOut = true
@@ -1023,6 +1114,14 @@ func runAcceptance(ctx context.Context, cfg Config, proj string, phase int, logP
 	defer cancel()
 	argv := []string{goCommand(), "test", "-count=1", "./..."}
 	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
+	configureProcessGroup(cmd)
+	// Kill the whole subtree on timeout: a surviving child would keep the
+	// stdout pipe open and hang Wait.
+	cmd.Cancel = func() error {
+		killProcessTree(cmd)
+		return nil
+	}
+	cmd.WaitDelay = 10 * time.Second
 	cmd.Dir = proj
 	cmd.Env = mergeEnv(os.Environ(), map[string]string{
 		"GOPROXY":     "off",
@@ -1587,6 +1686,8 @@ func aggregateTrials(trials []TrialResult, arms []string) map[string]ArmAggregat
 		var p1Total, p2Total []float64
 		var p1Pass, p2Pass, prepared, complete int
 		var resume, events, captures, setup float64
+		var p1in, p1out, p1cache, p1cost, p2in, p2out, p2cache, p2cost, total float64
+		usageParsed := 0
 		for _, row := range rows {
 			if row.Phase1Pass {
 				p1Pass++
@@ -1606,6 +1707,18 @@ func aggregateTrials(trials []TrialResult, arms []string) map[string]ArmAggregat
 			events += float64(row.AnchorEvents)
 			captures += float64(row.AnchorCaptures)
 			setup += float64(row.AnchorSetupMS)
+			if row.Phase1Tokens.Parsed || row.Phase2Tokens.Parsed {
+				usageParsed++
+			}
+			p1in += float64(row.Phase1Tokens.Input)
+			p1out += float64(row.Phase1Tokens.Output)
+			p1cache += float64(row.Phase1Tokens.CacheCreate + row.Phase1Tokens.CacheRead)
+			p1cost += row.Phase1Tokens.CostUSD
+			p2in += float64(row.Phase2Tokens.Input)
+			p2out += float64(row.Phase2Tokens.Output)
+			p2cache += float64(row.Phase2Tokens.CacheCreate + row.Phase2Tokens.CacheRead)
+			p2cost += row.Phase2Tokens.CostUSD
+			total += float64(row.Phase1Tokens.Total() + row.Phase2Tokens.Total())
 		}
 		n := float64(len(rows))
 		a.Phase1PassRate = float64(p1Pass) / n
@@ -1620,6 +1733,16 @@ func aggregateTrials(trials []TrialResult, arms []string) map[string]ArmAggregat
 		a.MeanAnchorCaptures = captures / n
 		a.HandoffPreparedRate = float64(prepared) / n
 		a.HandoffCompleteRate = float64(complete) / n
+		a.MeanPhase1InputTokens = p1in / n
+		a.MeanPhase1OutputTokens = p1out / n
+		a.MeanPhase1CacheTokens = p1cache / n
+		a.MeanPhase1CostUSD = p1cost / n
+		a.MeanPhase2InputTokens = p2in / n
+		a.MeanPhase2OutputTokens = p2out / n
+		a.MeanPhase2CacheTokens = p2cache / n
+		a.MeanPhase2CostUSD = p2cost / n
+		a.MeanTotalTokens = total / n
+		a.UsageParsedTrials = usageParsed
 		agg[arm] = a
 	}
 	return agg
@@ -1637,12 +1760,17 @@ func computeDelta(agg map[string]ArmAggregate) *Delta {
 		MeanResumeScore:   a.MeanResumeScore - b.MeanResumeScore,
 		MeanPhase1TotalMS: a.MeanPhase1TotalMS - b.MeanPhase1TotalMS,
 		MeanPhase2TotalMS: a.MeanPhase2TotalMS - b.MeanPhase2TotalMS,
+		MeanTotalTokens:   a.MeanTotalTokens - b.MeanTotalTokens,
+		MeanCostUSD:       (a.MeanPhase1CostUSD + a.MeanPhase2CostUSD) - (b.MeanPhase1CostUSD + b.MeanPhase2CostUSD),
 	}
 	if b.MeanPhase1TotalMS > 0 {
 		d.Phase1TotalRatio = a.MeanPhase1TotalMS / b.MeanPhase1TotalMS
 	}
 	if b.MeanPhase2TotalMS > 0 {
 		d.Phase2TotalRatio = a.MeanPhase2TotalMS / b.MeanPhase2TotalMS
+	}
+	if b.MeanTotalTokens > 0 {
+		d.TotalTokensRatio = a.MeanTotalTokens / b.MeanTotalTokens
 	}
 	d.AnchorSetupMeanMS = a.MeanAnchorSetupMS
 	return d
@@ -1755,21 +1883,23 @@ func renderCLISummary(report *Report) string {
 	if report.Skipped {
 		fmt.Fprintf(&b, "SKIPPED: %s\n", report.SkipReason)
 	}
-	fmt.Fprintf(&b, "%-9s %6s %8s %8s %11s %11s %8s %7s\n",
-		"arm", "trials", "p1-pass", "p2-pass", "p1-mean-ms", "p2-mean-ms", "events", "resume")
+	fmt.Fprintf(&b, "%-9s %6s %8s %8s %11s %11s %8s %9s %9s %8s\n",
+		"arm", "trials", "p1-pass", "p2-pass", "p1-mean-ms", "p2-mean-ms", "events", "tokens", "cost-usd", "resume")
 	for _, arm := range []string{armBaseline, armAnchor} {
 		a, ok := report.Aggregates[arm]
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(&b, "%-9s %6d %8.2f %8.2f %11.0f %11.0f %8.1f %7.2f\n",
+		fmt.Fprintf(&b, "%-9s %6d %8.2f %8.2f %11.0f %11.0f %8.1f %9.0f %9.4f %8.2f\n",
 			arm, a.Trials, a.Phase1PassRate, a.Phase2PassRate,
-			a.MeanPhase1TotalMS, a.MeanPhase2TotalMS, a.MeanAnchorEvents, a.MeanResumeScore)
+			a.MeanPhase1TotalMS, a.MeanPhase2TotalMS, a.MeanAnchorEvents,
+			a.MeanTotalTokens, a.MeanPhase1CostUSD+a.MeanPhase2CostUSD, a.MeanResumeScore)
 	}
 	if report.Delta != nil {
-		fmt.Fprintf(&b, "delta (anchor-baseline): p1-pass %+.2f p2-pass %+.2f p1-mean %+.0fms p2-mean %+.0fms resume %+.2f\n",
+		fmt.Fprintf(&b, "delta (anchor-baseline): p1-pass %+.2f p2-pass %+.2f p1-mean %+.0fms p2-mean %+.0fms tokens %+.0f cost %+.4f resume %+.2f\n",
 			report.Delta.Phase1PassRate, report.Delta.Phase2PassRate,
-			report.Delta.MeanPhase1TotalMS, report.Delta.MeanPhase2TotalMS, report.Delta.MeanResumeScore)
+			report.Delta.MeanPhase1TotalMS, report.Delta.MeanPhase2TotalMS,
+			report.Delta.MeanTotalTokens, report.Delta.MeanCostUSD, report.Delta.MeanResumeScore)
 	}
 	for _, name := range []string{"H1", "H2", "H3"} {
 		if hyp, ok := report.Hypotheses[name]; ok {
@@ -1800,19 +1930,21 @@ func renderMarkdown(report *Report) string {
 	}
 
 	b.WriteString("## Results\n\n")
-	b.WriteString("| arm | trials | phase-1 pass | phase-2 pass | mean p1 ms | median p1 ms | mean p2 ms | median p2 ms | mean events | mean captures | handoff prepared | handoff complete | mean resume score |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| arm | trials | phase-1 pass | phase-2 pass | mean p1 ms | median p1 ms | mean p2 ms | median p2 ms | mean events | mean captures | mean tokens | mean cost USD | handoff prepared | handoff complete | mean resume score |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, arm := range []string{armBaseline, armAnchor} {
 		a, ok := report.Aggregates[arm]
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(&b, "| %s | %d | %.2f | %.2f | %.0f | %.0f | %.0f | %.0f | %.1f | %.1f | %.2f | %.2f | %.2f |\n",
+		fmt.Fprintf(&b, "| %s | %d | %.2f | %.2f | %.0f | %.0f | %.0f | %.0f | %.1f | %.1f | %.0f | %.4f | %.2f | %.2f | %.2f |\n",
 			arm, a.Trials, a.Phase1PassRate, a.Phase2PassRate,
 			a.MeanPhase1TotalMS, a.MedianPhase1TotalMS, a.MeanPhase2TotalMS, a.MedianPhase2TotalMS,
-			a.MeanAnchorEvents, a.MeanAnchorCaptures, a.HandoffPreparedRate, a.HandoffCompleteRate, a.MeanResumeScore)
+			a.MeanAnchorEvents, a.MeanAnchorCaptures, a.MeanTotalTokens, a.MeanPhase1CostUSD+a.MeanPhase2CostUSD,
+			a.HandoffPreparedRate, a.HandoffCompleteRate, a.MeanResumeScore)
 	}
-	b.WriteString("\nPhase times are agent wall time plus acceptance wall time; Anchor workspace setup is reported separately below.\n\n")
+	b.WriteString("\nPhase times are agent wall time plus acceptance wall time; Anchor workspace setup is reported separately below.\n")
+	b.WriteString("Token/cost means come from the agent's own `--output-format json` result object; trials where the agent printed no usage JSON are averaged as zero and counted in `usage_parsed_trials`.\n\n")
 
 	if report.Delta != nil {
 		b.WriteString("## Deltas (anchor minus baseline)\n\n")
@@ -1821,6 +1953,8 @@ func renderMarkdown(report *Report) string {
 		fmt.Fprintf(&b, "- mean resume score: %+.2f\n", report.Delta.MeanResumeScore)
 		fmt.Fprintf(&b, "- mean phase-1 time: %+.0f ms (ratio %.2f)\n", report.Delta.MeanPhase1TotalMS, report.Delta.Phase1TotalRatio)
 		fmt.Fprintf(&b, "- mean phase-2 time: %+.0f ms (ratio %.2f)\n", report.Delta.MeanPhase2TotalMS, report.Delta.Phase2TotalRatio)
+		fmt.Fprintf(&b, "- mean total tokens: %+.0f (ratio %.2f)\n", report.Delta.MeanTotalTokens, report.Delta.TotalTokensRatio)
+		fmt.Fprintf(&b, "- mean cost (USD): %+.4f\n", report.Delta.MeanCostUSD)
 		fmt.Fprintf(&b, "- mean anchor workspace setup: %.0f ms (anchor arm only, excluded from phase times)\n\n", report.Delta.AnchorSetupMeanMS)
 	}
 
@@ -1841,8 +1975,8 @@ func renderMarkdown(report *Report) string {
 	b.WriteString("\nH2 material threshold: anchor mean phase-1 time may exceed baseline by at most max(2000 ms, 20%) of the baseline mean.\n")
 
 	b.WriteString("\n## Per-trial rows\n\n")
-	b.WriteString("| trial | arm | p1 pass | p2 pass | p1 agent exit | p2 agent exit | p1 ms | p2 ms | events | captures | handoff prepared | handoff complete | resume score | wrap p1/p2 | errors |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| trial | arm | p1 pass | p2 pass | p1 agent exit | p2 agent exit | p1 ms | p2 ms | p1 tokens | p2 tokens | p1 cost | p2 cost | events | captures | handoff prepared | handoff complete | resume score | wrap p1/p2 | errors |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, row := range report.Trials {
 		notes := append([]string{}, row.Errors...)
 		if row.Phase1AcceptNote != "" {
@@ -1851,9 +1985,11 @@ func renderMarkdown(report *Report) string {
 		if row.Phase2AcceptNote != "" {
 			notes = append(notes, "phase2: "+row.Phase2AcceptNote)
 		}
-		fmt.Fprintf(&b, "| %d | %s | %v | %v | %d | %d | %d | %d | %d | %d | %v | %v | %d | %v/%v | %s |\n",
+		fmt.Fprintf(&b, "| %d | %s | %v | %v | %d | %d | %d | %d | %d | %d | %.4f | %.4f | %d | %d | %v | %v | %d | %v/%v | %s |\n",
 			row.Trial, row.Arm, row.Phase1Pass, row.Phase2Pass, row.Phase1AgentExit, row.Phase2AgentExit,
-			row.Phase1TotalMS, row.Phase2TotalMS, row.AnchorEvents, row.AnchorCaptures,
+			row.Phase1TotalMS, row.Phase2TotalMS, row.Phase1Tokens.Total(), row.Phase2Tokens.Total(),
+			row.Phase1Tokens.CostUSD, row.Phase2Tokens.CostUSD,
+			row.AnchorEvents, row.AnchorCaptures,
 			row.HandoffPrepared, row.HandoffComplete, row.ResumeScore, row.WrapUsedP1, row.WrapUsedP2,
 			markdownCell(strings.Join(notes, "; ")))
 	}

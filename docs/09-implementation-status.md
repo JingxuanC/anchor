@@ -139,8 +139,12 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     a two-phase (implement → resume with a fresh process) protocol, hidden
     acceptance tests restored after the agent exits, and a runner
     (`go run ./bench/ab`) with baseline vs anchor arms, a deterministic mock
-    agent for CI, and JSON/markdown reports. No real-agent numbers were produced
-    in this environment; see the caveats.
+    agent for CI, token/cost accounting (parsed from the agent's result JSON)
+    and JSON/markdown reports. A real Claude Code + `deepseek-v4-flash` run
+    (3 trials/arm, 600 s/phase) completed: baseline phase-2 pass 0/3 vs anchor
+    3/3, at +33% total tokens and +$0.087 mean cost; the baseline's failed
+    phase-2 attempts still consumed ~184k tokens. Results and caveats are in
+    `bench/results/2026-11-16-deepseek-v4-flash/` and `bench/README.md` §7.
 15. **No `unsafe`, no third-party dependencies, no network or telemetry code.**
 
 ## 3. Requirement-by-requirement status
@@ -386,10 +390,12 @@ Ranked by "what blocks a usable local segment":
 12. **Make it shippable** (WS-003/008, OPS-001..004, NFR-001). `migrate` with
     dry-run/backup/rollback, `uninstall --purge` confirmation, CI (gofmt/vet/race on
     3 OSes), checksummed release builds.
-13. **Produce real A/B numbers** (benchmark). The harness is done and
-    mock-validated; a logged-in agent must run
-    `go run ./bench/ab --trials 5 --agent-cmd "claude -p"` (see
-    `bench/README.md`). No real-agent numbers exist in this checkout.
+13. **Expand the A/B evidence** (benchmark). A real Claude Code +
+    `deepseek-v4-flash` run now exists (3 trials/arm: resume 0/3 vs 3/3, +33%
+    tokens, +$0.087 mean cost; `bench/results/2026-11-16-deepseek-v4-flash/`).
+    Still needed for a defensible claim: N ≥ 5-10 per arm, multiple tasks, and
+    adapting public benchmarks (SWE-bench Verified/Terminal-Bench/Aider
+    polyglot; see `bench/README.md` §3) instead of one custom fixture.
 
 ## 5. Status ledger (authoritative)
 
@@ -670,12 +676,16 @@ deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
   `adapter install --with-mcp` (project scope, `.mcp.json`, merged/backed up/
   uninstallable). Protocol and CLI contract tests pass, but no live agent has
   called the server from inside a real session in this environment.
-- **The A/B benchmark has no real-agent numbers here.** `bench/ab` is
-  deterministic and mock-validated (`go test ./bench/...`), with baseline vs
-  anchor arms and a fresh-process resume phase; the mock pass rates are a harness
-  self-test, not empirical evidence. Real numbers require a logged-in agent
-  (`bench/README.md` has the exact commands); Claude Code is installed but not
-  logged in, and the local codex provider emitted no tool actions.
+- **The A/B benchmark has small-N real numbers, not a leaderboard.** A 2026-11-16
+  run with Claude Code 2.1.252 + DeepSeek `deepseek-v4-flash` (3 trials/arm,
+  600 s/phase) measured resume completion 0/3 (baseline) vs 3/3 (anchor), with
+  anchor using ~33% more total tokens (+$0.087 mean cost per trial) because it
+  actually finishes phase 2; the baseline still spent ~184k tokens on each
+  failed resume. Mock-mode pass rates remain harness self-tests. Cite the model,
+  N and timeout, and treat one custom task with N=3 as directional evidence only;
+  `bench/README.md` §3 lists public benchmarks (SWE-bench Verified,
+  Terminal-Bench, Aider polyglot, τ-bench pass^k, HAL, Inspect Evals) to borrow
+  tasks and metrics from.
 - **Secret scanning covers canonical state too.** Export scans event batches, so
   a note or title containing a credential-shaped string (for example
   `password=...`) blocks export. This is fail-closed on purpose (SEC-003) and the
