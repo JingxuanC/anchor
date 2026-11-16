@@ -1,0 +1,340 @@
+# Anchor A/B benchmark harness
+
+This directory contains a reproducible A/B benchmark for **Anchor's core claim**:
+a coding agent that records its work in Anchor can be *resumed* by a fresh agent
+much more reliably than an agent that leaves only a chat transcript behind.
+
+The harness runs a small, offline project task in two arms (with and without
+Anchor) and two phases (implement, then resume from a fresh process), grades
+both phases with real acceptance tests, and writes `report.json` + `report.md`.
+
+> **Status of the numbers in this checkout.** The harness is implemented and
+> validated end-to-end in mock mode (`go test ./bench/...`). **Real-agent A/B
+> numbers were produced on 2026-11-16** with Claude Code 2.1.252 backed by the
+> DeepSeek API (`deepseek-v4-flash`, 3 trials per arm): baseline phase-2 pass
+> 0/3 vs Anchor 3/3. Raw reports are in
+> `bench/results/2026-11-16-deepseek-v4-flash/` and the run is described in
+> [§7](#7-real-agent-results-2026-11-16). These are small-N single-task results,
+> not a leaderboard; read the caveats before citing them.
+
+---
+
+## 1. Arms, task and phase design
+
+### The task fixture (`bench/fixtures/ratelimit/`)
+
+A tiny Go module (`example.com/ratelimit`, stdlib only, <200 lines of fixture
+code) implementing a lazy token-bucket rate limiter. `ratelimit.go` starts as a
+compiling stub and the visible phase-1 acceptance tests fail.
+
+* **Phase 1** — implement `New`, `Allow` and `Tokens`; `go test ./...` must pass.
+* **Phase 2 (resume)** — after the phase-1 agent process has exited, a **fresh
+  agent process** continues the project and must add
+  `func (l *Limiter) WaitTime(n int) time.Duration` matching the conventions that
+  were *recorded as decisions in phase 1*:
+
+  | decision | convention |
+  |---|---|
+  | `dec-clock` | read time only through the injected `now` clock |
+  | `dec-round` | integer whole-interval rounding: `WaitTime = deficit*interval - elapsed%interval` |
+  | `dec-oversize` | `WaitTime(n > capacity) == -1` and never consumes tokens |
+  | `dec-nonpositive` | `WaitTime(n <= 0) == 0` |
+
+  These conventions are **not** in the visible test files or in the prompt of the
+  baseline arm. That is the whole point: they are durable state, not repo content.
+
+`bench/fixtures/ratelimit/TASK.md` is the phase-1 task prompt and
+`ACCEPT.md` describes grading. The canonical phase-1 tests and the hidden
+phase-2 test live under `bench/fixtures/testdata/` and are copied into the trial
+copy *after* the agent exits, so an agent cannot weaken or pre-read them.
+(`testdata/` is ignored by the Go tool; the fixture module has its own `go.mod`
+so `go test ./...` at the repository root does not run it.)
+
+### Arm A — baseline (no Anchor)
+
+For each trial:
+
+1. copy the fixture into a fresh temp dir, `git init`, and commit with fixed git
+   author/committer dates (every trial starts from the same commit);
+2. run the phase-1 agent with `TASK.md` as the prompt;
+3. commit the agent's work, run the phase-1 acceptance command, restore the
+   working tree;
+4. run a **fresh** phase-2 agent whose prompt contains only a short chat-style
+   summary ("the limiter was implemented, next add `WaitTime`; the exact
+   conventions were not written down anywhere durable") and the phase-2 task;
+5. run the phase-2 acceptance command (canonical phase-1 tests + hidden
+   `WaitTime` tests).
+
+### Arm B — anchor (with Anchor)
+
+1. copy + `git init` + initial commit (identical to baseline);
+2. `anchor init --attach --dir <proj>` so state lives in `<proj>/.anchor/`
+   (the CLI adds `.anchor/` to the project `.gitignore`);
+3. seed the Session Tree through the CLI: a goal node with north star,
+   must/must-not constraints and success criteria; `task-phase1` and
+   `task-phase2`; and the four decision nodes above. The seeded decisions are
+   the benchmark's stand-in for decisions a phase-1 agent records with Anchor;
+4. write `ANCHOR_RULES.md` into the project telling the agent to use the CLI
+   (`$ANCHOR_BIN`, `--dir "$ANCHOR_WORKSPACE"`) to attach evidence and close the
+   task, then commit the setup;
+5. run the phase-1 agent under
+   `anchor wrap --dir <state> --node task-phase1 -- <agent command>`, which
+   records the session, exports `ANCHOR_WORKSPACE`, `ANCHOR_NODE`,
+   `ANCHOR_SESSION`, `ANCHOR_CONTEXT_FILE` and propagates the child exit code;
+   if the binary has no `wrap` command the harness falls back to running the
+   agent directly with the same environment variables and records the fallback;
+6. commit the agent's work, run phase-1 acceptance, restore the working tree;
+7. `anchor handoff prepare --dir <state> --repo <proj>` — the packet is graded
+   for completeness (goal + ≥3 decisions + next step);
+8. run a **fresh** phase-2 agent under
+   `anchor wrap --dir <state> --node task-phase2 -- <agent command>` (same
+   fallback). Its prompt points at the handoff packet and at the
+   `ANCHOR_CONTEXT_FILE` generated by Anchor from the Session Tree, which
+   contains the recorded decisions;
+9. run phase-2 acceptance.
+
+Phase-1 hidden-state asymmetry is deliberate: in the baseline arm the phase-2
+agent has the repository but not the decisions; in the anchor arm the decisions
+are recoverable from Anchor's structured state.
+
+---
+
+## 2. Hypotheses (pre-registered)
+
+| id | hypothesis | operationalization |
+|---|---|---|
+| **H1** | Anchor improves phase-2 resume success. | `anchor.phase2_pass_rate > baseline.phase2_pass_rate`, and the anchor mean resume score is higher. |
+| **H2** | Anchor does not slow phase 1 materially. | anchor mean phase-1 time (agent + acceptance) minus baseline mean ≤ `max(2000 ms, 20% of baseline mean)`. Anchor setup time is measured and reported separately. |
+| **H3** | Anchor records a complete handoff. | in every anchor trial `handoff_prepared` is true and the packet has a goal, ≥3 decision nodes and ≥1 next step. |
+
+A hypothesis is reported as `supported`, `not_supported`, or
+`insufficient_data` (e.g. one-arm runs cannot evaluate H1/H2).
+
+---
+
+## 3. Metrics and report
+
+Per (trial, arm) row in `report.json`:
+
+| field | meaning |
+|---|---|
+| `phase1_pass`, `phase2_pass` | acceptance command exit code 0 |
+| `phase1_agent_ms`, `phase2_agent_ms` | agent process wall time |
+| `phase1_accept_ms`, `phase2_accept_ms` | acceptance command wall time |
+| `phase1_total_ms`, `phase2_total_ms` | agent + acceptance |
+| `phase1_agent_exit`, `phase2_agent_exit` | child exit codes (−1 on timeout) |
+| `phase1_accept_exit`, `phase2_accept_exit` | acceptance exit codes |
+| `anchor_events` | number of event batch files in `<state>/events/*.json` |
+| `anchor_captures` | number of hook capture files in `<state>/local/captures/*.json` (0 when only `wrap` is used: hook captures require adapter hooks) |
+| `handoff_prepared` | `anchor handoff prepare` succeeded and the packet parsed |
+| `handoff_complete` | packet has a goal, ≥3 decisions and ≥1 next step |
+| `handoff_decisions`, `handoff_next_steps` | packet contents |
+| `resume_score` | `phase2_pass` (0/1) + 1 when `decision_marker` is set |
+| `decision_marker` | heuristic: phase-2 agent output or working-tree diff mentions a recorded decision id (e.g. `dec-round`) or states a recorded convention |
+| `wrap_used_phase1`, `wrap_used_phase2`, `wrap_fallback` | whether `anchor wrap` was available/used |
+| `fixture_commit`, `setup_commit` | deterministic git commits |
+| `errors` | harness/anomaly notes (agent crash, setup failure, …) |
+| `log_dir` | per-trial prompt, agent, acceptance and context files |
+
+Aggregates per arm: pass rates, mean/median phase times, mean resume score,
+mean events/captures, handoff prepared/complete rates. `delta` = anchor −
+baseline (ratios are anchor/baseline). The markdown report also contains the
+per-trial table and the honest environment notes.
+
+---
+
+## 4. How to run
+
+From the repository root:
+
+```bash
+# Offline harness validation (deterministic mock agent, ~4 s for 1 trial/arm):
+go run ./bench/ab --mock-agent --trials 1 --out /tmp/abtest
+
+# The test that does the same in-process and asserts the report contract:
+go test ./bench/... -count=1
+
+# Real A/B with Claude Code (log in first: run `claude` then /login):
+go run ./bench/ab --trials 5 --agent-cmd "claude -p" --out bench/results/claude
+
+# Real A/B with codex exec:
+go run ./bench/ab --trials 5 --agent-cmd "codex exec --skip-git-repo-check" \
+  --out bench/results/codex
+```
+
+`--agent-cmd` is split into argv (single/double quotes supported, no shell
+expansion) and **the prompt is appended as the final argument**, matching
+`claude -p "prompt"` and `codex exec "prompt"`. Use `--prompt-stdin` if your CLI
+reads the prompt from stdin instead. The harness appends these environment
+variables to the child environment (and strips any inherited `ANCHOR_*`):
+`ANCHOR_BIN`, plus `ANCHOR_WORKSPACE`, `ANCHOR_NODE`, `ANCHOR_SESSION` and
+`ANCHOR_CONTEXT_FILE` (the last three via `anchor wrap` when available, or set
+directly in the fallback path).
+
+Requirements: `go` (1.23+), `git`, and a POSIX shell (`/bin/sh`; mock mode and
+the harness itself target macOS/Linux). No network access and no third-party Go
+modules are used by the harness or the fixture.
+
+Flags:
+
+```
+--trials N        trials per arm (default 3)
+--arm             both | baseline | anchor (default both)
+--agent-cmd       real agent CLI; cannot be combined with --mock-agent
+--mock-agent      deterministic offline scripted agent (CI; ignores the prompt)
+--timeout         per-phase timeout for agent and acceptance (default 180s)
+--fixtures DIR    fixtures root (default bench/fixtures)
+--out DIR         output dir (default bench/results/<UTC timestamp>)
+--json            print report.json to stdout instead of the summary table
+--prompt-stdin    pass the prompt on stdin instead of as the final argument
+--anchor-bin      prebuilt anchor binary (default: build ./cmd/anchor into <out>/bin)
+--keep-work       keep the per-trial project copies for debugging
+```
+
+Exit codes: `0` success, `1` harness error, `2` invalid flags, `3` skipped
+(agent command not found; the report is still written with `skipped`/`skip_reason`).
+
+Artifacts (under `--out`):
+
+```
+report.json                  machine-readable rows + aggregates + hypotheses
+report.md                    human summary, per-trial table, caveats
+bin/anchor                   anchor binary built from this checkout
+logs/trial-NN-baseline/      phase prompts, agent logs, acceptance logs
+logs/trial-NN-anchor/        additionally resume-context.md and wrap logs
+```
+
+`bench/results/` is generated output; it is not committed (add it to your
+global/local ignore list if you run with the default `--out`).
+
+---
+
+## 5. Mock mode
+
+`--mock-agent` replaces the agent with a shell script generated from
+`bench/fixtures/testdata/mock/`:
+
+* **Phase 1** writes the partial implementation (phase-1 acceptance passes) and,
+  when Anchor's environment is present, records evidence via
+  `anchor evidence add` and closes `task-phase1` with `anchor node transition`.
+* **Phase 2** checks `ANCHOR_CONTEXT_FILE`: if it contains the seeded decision
+  ids, it applies the recorded conventions (correct `WaitTime`); otherwise it
+  writes a naive guess (wrong rounding and oversized handling).
+
+Expected deterministic result for `--mock-agent --trials 1 --arm both`:
+
+```
+arm       p1-pass  p2-pass  events  resume
+baseline  1.00     0.00      0       0.00
+anchor    1.00     1.00      15      2.00
+H1 supported, H2 supported, H3 supported
+```
+
+Mock mode is a harness self-test, **not** evidence about real agents.
+
+---
+
+## 6. Honest environment status
+
+Measured in this development environment (macOS, Go 1.26.4) on 2026-11-16:
+
+* **Claude Code works when a valid DeepSeek key is configured.** The earlier
+  "Not logged in" failure was a stale `ANTHROPIC_AUTH_TOKEN`; the valid DeepSeek
+  key in the same shell profile works against
+  `https://api.deepseek.com/anthropic`. The environment used for the recorded
+  run is documented in [§8](#8-running-with-claude-code-backed-by-deepseek-anthropic-compatible-api);
+  the key itself is not in this repository.
+* **codex-cli still does not act.** `codex --version` reports `codex-cli
+  0.141.0`, but `codex exec` with the local deepseek provider emitted no tool
+  actions during the team's checks, so it could not complete a filesystem task.
+* **Mock mode is still a harness self-test.** Mock pass rates validate the
+  fixture/protocol/report mechanics, not LLM behavior. Real-agent numbers are in
+  §7.
+* Environmental failures are visible: agent exit codes, per-phase logs and the
+  per-trial notes make a misconfigured agent auditable even when it exits 0
+  after printing an auth error. The harness also kills the whole agent process
+  group on timeout (`bench/ab/timeout_test.go`), so a hung agent cannot keep the
+  run alive.
+
+Real-mode runs record the agent command and `--agent-model`, but cannot verify
+authentication; check `logs/trial-NN-*/phaseN-agent.log` before trusting a run.
+
+
+## 7. Real-agent results (2026-11-16)
+
+Run: `go run ./bench/ab --trials 3 --agent-cmd /tmp/claude-flash-json.sh
+--prompt-stdin --agent-model deepseek-v4-flash --timeout 600s --out ...`
+(Claude Code 2.1.252, DeepSeek Anthropic-compatible endpoint, `deepseek-v4-flash`,
+3 trials per arm, 600 s per-phase timeout). Reports:
+`bench/results/2026-11-16-deepseek-v4-flash/report.{json,md}`; token/cost fields
+come from `claude -p --output-format json` (`usage_parsed_trials = 3` in both
+arms).
+
+| arm | trials | p1 pass | p2 pass | mean p1 ms | mean p2 ms | mean tokens | mean cost USD | mean resume |
+|---|---|---|---|---|---|---|---|---|
+| baseline | 3 | 1.00 | 0.00 | 197446 | 34826 | 1010812 | 1.6443 | 1.00 |
+| anchor | 3 | 1.00 | 1.00 | 147021 | 108686 | 1347739 | 1.7313 | 2.00 |
+| delta | | +0.00 | +1.00 | -50425 | +73860 | +336927 | +0.0870 | +1.00 |
+
+Reading the numbers:
+
+- **Task completion**: both arms implement phase 1; only Anchor completes the
+  fresh-process resume (3/3 vs 0/3). Baseline still spends ~184k tokens per
+  failed phase-2 attempt, so its cheap-looking phase 2 is *wasted* work.
+- **Tokens**: Anchor uses ~33% more total tokens, almost all in phase 2
+  (~604k cache tokens + 36k input on average) because it actually reads the
+  handoff packet and implements the recorded conventions. Phase 1 was slightly
+  cheaper for Anchor in this sample (cost 0.96 vs 1.27 USD; output 17.9k vs
+  26.9k tokens) — probably because the baseline agent flailed longer; n=3, so do
+  not over-read this.
+- **Cost**: +$0.087 per trial overall (+5%). Cost per *successful resume*:
+  Anchor produced 3 successes for $5.19 total; baseline produced 0 for $4.93, so
+  baseline has no finite cost per successful resume.
+- **Time**: Anchor phase 1 was faster in this sample (likely noise); phase 2 is
+  slower because it completes the work instead of failing fast.
+- An earlier time-only run (same model/design, before token accounting, reports
+  in the same directory as `report-time-only.json`) saw the same direction:
+  baseline p2 0/3, Anchor p2 3/3.
+
+Caveats: N=3 per arm on one small custom task; no confidence intervals; one
+model (`deepseek-v4-flash`); cache-token quantities are dominated by the agent's
+context caching, so compare `total_cost_usd` and completion, not raw token
+totals, across hosts. This is an A/B for Anchor's continuity claim, not a
+leaderboard-grade evaluation.
+
+
+## 8. Running with Claude Code backed by DeepSeek (Anthropic-compatible API)
+
+Claude Code can be pointed at DeepSeek's Anthropic-compatible endpoint. The
+benchmark needs:
+
+1. a **valid** DeepSeek key in `ANTHROPIC_AUTH_TOKEN` (an expired token returns
+   `401 Authentication Fails`; check with `/user/balance` first);
+2. `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` and
+   `ANTHROPIC_MODEL=deepseek-v4-flash` (the fast model; `deepseek-v4.1-flash` is
+   not accepted by the API, `deepseek-v4-pro` is slower and often exceeds a
+   600 s phase timeout);
+3. global MCP servers disabled for speed, permissions bypassed headlessly, and
+   `--output-format json` so token/cost usage is recorded.
+
+Because the prompt is passed on stdin (`--prompt-stdin`), wrap the CLI in a small
+script so flags are fixed and the prompt flows through:
+
+```sh
+#!/bin/sh
+set -a; . "$HOME/.config/anchor/deepseek-env"; set +a   # exports base url, token, model
+exec claude -p --output-format json --dangerously-skip-permissions \
+  --strict-mcp-config --mcp-config /tmp/empty-mcp.json
+```
+
+```sh
+printf '{"mcpServers":{}}' > /tmp/empty-mcp.json
+go run ./bench/ab --trials 3 --arm both --agent-cmd /path/to/claude-wrapper.sh \
+  --prompt-stdin --agent-model deepseek-v4-flash --timeout 600s \
+  --out bench/results/deepseek-flash
+```
+
+The runner kills the whole agent process group on timeout, so a hung agent
+cannot keep the harness alive (regression test: `bench/ab/timeout_test.go`).
+Report real numbers together with the model name, trial count and timeout; the
+report records all three plus per-phase token/cost fields.

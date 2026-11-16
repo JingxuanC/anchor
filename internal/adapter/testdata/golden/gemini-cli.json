@@ -1,0 +1,54 @@
+{
+  "files": [
+    {
+      "content": "{\n  \"schema_version\": 1,\n  \"adapter\": {\n    \"id\": \"gemini-cli\",\n    \"name\": \"Gemini CLI\",\n    \"evidence_grade\": \"D\",\n    \"native_hook_status\": \"unverified\",\n    \"end_to_end_verified\": false,\n    \"config_targets\": [\n      \"settings.json\"\n    ],\n    \"capture_fields\": [\n      \"hook_event_name\",\n      \"session_id\",\n      \"cwd\",\n      \"tool_name\",\n      \"timestamp\"\n    ],\n    \"features\": [\n      {\n        \"name\": \"hooks\",\n        \"status\": \"documented_unverified\"\n      },\n      {\n        \"name\": \"settings_json\",\n        \"status\": \"documented_unverified\"\n      }\n    ],\n    \"not_claimed\": [\n      \"automatic installation\",\n      \"verified native hook\",\n      \"restore or enforcement\",\n      \"MCP proxy\"\n    ]\n  },\n  \"hook_command\": \"anchor adapter capture --adapter gemini-cli --stdin --print\",\n  \"native_config_file\": \"settings.fragment.json\",\n  \"native_config\": \"{\\n  \\\"_anchor_status\\\": \\\"UNVERIFIED documentation-only fragment; review and merge manually\\\",\\n  \\\"hooks\\\": {\\n    \\\"PostToolUse\\\": [\\n      {\\n        \\\"command\\\": \\\"anchor adapter capture --adapter gemini-cli --stdin --print\\\"\\n      }\\n    ]\\n  }\\n}\\n\",\n  \"installation\": \"manual_review_only\",\n  \"does_not_overwrite_user_config\": true,\n  \"does_not_restore_or_block\": true\n}\n",
+      "path": "anchor-adapter.json"
+    },
+    {
+      "content": "{\n  \"_anchor_status\": \"UNVERIFIED documentation-only fragment; review and merge manually\",\n  \"hooks\": {\n    \"PostToolUse\": [\n      {\n        \"command\": \"anchor adapter capture --adapter gemini-cli --stdin --print\"\n      }\n    ]\n  }\n}\n",
+      "path": "settings.fragment.json"
+    }
+  ],
+  "output": {
+    "schema_version": 1,
+    "adapter": {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "evidence_grade": "D",
+      "native_hook_status": "unverified",
+      "end_to_end_verified": false,
+      "config_targets": [
+        "settings.json"
+      ],
+      "capture_fields": [
+        "hook_event_name",
+        "session_id",
+        "cwd",
+        "tool_name",
+        "timestamp"
+      ],
+      "features": [
+        {
+          "name": "hooks",
+          "status": "documented_unverified"
+        },
+        {
+          "name": "settings_json",
+          "status": "documented_unverified"
+        }
+      ],
+      "not_claimed": [
+        "automatic installation",
+        "verified native hook",
+        "restore or enforcement",
+        "MCP proxy"
+      ]
+    },
+    "hook_command": "anchor adapter capture --adapter gemini-cli --stdin --print",
+    "native_config_file": "settings.fragment.json",
+    "native_config": "{\n  \"_anchor_status\": \"UNVERIFIED documentation-only fragment; review and merge manually\",\n  \"hooks\": {\n    \"PostToolUse\": [\n      {\n        \"command\": \"anchor adapter capture --adapter gemini-cli --stdin --print\"\n      }\n    ]\n  }\n}\n",
+    "installation": "manual_review_only",
+    "does_not_overwrite_user_config": true,
+    "does_not_restore_or_block": true
+  }
+}

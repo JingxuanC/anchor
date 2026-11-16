@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "adapter": "gemini-cli",
+  "event": "AfterTool",
+  "session_ref": "sha256:ef6a1125c1c4a4139352b110c42b780982468dc323ff2542f9ad4ecbc820328f",
+  "cwd_ref": "sha256:8bdefda03ecb01fcd8ec376ce7478c263d3832eec8ee153cd00bf1acecc3d3de",
+  "tool": "run_shell_command",
+  "timestamp": "2026-11-15T00:00:02Z",
+  "content_policy": "metadata_only: prompt/tool_input/transcript omitted",
+  "native_hook_verified": false,
+  "does_not_restore_or_block": true
+}

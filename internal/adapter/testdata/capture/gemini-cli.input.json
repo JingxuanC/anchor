@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "AfterTool",
+  "session_id": "session-fixture-003",
+  "cwd": "/tmp/anchor-fixture/gemini",
+  "tool_name": "run_shell_command",
+  "timestamp": "2026-11-15T00:00:02Z",
+  "prompt": "must-not-be-copied"
+}
