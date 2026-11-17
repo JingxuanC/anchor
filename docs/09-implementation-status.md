@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 101 Go files / ~35,000 LOC, of which ~21,100 lines are tests
-(460 top-level test functions, 1029 `=== RUN` entries).
+Current tree: 115 Go files / ~39,400 LOC, of which ~22,200 lines are tests
+(495 top-level test functions, 1064 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -144,16 +144,24 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     `anchor_restore_plan`), and `adapter install --with-mcp` registers that server
     in the project's `.mcp.json` (merged, backed up, idempotent; uninstall removes
     only the recorded entry). No mutation tool is exposed over MCP.
-15. **A/B benchmark harness** — `bench/` contains a small offline fixture project,
-    a two-phase (implement → resume with a fresh process) protocol, hidden
-    acceptance tests restored after the agent exits, and a runner
-    (`go run ./bench/ab`) with baseline vs anchor arms, a deterministic mock
-    agent for CI, token/cost accounting (parsed from the agent's result JSON)
-    and JSON/markdown reports. A real Claude Code + `deepseek-v4-flash` run
-    (3 trials/arm, 600 s/phase) completed: baseline phase-2 pass 0/3 vs anchor
-    3/3, at +33% total tokens and +$0.087 mean cost; the baseline's failed
-    phase-2 attempts still consumed ~184k tokens. Results and caveats are in
+15. **A/B benchmark harness + Aider polyglot** — `bench/` contains a small
+    offline fixture project, a two-phase (implement → resume with a fresh
+    process) protocol, hidden acceptance tests restored after the agent exits,
+    and a runner (`go run ./bench/ab`) with baseline vs anchor arms, a
+    deterministic mock agent for CI, token/cost accounting (parsed from the
+    agent's result JSON) and JSON/markdown reports. The harness now also records
+    a task hash lock, harness metadata (suite, anchor version, bench commit), pass^k,
+    Wilson 95% intervals, paired bootstrap/McNemar deltas, budget caps
+    (`--max-usd`/`--max-tokens`), negative controls
+    (`--mock-mode sabotage|cheater`), test-edit detection with canonical-test
+    restoration, answer-search suspicion flags, and per-trial prompt/patch/log
+    artifacts; `bench/polyglot` adds multi-task Aider-polyglot-style tasks (and
+    can load a real `polyglot-benchmark` checkout) with the same anti-cheat and
+    metrics. A real Claude Code + `deepseek-v4-flash` run (3 trials/arm, 600
+    s/phase) completed: baseline phase-2 pass 0/3 vs anchor 3/3, at +33% total
+    tokens and +$0.087 mean cost. Results and caveats are in
     `bench/results/2026-11-16-deepseek-v4-flash/` and `bench/README.md` §7.
+    Remaining gap: per-run container/VM isolation is local temp dirs only.
 16. **Tree view + local web UI + agent skill** — `anchor tree` renders the
     Session Tree as a terminal tree, stable JSON, Markdown (`TREE.md`) or a
     self-contained HTML file (escaped titles, no external resources, tombstones
@@ -682,7 +690,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 460 top-level test functions / 1029 run entries, ~21,100 test lines.
+Test suite: 495 top-level test functions / 1064 run entries, ~22,200 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 

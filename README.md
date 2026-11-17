@@ -275,7 +275,14 @@ The full per-agent walkthrough (hooks, MCP, wrap, skill, troubleshooting) is in
 `bench/` contains a reproducible two-phase benchmark (implement, then resume
 from a fresh process) with hidden acceptance tests, baseline vs Anchor arms, a
 deterministic mock agent for CI, and token/cost accounting parsed from the
-agent's result JSON.
+agent's result JSON. It records the task hash lock, harness metadata, pass^k,
+Wilson 95% intervals, paired bootstrap/McNemar deltas, budget caps, negative
+controls (sabotage/cheater agents), test-edit detection with canonical-test
+restoration, and per-trial prompt/patch/log artifacts — see
+[`bench/README.md`](bench/README.md) §3b for the mapping to industry practice.
+`bench/polyglot` adds multi-task Aider-polyglot-style coding tasks (visible
+tests, same anti-cheat/metrics) and can load a real `polyglot-benchmark`
+checkout.
 
 Real run on 2026-11-16 (Claude Code 2.1.252 + DeepSeek `deepseek-v4-flash`,
 3 trials per arm, 600 s per phase, one custom task):

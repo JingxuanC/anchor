@@ -70,21 +70,28 @@ type Config struct {
 	AgentModel  string
 	AnchorBin   string
 	KeepWork    bool
+	MockMode    string
+	MaxUSD      float64
+	MaxTokens   int64
 }
 
 // Report is the machine-readable benchmark result written to report.json.
 type Report struct {
-	SchemaVersion int                         `json:"schema_version"`
-	GeneratedAt   string                      `json:"generated_at"`
-	Config        ReportConfig                `json:"config"`
-	Skipped       bool                        `json:"skipped"`
-	SkipReason    string                      `json:"skip_reason,omitempty"`
-	Trials        []TrialResult               `json:"trials"`
-	Aggregates    map[string]ArmAggregate     `json:"aggregates"`
-	Delta         *Delta                      `json:"delta,omitempty"`
-	Hypotheses    map[string]HypothesisResult `json:"hypotheses"`
-	Environment   []string                    `json:"environment_notes"`
-	Artifacts     ReportArtifacts             `json:"artifacts"`
+	SchemaVersion  int                         `json:"schema_version"`
+	GeneratedAt    string                      `json:"generated_at"`
+	Config         ReportConfig                `json:"config"`
+	Skipped        bool                        `json:"skipped"`
+	SkipReason     string                      `json:"skip_reason,omitempty"`
+	Trials         []TrialResult               `json:"trials"`
+	Aggregates     map[string]ArmAggregate     `json:"aggregates"`
+	Delta          *Delta                      `json:"delta,omitempty"`
+	Hypotheses     map[string]HypothesisResult `json:"hypotheses"`
+	Environment    []string                    `json:"environment_notes"`
+	Artifacts      ReportArtifacts             `json:"artifacts"`
+	Metadata       map[string]string           `json:"metadata,omitempty"`
+	Truncated      bool                        `json:"truncated,omitempty"`
+	BudgetExceeded bool                        `json:"budget_exceeded,omitempty"`
+	BudgetNote     string                      `json:"budget_note,omitempty"`
 }
 
 // ReportConfig records exactly how a run was produced.
@@ -103,6 +110,11 @@ type ReportConfig struct {
 	WrapSupported bool   `json:"wrap_supported"`
 	FixtureCommit string `json:"fixture_commit,omitempty"`
 	GoVersion     string `json:"go_version"`
+	Suite         string `json:"suite"`
+	TaskHash      string `json:"task_hash,omitempty"`
+	BenchCommit   string `json:"bench_commit,omitempty"`
+	AnchorVersion string `json:"anchor_version,omitempty"`
+	MockMode      string `json:"mock_mode,omitempty"`
 }
 
 // ReportArtifacts lists the files written by a run.
@@ -159,6 +171,10 @@ type TrialResult struct {
 	LogDir        string   `json:"log_dir,omitempty"`
 	WorkDir       string   `json:"work_dir,omitempty"`
 	Errors        []string `json:"errors,omitempty"`
+
+	TaskID        string   `json:"task_id"`
+	TestsModified bool     `json:"tests_modified,omitempty"`
+	CheatFlags    []string `json:"cheat_flags,omitempty"`
 }
 
 // ArmAggregate is the per-arm summary written to report.json.
@@ -187,6 +203,14 @@ type ArmAggregate struct {
 	MeanPhase2CostUSD      float64 `json:"mean_phase2_cost_usd"`
 	MeanTotalTokens        float64 `json:"mean_total_tokens"`
 	UsageParsedTrials      int     `json:"usage_parsed_trials"`
+
+	Phase1PassK        float64 `json:"phase1_pass_k"`
+	Phase2PassK        float64 `json:"phase2_pass_k"`
+	Phase1CI95Low      float64 `json:"phase1_ci95_low"`
+	Phase1CI95High     float64 `json:"phase1_ci95_high"`
+	Phase2CI95Low      float64 `json:"phase2_ci95_low"`
+	Phase2CI95High     float64 `json:"phase2_ci95_high"`
+	TestsModifiedCount int     `json:"tests_modified_count"`
 }
 
 // Delta is anchor minus baseline (ratios are anchor/baseline).
@@ -202,6 +226,12 @@ type Delta struct {
 	Phase1TotalRatio  float64 `json:"phase1_total_ratio"`
 	Phase2TotalRatio  float64 `json:"phase2_total_ratio"`
 	AnchorSetupMeanMS float64 `json:"anchor_setup_mean_ms"`
+
+	Phase1DeltaCI95Low  float64 `json:"phase1_delta_ci95_low"`
+	Phase1DeltaCI95High float64 `json:"phase1_delta_ci95_high"`
+	Phase2DeltaCI95Low  float64 `json:"phase2_delta_ci95_low"`
+	Phase2DeltaCI95High float64 `json:"phase2_delta_ci95_high"`
+	McNemarP            float64 `json:"mcnemar_p"`
 }
 
 // HypothesisResult is the observed status of one pre-registered hypothesis.
@@ -252,6 +282,9 @@ func parseFlags(args []string) (Config, error) {
 	promptStdin := fs.Bool("prompt-stdin", false, "pass the prompt on stdin instead of appending it as the final argument")
 	anchorBin := fs.String("anchor-bin", "", "prebuilt anchor binary (default: build ./cmd/anchor into the output dir)")
 	keepWork := fs.Bool("keep-work", false, "keep the per-trial project copies for debugging")
+	mockMode := fs.String("mock-mode", "normal", "mock agent behaviour: normal|sabotage|cheater (negative controls)")
+	maxUSD := fs.Float64("max-usd", 0, "stop the run after this total agent cost in USD (0 = unlimited)")
+	maxTokens := fs.Int64("max-tokens", 0, "stop the run after this many total tokens (0 = unlimited)")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -268,6 +301,9 @@ func parseFlags(args []string) (Config, error) {
 		PromptStdin: *promptStdin,
 		AnchorBin:   *anchorBin,
 		KeepWork:    *keepWork,
+		MockMode:    *mockMode,
+		MaxUSD:      *maxUSD,
+		MaxTokens:   *maxTokens,
 	}
 	if cfg.Trials < 1 {
 		return cfg, fmt.Errorf("--trials must be at least 1")
@@ -279,6 +315,14 @@ func parseFlags(args []string) (Config, error) {
 	}
 	if cfg.Timeout <= 0 {
 		return cfg, fmt.Errorf("--timeout must be positive")
+	}
+	switch cfg.MockMode {
+	case "normal", "sabotage", "cheater":
+	default:
+		return cfg, fmt.Errorf("--mock-mode must be normal, sabotage or cheater (got %q)", cfg.MockMode)
+	}
+	if cfg.MaxUSD < 0 || cfg.MaxTokens < 0 {
+		return cfg, fmt.Errorf("--max-usd and --max-tokens must be non-negative")
 	}
 	switch {
 	case cfg.MockAgent && cfg.AgentCmd != "":
@@ -382,6 +426,33 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	resolved.OutDir = outDir
 	resolved.AnchorBin = anchorBin
 
+	// Harness metadata: what exactly produced these numbers (checklist: record
+	// harness/task versions so results are reproducible).
+	suiteName := "resume/ratelimit"
+	fixtureHash, hashErr := fixturesSHA256(fixturesDir)
+	if hashErr != nil {
+		return nil, hashErr
+	}
+	benchCommit := gitCommitOf(repoRoot)
+	anchorVersion := anchorVersionOf(anchorBin)
+	report.Config.Suite = suiteName
+	report.Config.TaskHash = fixtureHash
+	report.Config.BenchCommit = benchCommit
+	report.Config.AnchorVersion = anchorVersion
+	report.Config.MockMode = resolved.MockMode
+	report.Metadata = map[string]string{
+		"suite":          suiteName,
+		"task_hash":      "sha256:" + fixtureHash,
+		"bench_commit":   benchCommit,
+		"anchor_version": anchorVersion,
+		"mock_mode":      resolved.MockMode,
+	}
+	report.Environment = append(report.Environment,
+		"task hash (fixtures): sha256:"+fixtureHash,
+		"bench commit: "+orDash(benchCommit),
+		"anchor version: "+orDash(anchorVersion),
+	)
+
 	// Warm the shared Go build/test cache once so the first trial's acceptance
 	// run does not pay the compilation cost that later runs avoid.
 	warmUpFixtureBuild(ctx, resolved)
@@ -404,15 +475,24 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 			report.Trials = append(report.Trials, result)
 		}
 		report.Aggregates = aggregateTrials(report.Trials, arms)
-		report.Delta = computeDelta(report.Aggregates)
+		report.Delta = computeDelta(report.Aggregates, report.Trials)
 		report.Hypotheses = evaluateHypotheses(report)
 		if err := writeReports(outDir, report); err != nil {
 			return report, err
 		}
+		if exceeded, note := budgetExceeded(report.Trials, cfg.MaxUSD, cfg.MaxTokens); exceeded {
+			report.Truncated = true
+			report.BudgetExceeded = true
+			report.BudgetNote = note
+			if err := writeReports(outDir, report); err != nil {
+				return report, err
+			}
+			break
+		}
 	}
 
 	report.Aggregates = aggregateTrials(report.Trials, arms)
-	report.Delta = computeDelta(report.Aggregates)
+	report.Delta = computeDelta(report.Aggregates, report.Trials)
 	report.Hypotheses = evaluateHypotheses(report)
 	if err := writeReports(outDir, report); err != nil {
 		return report, err
@@ -454,7 +534,7 @@ func includesAnchor(arms []string) bool {
 // the result instead of aborting the whole run so one bad trial does not lose
 // the other measurements.
 func runTrial(ctx context.Context, cfg Config, trial int, arm string, wrapSupported bool) TrialResult {
-	res := TrialResult{Trial: trial, Arm: arm}
+	res := TrialResult{Trial: trial, Arm: arm, TaskID: "ratelimit"}
 	logDir := filepath.Join(cfg.OutDir, "logs", fmt.Sprintf("trial-%02d-%s", trial, arm))
 	res.LogDir = logDir
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -462,7 +542,7 @@ func runTrial(ctx context.Context, cfg Config, trial int, arm string, wrapSuppor
 		return res
 	}
 	if cfg.MockAgent {
-		if err := writeMockAgentScripts(cfg.Fixtures, logDir); err != nil {
+		if err := writeMockAgentScripts(cfg.Fixtures, logDir, cfg.MockMode); err != nil {
 			res.errf("write mock agent scripts: %v", err)
 			return res
 		}
@@ -488,6 +568,7 @@ func runTrial(ctx context.Context, cfg Config, trial int, arm string, wrapSuppor
 	} else {
 		res.FixtureCommit = commit
 	}
+	visibleBaseline := taskVisibleHashes(cfg.Fixtures, proj)
 
 	var stateDir, fallbackContext, packetPath string
 	var packet packetDoc
@@ -545,6 +626,14 @@ func runTrial(ctx context.Context, cfg Config, trial int, arm string, wrapSuppor
 	if p1.ExitCode != 0 {
 		res.errf("phase-1 agent exited %d%s", p1.ExitCode, timeoutSuffix(p1.TimedOut))
 	}
+	if err := writePatch(ctx, proj, filepath.Join(logDir, "patch-phase1.diff")); err != nil {
+		res.errf("write phase-1 patch: %v", err)
+	}
+	if modified, flags := detectTestModification(cfg.Fixtures, proj, "phase1", visibleBaseline); modified {
+		res.TestsModified = true
+		res.CheatFlags = append(res.CheatFlags, flags...)
+	}
+	res.CheatFlags = append(res.CheatFlags, cheatSuspicionFlags(p1.Output)...)
 	if commit, err := gitCommitAll(ctx, proj, "phase1: agent work"); err != nil {
 		res.errf("%v", err)
 	} else if res.FixtureCommit != "" && commit == "" {
@@ -632,6 +721,14 @@ func runTrial(ctx context.Context, cfg Config, trial int, arm string, wrapSuppor
 	if p2.ExitCode != 0 {
 		res.errf("phase-2 agent exited %d%s", p2.ExitCode, timeoutSuffix(p2.TimedOut))
 	}
+	if err := writePatch(ctx, proj, filepath.Join(logDir, "patch-phase2.diff")); err != nil {
+		res.errf("write phase-2 patch: %v", err)
+	}
+	if modified, flags := detectTestModification(cfg.Fixtures, proj, "phase2", visibleBaseline); modified {
+		res.TestsModified = true
+		res.CheatFlags = append(res.CheatFlags, flags...)
+	}
+	res.CheatFlags = append(res.CheatFlags, cheatSuspicionFlags(p2.Output)...)
 	res.DecisionMarker = detectDecisionMarker(ctx, proj, p2.Output)
 	acc2 := runAcceptance(ctx, cfg, proj, 2, filepath.Join(logDir, "acceptance-phase2.log"))
 	res.Phase2AcceptMS = acc2.Duration.Milliseconds()
@@ -1199,7 +1296,7 @@ func warmUpFixtureBuild(ctx context.Context, cfg Config) {
 // ---------------------------------------------------------------------------
 // Mock agent
 
-func writeMockAgentScripts(fixturesDir, logDir string) error {
+func writeMockAgentScripts(fixturesDir, logDir, mode string) error {
 	phase1, err := os.ReadFile(filepath.Join(fixturesDir, "testdata", "mock", "phase1_ratelimit.go"))
 	if err != nil {
 		return err
@@ -1238,6 +1335,18 @@ func writeMockAgentScripts(fixturesDir, logDir string) error {
 		"  cat > ratelimit.go <<'" + mockHeredocTerminator + "'\n" + string(wrong) + mockHeredocTerminator + "\n" +
 		"  echo \"mock-agent phase2: no Anchor context available; used a naive WaitTime guess\"\n" +
 		"fi\n"
+	switch mode {
+	case "sabotage":
+		// Negative control: claims success without changing anything, so every
+		// acceptance run must fail.
+		noop := "#!/bin/sh\necho \"mock-agent: sabotage mode (no changes)\"\nexit 0\n"
+		phase1Script, phase2Script = noop, noop
+	case "cheater":
+		// Negative control: tries to make the visible test file pass. The harness
+		// must flag the modification and grade with the canonical tests anyway.
+		cheat := "#!/bin/sh\ncat > ratelimit_test.go <<'" + mockHeredocTerminator + "'\npackage ratelimit\n\nimport \"testing\"\n\nfunc TestCheatOnly(t *testing.T) {}\n" + mockHeredocTerminator + "\necho \"mock-agent: cheater mode (rewrote the visible tests)\"\n"
+		phase1Script, phase2Script = cheat, cheat
+	}
 	if err := writeFile(filepath.Join(logDir, "mock-agent-phase1.sh"), phase1Script); err != nil {
 		return err
 	}
@@ -1743,12 +1852,27 @@ func aggregateTrials(trials []TrialResult, arms []string) map[string]ArmAggregat
 		a.MeanPhase2CostUSD = p2cost / n
 		a.MeanTotalTokens = total / n
 		a.UsageParsedTrials = usageParsed
+		p1Flags := make([]bool, 0, len(rows))
+		p2Flags := make([]bool, 0, len(rows))
+		modified := 0
+		for _, row := range rows {
+			p1Flags = append(p1Flags, row.Phase1Pass)
+			p2Flags = append(p2Flags, row.Phase2Pass)
+			if row.TestsModified {
+				modified++
+			}
+		}
+		a.Phase1PassK = boolFloat(passK(p1Flags))
+		a.Phase2PassK = boolFloat(passK(p2Flags))
+		a.Phase1CI95Low, a.Phase1CI95High = wilson95(p1Pass, len(rows))
+		a.Phase2CI95Low, a.Phase2CI95High = wilson95(p2Pass, len(rows))
+		a.TestsModifiedCount = modified
 		agg[arm] = a
 	}
 	return agg
 }
 
-func computeDelta(agg map[string]ArmAggregate) *Delta {
+func computeDelta(agg map[string]ArmAggregate, trials []TrialResult) *Delta {
 	b, okB := agg[armBaseline]
 	a, okA := agg[armAnchor]
 	if !okB || !okA {
@@ -1773,8 +1897,17 @@ func computeDelta(agg map[string]ArmAggregate) *Delta {
 		d.TotalTokensRatio = a.MeanTotalTokens / b.MeanTotalTokens
 	}
 	d.AnchorSetupMeanMS = a.MeanAnchorSetupMS
+	b1, a1, bOnly1, aOnly1 := phasePairs(trials, 1)
+	d.Phase1DeltaCI95Low, d.Phase1DeltaCI95High = pctCI(pairedDelta(b1, a1, 2000))
+	b2, a2, bOnly2, aOnly2 := phasePairs(trials, 2)
+	d.Phase2DeltaCI95Low, d.Phase2DeltaCI95High = pctCI(pairedDelta(b2, a2, 2000))
+	d.McNemarP = mcnemarExactP(bOnly1+bOnly2, aOnly1+aOnly2)
 	return d
 }
+
+// pctCI converts the pairedDelta return (delta, low, high) into a (low, high)
+// pair for the report fields.
+func pctCI(delta, low, high float64) (float64, float64) { return low, high }
 
 func evaluateHypotheses(report *Report) map[string]HypothesisResult {
 	h := map[string]HypothesisResult{}
@@ -1895,11 +2028,26 @@ func renderCLISummary(report *Report) string {
 			a.MeanPhase1TotalMS, a.MeanPhase2TotalMS, a.MeanAnchorEvents,
 			a.MeanTotalTokens, a.MeanPhase1CostUSD+a.MeanPhase2CostUSD, a.MeanResumeScore)
 	}
+	for _, arm := range []string{armBaseline, armAnchor} {
+		a, ok := report.Aggregates[arm]
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "%s pass^k: p1 %.0f p2 %.0f | p1 CI95 [%.2f,%.2f] p2 CI95 [%.2f,%.2f] | tests-modified %d\n",
+			arm, a.Phase1PassK, a.Phase2PassK,
+			a.Phase1CI95Low, a.Phase1CI95High, a.Phase2CI95Low, a.Phase2CI95High, a.TestsModifiedCount)
+	}
 	if report.Delta != nil {
 		fmt.Fprintf(&b, "delta (anchor-baseline): p1-pass %+.2f p2-pass %+.2f p1-mean %+.0fms p2-mean %+.0fms tokens %+.0f cost %+.4f resume %+.2f\n",
 			report.Delta.Phase1PassRate, report.Delta.Phase2PassRate,
 			report.Delta.MeanPhase1TotalMS, report.Delta.MeanPhase2TotalMS,
 			report.Delta.MeanTotalTokens, report.Delta.MeanCostUSD, report.Delta.MeanResumeScore)
+		fmt.Fprintf(&b, "paired p1 delta CI95 [%+.2f,%+.2f] p2 delta CI95 [%+.2f,%+.2f] McNemar p=%.3f\n",
+			report.Delta.Phase1DeltaCI95Low, report.Delta.Phase1DeltaCI95High,
+			report.Delta.Phase2DeltaCI95Low, report.Delta.Phase2DeltaCI95High, report.Delta.McNemarP)
+	}
+	if report.Truncated {
+		fmt.Fprintf(&b, "TRUNCATED: %s\n", report.BudgetNote)
 	}
 	for _, name := range []string{"H1", "H2", "H3"} {
 		if hyp, ok := report.Hypotheses[name]; ok {
@@ -1928,6 +2076,21 @@ func renderMarkdown(report *Report) string {
 	if report.Skipped {
 		fmt.Fprintf(&b, "> **SKIPPED:** %s\n\n", report.SkipReason)
 	}
+	if report.Truncated {
+		fmt.Fprintf(&b, "> **TRUNCATED:** %s\n\n", report.BudgetNote)
+	}
+	if len(report.Metadata) > 0 {
+		b.WriteString("## Harness metadata\n\n")
+		keys := make([]string, 0, len(report.Metadata))
+		for k := range report.Metadata {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&b, "- %s: `%s`\n", k, report.Metadata[k])
+		}
+		b.WriteString("\n")
+	}
 
 	b.WriteString("## Results\n\n")
 	b.WriteString("| arm | trials | phase-1 pass | phase-2 pass | mean p1 ms | median p1 ms | mean p2 ms | median p2 ms | mean events | mean captures | mean tokens | mean cost USD | handoff prepared | handoff complete | mean resume score |\n")
@@ -1945,6 +2108,14 @@ func renderMarkdown(report *Report) string {
 	}
 	b.WriteString("\nPhase times are agent wall time plus acceptance wall time; Anchor workspace setup is reported separately below.\n")
 	b.WriteString("Token/cost means come from the agent's own `--output-format json` result object; trials where the agent printed no usage JSON are averaged as zero and counted in `usage_parsed_trials`.\n\n")
+	b.WriteString("### Reliability and uncertainty\n\n")
+	for _, arm := range []string{armBaseline, armAnchor} {
+		if a, ok := report.Aggregates[arm]; ok {
+			fmt.Fprintf(&b, "- %s: pass^k p1=%.0f p2=%.0f · Wilson 95%% CI p1=[%.2f,%.2f] p2=[%.2f,%.2f] · tests modified %d\n",
+				arm, a.Phase1PassK, a.Phase2PassK, a.Phase1CI95Low, a.Phase1CI95High, a.Phase2CI95Low, a.Phase2CI95High, a.TestsModifiedCount)
+		}
+	}
+	b.WriteString("\n")
 
 	if report.Delta != nil {
 		b.WriteString("## Deltas (anchor minus baseline)\n\n")
@@ -1955,6 +2126,9 @@ func renderMarkdown(report *Report) string {
 		fmt.Fprintf(&b, "- mean phase-2 time: %+.0f ms (ratio %.2f)\n", report.Delta.MeanPhase2TotalMS, report.Delta.Phase2TotalRatio)
 		fmt.Fprintf(&b, "- mean total tokens: %+.0f (ratio %.2f)\n", report.Delta.MeanTotalTokens, report.Delta.TotalTokensRatio)
 		fmt.Fprintf(&b, "- mean cost (USD): %+.4f\n", report.Delta.MeanCostUSD)
+		fmt.Fprintf(&b, "- paired phase-1 delta 95%% CI: [%+.2f, %+.2f]\n", report.Delta.Phase1DeltaCI95Low, report.Delta.Phase1DeltaCI95High)
+		fmt.Fprintf(&b, "- paired phase-2 delta 95%% CI: [%+.2f, %+.2f]\n", report.Delta.Phase2DeltaCI95Low, report.Delta.Phase2DeltaCI95High)
+		fmt.Fprintf(&b, "- paired McNemar exact p: %.3f (descriptive; small N)\n", report.Delta.McNemarP)
 		fmt.Fprintf(&b, "- mean anchor workspace setup: %.0f ms (anchor arm only, excluded from phase times)\n\n", report.Delta.AnchorSetupMeanMS)
 	}
 
@@ -1975,8 +2149,8 @@ func renderMarkdown(report *Report) string {
 	b.WriteString("\nH2 material threshold: anchor mean phase-1 time may exceed baseline by at most max(2000 ms, 20%) of the baseline mean.\n")
 
 	b.WriteString("\n## Per-trial rows\n\n")
-	b.WriteString("| trial | arm | p1 pass | p2 pass | p1 agent exit | p2 agent exit | p1 ms | p2 ms | p1 tokens | p2 tokens | p1 cost | p2 cost | events | captures | handoff prepared | handoff complete | resume score | wrap p1/p2 | errors |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| trial | arm | p1 pass | p2 pass | p1 agent exit | p2 agent exit | p1 ms | p2 ms | p1 tokens | p2 tokens | p1 cost | p2 cost | tests modified | cheat flags | events | captures | handoff prepared | handoff complete | resume score | wrap p1/p2 | errors |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, row := range report.Trials {
 		notes := append([]string{}, row.Errors...)
 		if row.Phase1AcceptNote != "" {
@@ -1985,10 +2159,11 @@ func renderMarkdown(report *Report) string {
 		if row.Phase2AcceptNote != "" {
 			notes = append(notes, "phase2: "+row.Phase2AcceptNote)
 		}
-		fmt.Fprintf(&b, "| %d | %s | %v | %v | %d | %d | %d | %d | %d | %d | %.4f | %.4f | %d | %d | %v | %v | %d | %v/%v | %s |\n",
+		fmt.Fprintf(&b, "| %d | %s | %v | %v | %d | %d | %d | %d | %d | %d | %.4f | %.4f | %v | %s | %d | %d | %v | %v | %d | %v/%v | %s |\n",
 			row.Trial, row.Arm, row.Phase1Pass, row.Phase2Pass, row.Phase1AgentExit, row.Phase2AgentExit,
 			row.Phase1TotalMS, row.Phase2TotalMS, row.Phase1Tokens.Total(), row.Phase2Tokens.Total(),
 			row.Phase1Tokens.CostUSD, row.Phase2Tokens.CostUSD,
+			row.TestsModified, markdownCell(strings.Join(row.CheatFlags, "; ")),
 			row.AnchorEvents, row.AnchorCaptures,
 			row.HandoffPrepared, row.HandoffComplete, row.ResumeScore, row.WrapUsedP1, row.WrapUsedP2,
 			markdownCell(strings.Join(notes, "; ")))

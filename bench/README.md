@@ -143,6 +143,43 @@ per-trial table and the honest environment notes.
 
 ---
 
+## 3b. Benchmark checklist (industry practice → what this harness does)
+
+✅ = implemented and covered by tests, ◐ = partial/known gap.
+
+| Practice | Status | Where |
+|---|---|---|
+| Hidden, canonical acceptance tests restored before grading | ✅ | `installAcceptance`; `TestMockCheaterIsDetectedAndCannotPass` |
+| Task hash lock for reproducibility | ✅ | `fixturesSHA256` → `report.config.task_hash` |
+| Harness metadata (suite, anchor version, bench commit, model, agent cmd, go version) | ✅ | `report.metadata`, `report.config` |
+| Repeats + pass@1 + pass^k reliability | ✅ | `--trials k`; `phase*_pass_k` |
+| 95% confidence intervals for pass rates | ✅ | Wilson interval (`phase*_ci95_low/high`) |
+| Paired anchor-vs-baseline delta + exact McNemar p | ✅ | `--arm both`; paired bootstrap CI + `mcnemar_p` (descriptive, small N) |
+| Token/cost per phase and per solved task | ✅ | parsed from agent result JSON; `mean_cost_usd`, `mean_total_tokens` |
+| Budget caps with explicit truncation | ✅ | `--max-usd`, `--max-tokens` → `truncated`/`budget_exceeded` |
+| Negative controls (sabotage / cheating agent) | ✅ | `--mock-agent --mock-mode sabotage|cheater` |
+| Anti-cheat: detect test-file edits, restore canonical tests | ✅ | `tests_modified`, `cheat_flags`; cheater test |
+| Answer-search suspicion signal (soft) | ✅ | scans agent logs; never changes the score |
+| Per-trial artifacts (prompt, patch, agent log, acceptance log) | ✅ | `report.artifacts.logs_dir/<trial>/` |
+| Multiple tasks per suite | ◐ | built-in resume suite is one task; `bench/polyglot` provides multi-task coding tasks |
+| Container/VM isolation per run | ◐ | local temp dirs only (no Docker/KVM); documented gap |
+| Public trace/log release + independent re-runs | ◐ | local report+logs; no leaderboard process |
+
+### Aider polyglot suite
+
+[`bench/polyglot`](polyglot/README.md) runs Aider-polyglot-style exercises
+(visible tests, canonical restore before grading) with the same anti-cheat and
+metrics ideas:
+
+```sh
+# offline self-test with the bundled tiny exercises
+go run ./bench/polyglot --mock-agent --polyglot-dir bench/fixtures/polyglot --trials 1 --arm both
+
+# against an Aider polyglot checkout
+git clone https://github.com/Aider-AI/polyglot-benchmark
+go run ./bench/polyglot --polyglot-dir polyglot-benchmark --lang python --tasks leap,two_fer --trials 3
+```
+
 ## 4. How to run
 
 From the repository root:
