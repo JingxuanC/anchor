@@ -99,10 +99,15 @@ func TestReportMetadataAndTaskLock(t *testing.T) {
 	if report.Config.MockMode != "normal" {
 		t.Fatalf("mock mode not recorded: %q", report.Config.MockMode)
 	}
-	for _, key := range []string{"suite", "task_hash", "bench_commit", "anchor_version", "mock_mode"} {
+	for _, key := range []string{"suite", "task_hash", "anchor_version", "mock_mode"} {
 		if report.Metadata[key] == "" {
 			t.Fatalf("metadata missing %q: %v", key, report.Metadata)
 		}
+	}
+	// bench_commit is empty when running from an exported archive (no .git);
+	// the key must still be present so consumers know it was attempted.
+	if _, ok := report.Metadata["bench_commit"]; !ok {
+		t.Fatalf("metadata missing bench_commit key: %v", report.Metadata)
 	}
 	if report.Delta == nil {
 		t.Fatal("delta missing")
