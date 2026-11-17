@@ -3,8 +3,8 @@
 **Audit date:** 2026-11-16
 **Baseline:** audited at `1a6acc5`; since then the local segment, the test
 coverage pass, the successor restore/gate and code-byte transport landed.
-Current tree: 115 Go files / ~39,400 LOC, of which ~22,200 lines are tests
-(495 top-level test functions, 1064 `=== RUN` entries).
+Current tree: 158 Go files / ~44,100 LOC, of which ~23,300 lines are tests
+(524 top-level test functions, 1079 `=== RUN` entries).
 The authoritative per-requirement status is the ledger in §5.
 **Method:** code audit plus execution. `go build ./...`, `go test ./... -count=1`
 and `go test -race ./...` pass for every package (`pathguard` now has tests);
@@ -161,7 +161,14 @@ Phase position (`docs/06` §4): **Phase 0 done, Phase 1 mostly done, Phase 2/3 p
     s/phase) completed: baseline phase-2 pass 0/3 vs anchor 3/3, at +33% total
     tokens and +$0.087 mean cost. Results and caveats are in
     `bench/results/2026-11-16-deepseek-v4-flash/` and `bench/README.md` §7.
-    Remaining gap: per-run container/VM isolation is local temp dirs only.
+    A multi-session continuity stress suite (`bench/stress`) adds 3 authored
+    tasks, randomized hidden conventions, forced process restart, arms
+    baseline/rules/packet/full and non-seeding (the phase-1 agent must record the
+    convention itself); mock discrimination is baseline 0% vs full 100%, and its
+    first real run exposed repo leakage of the convention
+    (`variant_leaked_in_repo`), so leaked trials must be invalidated or a
+    leak-proof protocol used before drawing continuity conclusions. Remaining
+    gap: per-run container/VM isolation is local temp dirs only.
 16. **Tree view + local web UI + agent skill** — `anchor tree` renders the
     Session Tree as a terminal tree, stable JSON, Markdown (`TREE.md`) or a
     self-contained HTML file (escaped titles, no external resources, tombstones
@@ -690,7 +697,7 @@ sparse-file limit test (~15 s); `-race` takes ~5 min for the whole suite.
 | `bench/ab` | new | 68.8% | Mock-mode harness runs baseline+anchor and asserts the report contract. |
 | `cmd/anchor` | binary-driven | binary-driven | Error matrices, JSON contracts, full successor flow. |
 
-Test suite: 495 top-level test functions / 1064 run entries, ~22,200 test lines.
+Test suite: 524 top-level test functions / 1079 run entries, ~23,300 test lines.
 `go test -race ./...`, `go vet ./...` and `gofmt -l` are clean; the suite is
 deterministic and uses only `t.TempDir`/`t.Setenv` (never the real HOME).
 

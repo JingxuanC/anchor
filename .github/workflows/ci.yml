@@ -76,3 +76,5 @@ jobs:
         run: go run ./bench/ab --mock-agent --trials 1 --arm both --out /tmp/ab
       - name: harness self-test (polyglot)
         run: go run ./bench/polyglot --mock-agent --polyglot-dir bench/fixtures/polyglot --trials 1 --arm both --out /tmp/poly
+      - name: harness self-test (multi-session stress)
+        run: go run ./bench/stress --mock-agent --trials 2 --out /tmp/stress

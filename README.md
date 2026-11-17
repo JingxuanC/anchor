@@ -296,7 +296,35 @@ Anchor used ~33% more tokens (+$0.087/trial) because it actually completes the
 resume: the baseline's failed phase-2 attempts still cost ~184k tokens each, so
 it has no finite cost per successful resume.
 
-These are small-N, single-task results, not a leaderboard — read
+### What these numbers do and do not show
+
+- **Do:** the continuity mechanism works when the information needed later is
+  not recoverable from the repo or tests. In the resume run the baseline (lossy
+  chat summary) failed phase 2 in 3/3 trials while the Anchor packet passed 3/3.
+- **Do not:** Anchor does not make an agent better at ordinary single-session
+  coding. On the Aider-polyglot exercises both arms passed 100% (a ceiling
+  effect), with Anchor slightly more expensive. A 33% number from a small
+  single-task run is not "33% better code".
+- **Caveat:** in the resume benchmark the hidden conventions are seeded by the
+  harness into the Anchor tree (phase 1 is scripted), and the baseline receives
+  a deliberately lossy summary. That makes it a *context-loss stress test*, not a
+  measure of general agent capability; the newer `bench/stress` suite fixes this
+  by having the phase-1 agent record the conventions itself with randomized
+  variants.
+- **Stress suite:** [`bench/stress`](bench/stress/README.md) implements the
+  discriminating design (3 authored multi-session tasks, randomized hidden
+  conventions, forced process restart, arms baseline/rules/packet/full). Its
+  first real run was **invalidated as a continuity test**: the baseline wrote the
+  convention into the repo (`CONVENTIONS.md`), so it recovered it without session
+  state; full still recorded/conveyed 6/6 but cost ≈+62% per trial. The harness
+  now flags `variant_leaked_in_repo`; a leak-proof protocol or invalidating leaked
+  trials is required before drawing conclusions.
+- **Practical guidance:** use Anchor when work spans sessions/agents/machines,
+  when constraints are not encoded in the repo, or when a successor must prove
+  what it verified. For one-shot tasks, `anchor init`'s lightweight state is
+  enough; hooks/MCP/handoff add small overhead without a capability gain.
+
+ReadThese are small-N, single-task results, not a leaderboard — read
 [`bench/README.md`](bench/README.md) for the design, the honesty caveats and the
 mapping to public benchmarks (SWE-bench Verified, Terminal-Bench, Aider polyglot,
 τ-bench `pass^k`, HAL, Inspect Evals).

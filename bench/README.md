@@ -271,6 +271,32 @@ Mock mode is a harness self-test, **not** evidence about real agents.
 
 ---
 
+## 5b. What this benchmark does and does not show
+
+- **It measures a context-loss scenario**, not general coding capability. Phase 1
+  is scripted (the mock agent or the task's seed data), and the hidden conventions
+  are placed into the Anchor tree by the harness; the baseline receives a
+  deliberately lossy chat summary. That is a fair A/B of *continuity mechanisms*,
+  but it would be wrong to read the gap as "Anchor improves coding by N%".
+- **Ordinary single-session tasks are saturated.** On the Aider-polyglot
+  exercises both arms pass 100%; the observable difference is small harness
+  overhead (≈+3.5% tokens on the easy tasks). A benchmark where both arms sit at
+  the ceiling has no discriminative power.
+- **The discriminating scenario is:** information the successor needs is not in
+  the repo/tests (hidden conventions, decisions, constraints), the session is
+  forced to restart, and the successor must prove code/evidence was inspected.
+  [`bench/stress`](stress/README.md) targets exactly this with randomized
+  variants and *no harness seeding*: the phase-1 agent has to record the
+  convention itself, and compliance is reported rather than assumed. Its first
+  real run exposed the next modeling problem: the baseline agent wrote the
+  convention into a `CONVENTIONS.md` file, making it recoverable from the repo;
+  the suite now reports `variant_leaked_in_repo` and a valid run must invalidate
+  leaked trials (or use a leak-proof protocol).
+- **Use Anchor accordingly:** for multi-session/multi-agent/audited work it
+  preserves decisions and gates stale resumes; for one-shot tasks it is mostly
+  overhead, so the lightweight `anchor init` state (without hooks/MCP) is
+  usually enough.
+
 ## 6. Honest environment status
 
 Measured in this development environment (macOS, Go 1.26.4) on 2026-11-16:

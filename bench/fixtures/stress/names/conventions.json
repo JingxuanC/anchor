@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task": "names",
+  "package": "names",
+  "import_path": "example.com/stress/names",
+  "phase1_file": "names.go",
+  "phase2_file": "normalize.go",
+  "visible_tests": ["names_test.go"],
+  "mock_phase1": "mock/phase1/impl.go",
+  "mock_phase2_wrong": "mock/phase2/wrong/impl.go",
+  "decision_title": "name normalization convention",
+  "variants": [
+    {
+      "id": "space_case",
+      "statement": "Trim the name, collapse every internal run of whitespace to a single space and preserve letter case.",
+      "phrase": "preserve letter case",
+      "hidden_test": "hidden/space_case_test.go",
+      "mock_phase2": "mock/phase2/space_case/impl.go"
+    },
+    {
+      "id": "lower_snake",
+      "statement": "Trim the name, lowercase it and replace every internal run of whitespace with a single underscore.",
+      "phrase": "single underscore",
+      "hidden_test": "hidden/lower_snake_test.go",
+      "mock_phase2": "mock/phase2/lower_snake/impl.go"
+    },
+    {
+      "id": "lower_kebab",
+      "statement": "Trim the name, lowercase it and replace every internal run of whitespace with a single hyphen.",
+      "phrase": "single hyphen",
+      "hidden_test": "hidden/lower_kebab_test.go",
+      "mock_phase2": "mock/phase2/lower_kebab/impl.go"
+    }
+  ]
+}

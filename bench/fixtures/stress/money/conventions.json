@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task": "money",
+  "package": "money",
+  "import_path": "example.com/stress/money",
+  "phase1_file": "money.go",
+  "phase2_file": "allocate.go",
+  "visible_tests": ["money_test.go"],
+  "mock_phase1": "mock/phase1/impl.go",
+  "mock_phase2_wrong": "mock/phase2/wrong/impl.go",
+  "decision_title": "money allocation convention",
+  "variants": [
+    {
+      "id": "largest_remainder",
+      "statement": "When the proportional split leaves leftover cents, give one extra cent to each part with the largest fractional remainder (fraction = total_cents*weight mod sum_of_weights), breaking ties by lower index, until no cents are left.",
+      "phrase": "largest fractional remainder",
+      "hidden_test": "hidden/largest_remainder_test.go",
+      "mock_phase2": "mock/phase2/largest_remainder/impl.go"
+    },
+    {
+      "id": "first_parts",
+      "statement": "When the proportional split leaves leftover cents, give one extra cent to parts in index order starting at index 0, until no cents are left.",
+      "phrase": "parts in index order starting at index 0",
+      "hidden_test": "hidden/first_parts_test.go",
+      "mock_phase2": "mock/phase2/first_parts/impl.go"
+    },
+    {
+      "id": "drop_remainder",
+      "statement": "When the proportional split leaves leftover cents, do not distribute them: each part gets only its floor share and the result may sum to less than the total.",
+      "phrase": "do not distribute them",
+      "hidden_test": "hidden/drop_remainder_test.go",
+      "mock_phase2": "mock/phase2/drop_remainder/impl.go"
+    }
+  ]
+}

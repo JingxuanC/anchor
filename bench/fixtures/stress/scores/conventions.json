@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task": "scores",
+  "package": "scores",
+  "import_path": "example.com/stress/scores",
+  "phase1_file": "scores.go",
+  "phase2_file": "rank.go",
+  "visible_tests": ["scores_test.go"],
+  "mock_phase1": "mock/phase1/impl.go",
+  "mock_phase2_wrong": "mock/phase2/wrong/impl.go",
+  "decision_title": "score tie-breaking convention",
+  "variants": [
+    {
+      "id": "tie_name_asc",
+      "statement": "Sort by score descending; when scores tie, order names ascending lexicographically.",
+      "phrase": "order names ascending",
+      "hidden_test": "hidden/tie_name_asc_test.go",
+      "mock_phase2": "mock/phase2/tie_name_asc/impl.go"
+    },
+    {
+      "id": "tie_name_desc",
+      "statement": "Sort by score descending; when scores tie, order names descending lexicographically.",
+      "phrase": "order names descending",
+      "hidden_test": "hidden/tie_name_desc_test.go",
+      "mock_phase2": "mock/phase2/tie_name_desc/impl.go"
+    },
+    {
+      "id": "tie_input",
+      "statement": "Sort by score descending; when scores tie, keep the original input order (stable).",
+      "phrase": "keep the original input order",
+      "hidden_test": "hidden/tie_input_test.go",
+      "mock_phase2": "mock/phase2/tie_input/impl.go"
+    }
+  ]
+}
