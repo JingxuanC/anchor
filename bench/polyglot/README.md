@@ -69,6 +69,23 @@ simpler `<lang>/<slug>/` layout. Without it, the bundled fixture under
 Exit codes: `0` run completed, `1` harness error, `2` invalid flags,
 `3` skipped (the real agent command was not found; a report is still written).
 
+## Real run (2026-11-17)
+
+First real-agent run on the two bundled exercises, Claude Code 2.1.252 backed by
+DeepSeek `deepseek-v4-flash`, 1 trial per (task, arm), 300 s timeout:
+
+| arm | tasks | pass@1 | pass^k | mean wall | mean tokens | mean cost |
+|---|---|---|---|---|---|---|
+| baseline | 2 | 1.00 | 1.00 | 28.6 s | 96.2k | $0.172 |
+| anchor | 2 | 1.00 | 1.00 | 29.6 s | 97.1k | $0.176 |
+
+Both arms solve both exercises with no test-file edits (`tests_modified = 0`).
+Anchor costs ~+3.5% tokens / +$0.004 per task here — this is harness overhead on
+two easy single-session exercises, not evidence that Anchor improves hard-task
+performance; it does show the real-agent path (prompt, wrap, usage/cost parsing,
+anti-cheat, artifacts) working end to end. Larger polyglot runs should use more
+tasks/trials and report the same way.
+
 ## Anti-cheat
 
 The prompt tells the agent not to modify the tests, but the harness does not
